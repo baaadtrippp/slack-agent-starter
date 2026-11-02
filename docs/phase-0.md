@@ -26,24 +26,68 @@ unperformed feature evidence. `AGENTS.md` is canonical; `CLAUDE.md` imports it.
 | GitHub workflow                   | Read-only permissions; frozen install, repository checks, secret scan        |
 | Feature tests/typecheck           | Deferred until real TypeScript source exists; no placeholder success scripts |
 
+## Final repository verification
+
+- Fresh clone from the public remote: frozen install and `pnpm check` passed.
+- Formatting passed; Markdown lint checked 17 repository documents with zero
+  issues.
+- Repository boundaries passed for 39 files. A forced `.env.local` negative test
+  was rejected and the disposable fixture removed.
+- Gitleaks passed on the staged source and full initial Git history with no
+  leaks.
+- GitHub Actions run `41528278357` passed both `Repository checks` and
+  `Secret scan`.
+- GitHub secret scanning and push protection are enabled. Dependency alerts and
+  automatic security fixes are enabled; Dependabot updates cover npm and
+  Actions.
+- Main requires the two actual CI checks, blocks deletion and force pushes, and
+  retains administrator bypass for one-person bootstrap. No approving reviewer
+  is required.
+- The reference workspace was never initialized or published. Local provider
+  link/OIDC files remain ignored.
+
 ## Service readiness
 
-| Service           | State                                                    | Remaining dependency                                                                                 |
-| ----------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| GitHub            | Existing personal-account CLI authentication verified    | Final publication/security/CI verification                                                           |
-| Vercel CLI        | Installed and version verified; login initiated          | User completes account sign-in                                                                       |
-| Vercel MCP        | Secret-free disabled project template prepared           | OAuth and a successful intended-project read                                                         |
-| Vercel project    | Pending                                                  | Account inventory, free capacity, dedicated project link                                             |
-| Sandbox and Drive | Capability researched; not provisioned or smoke-tested   | Dedicated project, region, account quota and access                                                  |
-| Upstash Redis     | Capability researched; no existing resources changed     | Account sign-in, free-slot inventory, dedicated database and temporary-key check                     |
-| Slack             | Manifest template and proposed-controls overlay prepared | App name, enabled/test channels, workspace authorization, validation token and eventual real webhook |
-| OpenRouter        | Environment names prepared; no keys or model calls       | Model selection, budget cap and securely supplied credential                                         |
-| Pi/acpx/pi-acp    | Exact compatibility candidates documented                | Real compatibility evidence belongs to the second tracer bullet                                      |
-| CodeRabbit        | Free public-repository offering researched               | Repository-only GitHub App installation                                                              |
+| Service           | State                                                                                                    | Remaining dependency                                                                                      |
+| ----------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| GitHub            | Public MIT repository published; checks and security settings verified                                   | None for repository bootstrap                                                                             |
+| Vercel CLI        | Installed, authenticated, account and Hobby plan verified                                                | None for CLI access                                                                                       |
+| Vercel MCP        | OAuth authenticated; initial MCP project read returned team-access 403                                   | Additional team consent and successful intended-project read                                              |
+| Vercel project    | Dedicated project provisioned and locally linked; root `apps/gateway`, region `fra1`                     | GitHub repository connection verified; automatic builds intentionally ignored until a real gateway exists |
+| Sandbox and Drive | 1 GiB `agent-workspace` Drive provisioned in `fra1`; write/read/cleanup smoke checks passed              | Full runtime/ACP behavior belongs to later slices                                                         |
+| Upstash Redis     | Dedicated free database provisioned in Frankfurt; MCP inventory/details/stats verified; auto-upgrade off | Temporary-key smoke test blocked by MCP command approval policy; REDIS_URL injection pending              |
+| Slack             | Manifest template and proposed-controls overlay prepared                                                 | App name, enabled/test channels, workspace authorization, validation token and eventual real webhook      |
+| OpenRouter        | Environment names prepared; no keys or model calls                                                       | Model selection, budget cap and securely supplied credential                                              |
+| Pi/acpx/pi-acp    | Exact compatibility candidates documented                                                                | Real compatibility evidence belongs to the second tracer bullet                                           |
+| CodeRabbit        | Installed and posting checks; free OSS entitlement confirmed in its PR comment                           | Dependabot PR review skipped by bot-author policy; substantive review not yet verified                    |
+
+### Sandbox/Drive evidence
+
+The infrastructure smoke test mounted the named Drive read/write, wrote and read
+a temporary marker, removed it through an exit trap, and stopped compute. A
+second independent mount verified the marker was absent. Both commands used
+one-minute timeouts and deny-all networking. The final running-sandbox list was
+empty, and the Drive had no attached writable sandbox. No Pi or model executed.
+The Hobby account accepted provisioning and these checks without an upgrade;
+this does not establish remaining monthly quota for future application traffic.
 
 Published plan limits in [service setup](service-setup.md) are not evidence of
 available capacity in the selected accounts. A resource name is not proof of
 live event delivery, persistence, or model/tool behavior.
+
+## Coding agents in WSL
+
+A separate native Linux checkout passes the pinned toolchain bootstrap and
+repository checks. Codex 0.166.0, Claude Code 2.1.311, and Pi 1.3.0 are
+installed. Their project MCP files are prepared; project trust/approval and
+separate OAuth remain required before claiming provider access from each client.
+The WSL Vercel CLI is installed but not authenticated. See
+[WSL development](wsl-development.md).
+
+No extra skill package is required: all three use the canonical AGENTS.md
+instructions, with CLAUDE.md importing them. The Vercel plugin supplies vendor
+skills to the desktop session; its installation does not copy skills or OAuth
+credentials into WSL.
 
 ## Proposed first tracer bullet — awaiting phase 0 review
 

@@ -27,6 +27,10 @@ identity survives sandbox replacement. Runtime account connectors are deferred.
 4. Inspect [phase 0 readiness](docs/phase-0.md) before starting feature work.
 5. Follow [service setup](docs/service-setup.md) for external prerequisites.
 
+For Codex, Claude Code, or Pi under Linux, follow
+[WSL development](docs/wsl-development.md). Use a separate Linux checkout so
+Windows and Linux dependencies stay compatible.
+
 Local secrets belong in ignored files or provider secret stores. Copy
 `.env.example` only to an ignored local environment file. Never commit sessions,
 shared memory, real attachments, credentials, or provider authentication state.

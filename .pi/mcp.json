@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "upstash": {
+      "description": "Development access limited to Upstash Redis tools.",
+      "exposure": "codemode",
+      "url": "https://mcp.upstash.com/mcp?features=redis"
+    },
+    "vercel": {
+      "description": "Development access to Vercel documentation and the intended project.",
+      "exposure": "codemode",
+      "url": "https://mcp.vercel.com"
+    }
+  }
+}

@@ -15,7 +15,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "markdownlint-cli2",
-    "scan:secrets": "gitleaks dir . --redact --no-banner"
+    "scan:secrets": "node scripts/scan-secrets.mjs"
   },
   "devDependencies": {
     "markdownlint-cli2": "0.24.0",

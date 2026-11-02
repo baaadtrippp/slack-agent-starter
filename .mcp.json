@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "upstash": {
+      "type": "http",
+      "url": "https://mcp.upstash.com/mcp?features=redis"
+    },
+    "vercel": {
+      "type": "http",
+      "url": "https://mcp.vercel.com"
+    }
+  }
+}
