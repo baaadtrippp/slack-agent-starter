@@ -1,39 +1,44 @@
 # Slack agent starter
 
-A public TypeScript monorepo for a Slack gateway and a separate Pi agent worker.
-Phase 0 prepares the repository and development infrastructure. No Slack
-handler, worker host, model loop, or runtime account connector is implemented
-yet.
+A TypeScript monorepo for a Slack agent with a lightweight messaging gateway and
+a separate Pi worker runtime.
 
 ## Architecture
 
-- Vercel Chat SDK and its official Slack adapter run in the gateway on Vercel
-  Functions.
-- Upstash Redis holds gateway state and coordination.
-- One Vercel Sandbox hosts independent Pi processes for separate Slack threads.
-- One persistent Vercel Drive holds exact native sessions, thread files, and
-  shared memory.
-- OpenRouter supplies the model; model selection and spending cap remain open.
+- A Vercel Chat SDK gateway receives Slack events, owns all Slack API calls, and
+  coordinates runs through Upstash Redis.
+- One Vercel Sandbox hosts independent Pi processes for active Slack threads.
+- One persistent Vercel Drive stores exact native sessions, per-thread files,
+  results, and shared memory across sandbox replacement.
+- OpenRouter provides model access. The gateway never runs the agent loop.
 
-The gateway owns Slack calls. The worker owns the agent loop. A thread's
-identity survives sandbox replacement. Runtime account connectors are deferred.
+The repository currently contains the infrastructure scaffold, canonical
+specification, service templates, and development checks. Application handlers,
+the worker host, and the model/tool loop are intentionally absent until
+implementation begins through reviewed tracer bullets.
 
-## Start here
+## Project documentation
 
-1. Read the [canonical specification](docs/spec/v1.md).
-2. Follow [toolchain setup](docs/toolchain.md) and run the documented checks.
-3. Read [development guidance](AGENTS.md) and
-   [contribution workflow](CONTRIBUTING.md).
-4. Inspect [phase 0 readiness](docs/phase-0.md) before starting feature work.
-5. Follow [service setup](docs/service-setup.md) for external prerequisites.
+- [V1 product and architecture specification](docs/spec/v1.md)
+- [Requirements traceability](docs/spec/traceability.md)
+- [Development toolchain](docs/toolchain.md)
+- [Service setup](docs/service-setup.md)
+- [Optional development integrations](docs/development-integrations.md)
+- [Developer instructions](AGENTS.md)
+- [Contributing](CONTRIBUTING.md)
 
-For Codex, Claude Code, or Pi under Linux, follow
-[WSL development](docs/wsl-development.md). Use a separate Linux checkout so
-Windows and Linux dependencies stay compatible.
+## Local checks
 
-Local secrets belong in ignored files or provider secret stores. Copy
-`.env.example` only to an ignored local environment file. Never commit sessions,
-shared memory, real attachments, credentials, or provider authentication state.
+Install the pinned toolchain and dependencies as described in
+[docs/toolchain.md](docs/toolchain.md), then run:
 
-MIT licensed. Infrastructure setup does not demonstrate live Slack delivery or
-native Pi resume; those need separate acceptance evidence.
+```text
+pnpm check
+pnpm scan:secrets
+```
+
+Use only synthetic fixtures in the repository. Keep credentials, provider
+authentication, sessions, shared memory, real attachments, and generated runtime
+outputs in ignored local files or provider secret stores.
+
+Licensed under the [MIT License](LICENSE).

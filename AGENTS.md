@@ -62,6 +62,9 @@ loop, runtime connectors, or user features until phase 0 has been reviewed.
   transcripts, memory, workspaces, and outputs out of Git. Examples must contain
   placeholders only.
 - Use only synthetic, public-safe fixtures in the repository.
+- Public documentation describes the product and reusable development steps.
+  Keep personal workstation setup, account inventories, progress journals,
+  private handoffs, and operator-specific connection configuration outside Git.
 
 ## Verification
 

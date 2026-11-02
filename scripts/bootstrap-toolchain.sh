@@ -12,7 +12,7 @@ gitleaks_archive="gitleaks_${gitleaks_version}_linux_x64.tar.gz"
 gitleaks_archive_sha256='551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'
 
 if [[ "$(uname -m)" != 'x86_64' ]]; then
-  echo 'This bootstrap currently supports the x86_64 Ubuntu 24.04 WSL environment.' >&2
+  echo 'This bootstrap supports x86_64 Linux.' >&2
   exit 1
 fi
 
@@ -68,4 +68,4 @@ fi
 "$gitleaks_executable" version
 
 echo 'Toolchain installed without changing the user or system PATH.'
-echo 'Source scripts/use-toolchain.sh in each WSL development shell.'
+echo 'Source scripts/use-toolchain.sh in each development shell.'

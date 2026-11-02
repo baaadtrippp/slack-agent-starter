@@ -29,17 +29,22 @@ const requiredPaths = [
 
 const forbiddenSegments = new Set([
   '.claude',
+  '.codex',
+  '.pi',
   '.slack',
   '.vercel',
   'artifacts',
   'memory',
   'node_modules',
   'outputs',
+  'private-notes',
   'sessions',
   'workspaces',
 ]);
 
 const forbiddenNames = [
+  /^\.mcp\.json$/,
+  /^docs\/(?:phase-0|wsl-development)\.md$/,
   /phase-0-handoff/i,
   /slack-agents-v1-spec\.html$/i,
   /course/i,

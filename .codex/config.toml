@@ -1,9 +1,0 @@
-# Development only. OAuth credentials remain in user-local storage.
-# Verify the intended project through a read after authentication.
-[mcp_servers.vercel]
-url = "https://mcp.vercel.com"
-enabled = true
-
-[mcp_servers.upstash]
-url = "https://mcp.upstash.com/mcp?features=redis"
-enabled = true

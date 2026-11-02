@@ -3,19 +3,19 @@
 `manifest.yaml` is the minimum template for the accepted mention, thread,
 attachment, response, and progress-reaction behavior under the proposed O01
 channel scope. It intentionally uses a placeholder app name and non-routable
-request URL because the app identity and deployed gateway endpoint have not been
-chosen yet.
+request URL so each deployment can supply its own app identity and gateway
+endpoint.
 
 The template subscribes to public- and private-channel message events so an
 ordinary reply can continue an activated thread. That channel-only selection,
 including invited private channels and deferred DMs, is proposed O01 and has not
 been accepted. Review O01 in the
 [canonical specification](../../docs/spec/v1.md#10-open-review-points) before
-creating the app; revise these event subscriptions and scopes if that decision
-changes. Under O01, runtime configuration must enforce the enabled-channel
-allowlist and ignore bot messages. The broad `*:history` and `files:read` scopes
-are needed for the specified inputs, so install the app only in the intended
-workspace and invite it only to enabled private channels.
+configuring event subscriptions; revise these subscriptions and scopes if that
+decision changes. Under O01, runtime configuration must enforce the
+enabled-channel allowlist and ignore bot messages. The broad `*:history` and
+`files:read` scopes are needed for the specified inputs, so install the app only
+in the intended workspace and invite it only to enabled private channels.
 
 `proposed-controls-and-feedback.yaml` is an overlay for the still-proposed
 Stop/Status controls and thumbs feedback. It is deliberately excluded from the
@@ -23,7 +23,14 @@ baseline manifest. `reactions:write` remains in the baseline because the
 accepted progress behavior uses an acknowledgement reaction; `reactions:read` is
 only needed for feedback events.
 
-## Validate before creation
+## Create an app shell
+
+In [Slack app management](https://api.slack.com/apps), choose **Create an app**,
+start with a blank app, and select the display name and intended workspace. An
+uninstalled app shell can exist before the gateway is deployed. Leave event
+subscriptions and interactivity unconfigured until a real HTTPS endpoint exists.
+
+## Validate before applying the manifest
 
 1. Replace both `REPLACE-ME` values with the chosen app and bot display name.
 2. Replace `example.invalid` with the deployed HTTPS gateway endpoint. Slack
@@ -38,9 +45,9 @@ only needed for feedback events.
    equivalent project command is `slack manifest validate`. Do not infer that
    `slack run` hosts this webhook application; it does not replace the Vercel
    gateway.
-5. Create or update the app only after validation passes. Reinstall the app if
-   scopes or event subscriptions change.
+5. Apply the complete manifest only after validation passes. Reinstall the app
+   if scopes or event subscriptions change.
 
-Remote validation, URL verification, installation, and event delivery are
-pending until the app name, enabled test channels, and real gateway URL exist.
-No Slack message should be sent during phase 0.
+Complete remote validation, URL verification, and installation after choosing
+the enabled test channels and deploying the gateway. Sending test messages is a
+separate end-to-end verification step.
