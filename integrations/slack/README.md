@@ -1,53 +1,34 @@
 # Slack app configuration
 
-`manifest.yaml` is the minimum template for the accepted mention, thread,
-attachment, response, and progress-reaction behavior under the proposed O01
-channel scope. It intentionally uses a placeholder app name and non-routable
-request URL so each deployment can supply its own app identity and gateway
-endpoint.
+`milestone-1.yaml` is the minimal manifest for the initial canned-reply slice.
+It subscribes only to `app_mention` and requests `app_mentions:read` and
+`chat:write`. It uses placeholders for the app name and gateway HTTPS URL.
+Configure only the selected public test channel; any internal member may invoke
+the app. The gateway rejects other workspaces and channels, bots, and externally
+shared events. Private channels and DMs are disabled.
 
-The template subscribes to public- and private-channel message events so an
-ordinary reply can continue an activated thread. That channel-only selection,
-including invited private channels and deferred DMs, is proposed O01 and has not
-been accepted. Review O01 in the
-[canonical specification](../../docs/spec/v1.md#10-open-review-points) before
-configuring event subscriptions; revise these subscriptions and scopes if that
-decision changes. Under O01, runtime configuration must enforce the
-enabled-channel allowlist and ignore bot messages. The broad `*:history` and
-`files:read` scopes are needed for the specified inputs, so install the app only
-in the intended workspace and invite it only to enabled private channels.
+`manifest.yaml` is the broader future-v1 template for thread continuation,
+files, and progress. It includes scopes and events that milestone 1 does not
+need. Do not apply it for the canned-reply deployment. Resolve the remaining
+open decisions before enabling those later behaviors.
 
-`proposed-controls-and-feedback.yaml` is an overlay for the still-proposed
-Stop/Status controls and thumbs feedback. It is deliberately excluded from the
-baseline manifest. `reactions:write` remains in the baseline because the
-accepted progress behavior uses an acknowledgement reaction; `reactions:read` is
-only needed for feedback events.
+`proposed-controls-and-feedback.yaml` contains the separate, still-proposed
+Stop/Status and feedback overlay. It is not used in milestone 1.
 
 ## Create an app shell
 
-In [Slack app management](https://api.slack.com/apps), choose **Create an app**,
-start with a blank app, and select the display name and intended workspace. An
-uninstalled app shell can exist before the gateway is deployed. Leave event
-subscriptions and interactivity unconfigured until a real HTTPS endpoint exists.
+In [Slack app management](https://api.slack.com/apps), create a blank app in the
+intended workspace. Leave event subscriptions and interactivity unconfigured
+until the gateway has a public HTTPS endpoint.
 
-## Validate before applying the manifest
+## Apply the milestone-1 manifest
 
-1. Replace both `REPLACE-ME` values with the chosen app and bot display name.
-2. Replace `example.invalid` with the deployed HTTPS gateway endpoint. Slack
-   requires a valid request URL (or Socket Mode) for event subscriptions; this
-   project uses HTTP request URLs.
-3. With a Slack app configuration token that has `app_configurations:write`,
-   validate the complete manifest using the official
-   [`apps.manifest.validate`](https://docs.slack.dev/reference/methods/apps.manifest.validate/)
-   API. The official Slack CLI exposes the same method as
-   `slack api apps.manifest.validate`.
-4. After linking a Slack CLI project whose manifest hook returns this file, the
-   equivalent project command is `slack manifest validate`. Do not infer that
-   `slack run` hosts this webhook application; it does not replace the Vercel
-   gateway.
-5. Apply the complete manifest only after validation passes. Reinstall the app
-   if scopes or event subscriptions change.
+1. Replace both `REPLACE-ME` placeholders with the app and bot display names.
+2. Replace `example.invalid` with the gateway's deployed HTTPS
+   `/api/slack/events` URL.
+3. Validate with Slack's official manifest API or the Slack CLI.
+4. Apply the validated `milestone-1.yaml`, then install the app.
+5. Invite the bot only to the selected public test channel.
 
-Complete remote validation, URL verification, and installation after choosing
-the enabled test channels and deploying the gateway. Sending test messages is a
-separate end-to-end verification step.
+Manifest validation and Slack URL verification do not prove a complete event
+round trip. Record the live Slack check separately.

@@ -20,9 +20,30 @@ pnpm exec vercel link
 Keep `.vercel/` ignored. If development environment values are needed locally,
 pull them only into an ignored environment file.
 
-The gateway deploys to Vercel Functions. Do not deploy a placeholder Slack
-handler solely to create a deployment; the first gateway tracer bullet should
-create the first executable endpoint.
+Milestone 1 uses two Vercel projects from this monorepo:
+
+- Gateway root: `apps/gateway`. Enable access to source files outside the root
+  so this package can import `packages/contracts`.
+- Temporary fake-worker root: `apps/worker`. Enable the same outside-root
+  access. Give it a separate project so it cannot receive the gateway's Slack
+  token or Redis URL. Its only environment value is `GATEWAY_ORIGIN`.
+
+Both packages use Node.js Vercel Functions and need no web framework. Configure
+the gateway values from [its placeholder example](../apps/gateway/.env.example)
+as project environment variables. Keep `SLACK_BOT_TOKEN`,
+`SLACK_SIGNING_SECRET`, and `REDIS_URL` secret; `SLACK_WORKSPACE_ID`,
+`SLACK_ENABLED_CHANNEL_IDS`, `GATEWAY_ORIGIN`, and `FAKE_WORKER_URL` are
+nonsecret configuration. Set `GATEWAY_ORIGIN` to the gateway's stable HTTPS
+origin and `FAKE_WORKER_URL` to the worker's `/api/fake` URL. The worker
+receives only its own [`GATEWAY_ORIGIN`](../apps/worker/.env.example).
+
+Use `integrations/slack/milestone-1.yaml` for the first deployment: it requests
+only `app_mentions:read`, `chat:write`, and the `app_mention` event. Do not
+apply the broader `manifest.yaml` or proposed controls overlay for this slice.
+Configure both projects before enabling Vercel builds. The main gateway project
+is ready for an executable build after the repository checks pass. Keep the
+temporary worker deployment separate and replace it when milestone 2 adds the Pi
+worker.
 
 ## 2. Vercel Sandbox and Drive
 
@@ -78,9 +99,11 @@ References: [Upstash Redis](https://upstash.com/docs/redis) and
 
 ## 4. Slack app
 
-The files under `integrations/slack/` separate the base manifest from behavior
-that remains proposed in the specification. Resolve the relevant open decisions
-in the spec before merging proposed scopes or events into the app manifest.
+The files under `integrations/slack/` include a minimal milestone-1 manifest,
+the broader future-v1 manifest, and a separate proposed controls overlay. Use
+the milestone-1 manifest only for the initial public test channel. O01 permits
+internal channel members and rejects external or Slack Connect users. Private
+channels and DMs are disabled in this slice.
 
 An optional blank app shell may be created before the gateway exists. It needs
 only an app display name and target workspace; leave it uninstalled, with event
@@ -88,12 +111,12 @@ subscriptions and interactivity unconfigured. Follow
 [Create an app shell](../integrations/slack/README.md#create-an-app-shell) for
 that limited step.
 
-After a real gateway endpoint exists, complete the app configuration:
+After the gateway endpoint exists, complete the milestone-1 app configuration:
 
-1. resolve the enabled/test channel and proposed-behavior decisions linked from
-   the specification;
-2. replace the manifest placeholders with the app identity and deployed HTTPS
-   gateway routes;
+1. keep the workspace, enabled channel, and app identity in deployment
+   configuration, not public docs or fixtures;
+2. replace the milestone-1 manifest placeholders with the app display name and
+   deployed HTTPS gateway route;
 3. validate the complete manifest with Slack's official manifest API or
    supported CLI;
 4. apply the validated manifest to the app shell, or create the complete app if
@@ -101,11 +124,6 @@ After a real gateway endpoint exists, complete the app configuration:
 5. install the completed app, and reinstall it after scope or event-subscription
    changes;
 6. keep the bot invited only to channels enabled for the application.
-
-The base manifest uses scopes for mentions, thread continuation, files, replies,
-and progress reactions. The proposed overlay adds feedback reaction events and
-interactive controls. Runtime configuration must enforce the workspace and
-channel allowlists and ignore bot-originated messages.
 
 Request-URL verification and live event delivery require a real gateway
 endpoint. Record those as live application evidence rather than treating

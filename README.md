@@ -1,44 +1,44 @@
 # Slack agent starter
 
-A TypeScript monorepo for a Slack agent with a lightweight messaging gateway and
-a separate Pi worker runtime.
+A TypeScript monorepo for a Slack gateway and a separate agent worker. The
+canonical product and architecture requirements are in the
+[v1 specification](docs/spec/v1.md).
 
-## Architecture
+## Current implementation
 
-- A Vercel Chat SDK gateway receives Slack events, owns all Slack API calls, and
-  coordinates runs through Upstash Redis.
-- One Vercel Sandbox hosts independent Pi processes for active Slack threads.
-- One persistent Vercel Drive stores exact native sessions, per-thread files,
-  results, and shared memory across sandbox replacement.
-- OpenRouter provides model access. The gateway never runs the agent loop.
+Milestone 1 implements a signed Slack mention through Chat SDK and Upstash Redis
+to a temporary, separate fake-worker deployment. A run-authenticated callback
+returns a canned answer to its originating thread. O01 permits any internal
+member of the selected public test channel; private channels and DMs remain
+disabled.
 
-The repository currently contains the infrastructure scaffold, canonical
-specification, service templates, and development checks. Application handlers,
-the worker host, and the model/tool loop are intentionally absent until
-implementation begins through reviewed tracer bullets.
+The fake worker is test scaffolding. Pi, OpenRouter, Vercel Sandbox, and Drive
+are not connected. The v1 target architecture keeps Slack access and run
+coordination in the gateway, with a separate Pi worker process and one
+persistent Drive.
 
-## Project documentation
+## Documentation
 
-- [V1 product and architecture specification](docs/spec/v1.md)
+- [V1 requirements and architecture](docs/spec/v1.md)
+- [Milestone 1 slice](docs/spec/milestone-1.md)
 - [Requirements traceability](docs/spec/traceability.md)
-- [Development toolchain](docs/toolchain.md)
+- [Toolchain and full local checks](docs/toolchain.md)
 - [Service setup](docs/service-setup.md)
-- [Optional development integrations](docs/development-integrations.md)
 - [Developer instructions](AGENTS.md)
 - [Contributing](CONTRIBUTING.md)
 
-## Local checks
+## Checks
 
 Install the pinned toolchain and dependencies as described in
-[docs/toolchain.md](docs/toolchain.md), then run:
+[docs/toolchain.md](docs/toolchain.md). For full checks, run the disposable
+loopback Redis service there, then:
 
 ```text
-pnpm check
+TEST_REDIS_URL=redis://127.0.0.1:16379 pnpm check
 pnpm scan:secrets
 ```
 
-Use only synthetic fixtures in the repository. Keep credentials, provider
-authentication, sessions, shared memory, real attachments, and generated runtime
-outputs in ignored local files or provider secret stores.
+Keep credentials, provider authentication, sessions, memory, real attachments,
+and runtime outputs out of Git. The committed fixtures are synthetic.
 
 Licensed under the [MIT License](LICENSE).

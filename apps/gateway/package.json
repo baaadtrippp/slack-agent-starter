@@ -2,5 +2,14 @@
   "name": "@slack-agent-starter/gateway",
   "version": "0.0.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@chat-adapter/slack": "4.44.0",
+    "@chat-adapter/state-redis": "4.44.0",
+    "@slack-agent-starter/contracts": "workspace:*",
+    "@vercel/functions": "3.10.5",
+    "chat": "4.44.0",
+    "redis": "5.12.1",
+    "zod": "4.6.7"
+  }
 }

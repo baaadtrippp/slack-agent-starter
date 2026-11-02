@@ -2,6 +2,7 @@
   "name": "slack-agent-starter",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "description": "Infrastructure-first starter for a Slack gateway and a separate Pi worker.",
   "license": "MIT",
   "engines": {
@@ -10,16 +11,29 @@
   },
   "packageManager": "pnpm@12.16.1",
   "scripts": {
-    "check": "pnpm format:check && pnpm lint && pnpm check:repository",
+    "check": "pnpm format:check && pnpm lint && pnpm lint:ts && pnpm typecheck && pnpm test && pnpm check:repository",
     "check:repository": "node scripts/check-repository.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "markdownlint-cli2",
-    "scan:secrets": "node scripts/scan-secrets.mjs"
+    "lint:ts": "eslint . --ext .ts",
+    "scan:secrets": "node scripts/scan-secrets.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@chat-adapter/slack": "4.44.0",
+    "@chat-adapter/state-redis": "4.44.0",
+    "@chat-adapter/tests": "4.44.0",
+    "@types/node": "26.6.6",
+    "chat": "4.44.0",
+    "eslint": "10.14.0",
     "markdownlint-cli2": "0.24.0",
     "prettier": "3.9.10",
-    "vercel": "65.9.0"
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1",
+    "vercel": "65.9.0",
+    "vitest": "5.1.0",
+    "zod": "4.6.7"
   }
 }

@@ -1,6 +1,8 @@
 # Contracts
 
-Reserved for the small, versioned gateway-to-worker contract. It will not expose
-Slack SDK objects or Pi-specific event formats across the service boundary.
+This package defines the versioned worker job and result exchanged between the
+gateway and worker. It does not expose Slack SDK or Pi-specific types.
 
-Phase 0 defines no executable contract.
+Milestone 1 uses a canned fake worker to verify admission, callback
+authentication, and same-thread publication. Pi, Sandbox, and Drive behavior is
+added in later slices.
