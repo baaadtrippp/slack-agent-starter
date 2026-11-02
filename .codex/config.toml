@@ -1,0 +1,5 @@
+# Development only. OAuth credentials remain in user-local storage.
+# Verify the intended project through a read after authentication.
+[mcp_servers.vercel]
+url = "https://mcp.vercel.com"
+enabled = false
