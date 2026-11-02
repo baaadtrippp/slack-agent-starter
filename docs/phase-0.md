@@ -29,9 +29,9 @@ unperformed feature evidence. `AGENTS.md` is canonical; `CLAUDE.md` imports it.
 ## Final repository verification
 
 - Fresh clone from the public remote: frozen install and `pnpm check` passed.
-- Formatting passed; Markdown lint checked 17 repository documents with zero
+- Formatting passed; Markdown lint checked 18 repository documents with zero
   issues.
-- Repository boundaries passed for 39 files. A forced `.env.local` negative test
+- Repository boundaries passed for 45 files. A forced `.env.local` negative test
   was rejected and the disposable fixture removed.
 - Gitleaks passed on the staged source and full initial Git history with no
   leaks.
@@ -52,14 +52,14 @@ unperformed feature evidence. `AGENTS.md` is canonical; `CLAUDE.md` imports it.
 | ----------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | GitHub            | Public MIT repository published; checks and security settings verified                                   | None for repository bootstrap                                                                             |
 | Vercel CLI        | Installed, authenticated, account and Hobby plan verified                                                | None for CLI access                                                                                       |
-| Vercel MCP        | OAuth authenticated; initial MCP project read returned team-access 403                                   | Additional team consent and successful intended-project read                                              |
+| Vercel MCP        | OAuth and team consent complete; intended-project MCP read passed                                        | None for verified desktop/Windows MCP access; WSL authentication is separate                              |
 | Vercel project    | Dedicated project provisioned and locally linked; root `apps/gateway`, region `fra1`                     | GitHub repository connection verified; automatic builds intentionally ignored until a real gateway exists |
 | Sandbox and Drive | 1 GiB `agent-workspace` Drive provisioned in `fra1`; write/read/cleanup smoke checks passed              | Full runtime/ACP behavior belongs to later slices                                                         |
 | Upstash Redis     | Dedicated free database provisioned in Frankfurt; MCP inventory/details/stats verified; auto-upgrade off | Temporary-key smoke test blocked by MCP command approval policy; REDIS_URL injection pending              |
 | Slack             | Manifest template and proposed-controls overlay prepared                                                 | App name, enabled/test channels, workspace authorization, validation token and eventual real webhook      |
 | OpenRouter        | Environment names prepared; no keys or model calls                                                       | Model selection, budget cap and securely supplied credential                                              |
 | Pi/acpx/pi-acp    | Exact compatibility candidates documented                                                                | Real compatibility evidence belongs to the second tracer bullet                                           |
-| CodeRabbit        | Installed and posting checks; free OSS entitlement confirmed in its PR comment                           | Dependabot PR review skipped by bot-author policy; substantive review not yet verified                    |
+| CodeRabbit        | Installed and posting checks; free OSS entitlement confirmed in its PR comment                           | Automatic reviews unavailable below 10 repository stars; manual review not tested                         |
 
 ### Sandbox/Drive evidence
 
@@ -74,6 +74,21 @@ this does not establish remaining monthly quota for future application traffic.
 Published plan limits in [service setup](service-setup.md) are not evidence of
 available capacity in the selected accounts. A resource name is not proof of
 live event delivery, persistence, or model/tool behavior.
+
+## Pipeline follow-up evidence
+
+- A fresh Linux clone of the readiness branch passed bootstrap, frozen install,
+  formatting, Markdown lint, repository boundaries, shell syntax, and the new
+  Git-visible-file plus history secret scan. The checkout remained clean.
+- The synthetic-secret negative test returned failure with redacted output; the
+  disposable fixture and temporary scan corpus were removed.
+- The Vercel GitHub check received PR 2 and reported the deployment cancelled by
+  the configured ignored-build step. This verifies Git integration, not a
+  deployed application. Remove that temporary project setting in the first
+  deployment slice.
+- CodeRabbit received PR 2 but reported that automatic reviews require at least
+  10 repository stars. Its installation is verified; automated review is not
+  ready for this new repository. No paid upgrade was made.
 
 ## Coding agents in WSL
 
