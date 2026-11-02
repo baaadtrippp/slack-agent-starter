@@ -1,0 +1,43 @@
+# Dependencies and package-manager state
+node_modules/
+.pnpm-store/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.dev.vars
+*.pem
+*.key
+
+# Provider and local authentication state
+.vercel/
+.wrangler/
+.slack/
+.claude/settings.local.json
+.codex/
+.mcp.json
+.pi/
+
+# Private operator notes and progress records
+private-notes/
+docs/phase-0.md
+docs/wsl-development.md
+
+# Runtime state must remain outside source control
+sessions/
+memory/
+outputs/
+artifacts/
+workspaces/
+*.jsonl
+
+# Build, coverage, logs, and editor state
+coverage/
+dist/
+.turbo/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
