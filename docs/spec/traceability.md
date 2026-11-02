@@ -32,9 +32,13 @@ stalled response followed by recovery.
 **Provider integration:** the exact admission, callback-claim, and completion
 Lua scripts were exercised on the dedicated Upstash database with synthetic
 keys. Delivery and callback duplicates were suppressed, ownership was released,
-and fixture deletion was verified. This used the management REST path; the
-deployed `REDIS_URL` connection, Vercel deployment, Slack URL verification, and
-live Slack remain unverified. The fake worker does not demonstrate Pi, Sandbox,
+and fixture deletion was verified. This used the management REST path. Both
+Vercel packages built successfully. The deployed gateway connected through
+`REDIS_URL`, read a synthetic missing-run lookup, and rejected the
+unauthenticated callback with 401. A synthetic, unadmitted job was rejected by
+the separate worker with 403 after its real HTTPS gateway admission check. The
+minimal remote manifest validation passed. Slack URL verification and a live
+mention remain unverified. The fake worker does not demonstrate Pi, Sandbox,
 Drive, or OpenRouter.
 
 ## Evidence rules

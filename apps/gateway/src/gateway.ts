@@ -71,11 +71,28 @@ export function createGateway({
     return { bot, slack };
   }
 
+  async function initializeBot(bot: ReturnType<typeof makeBot>['bot']) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        bot.initialize(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Chat initialization timed out')),
+            15_000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function publish(run: RunRecord, result: WorkerResult) {
     let messageId: string | undefined;
     try {
       const { bot, slack } = makeBot();
-      await bot.initialize();
+      await initializeBot(bot);
       const threadId = slack.encodeThreadId({
         channel: run.channelId,
         threadTs: run.threadTs,
@@ -261,15 +278,21 @@ export function createGateway({
     });
     schedule(async () => {
       try {
-        await bot.initialize();
+        await initializeBot(bot);
         await bot.processMessage(slack, message.threadId, message, {
           deduplicate: false,
         });
         if (!handlerRan) throw new Error('Admitted mention was not handled');
       } catch {
-        await store.failDispatch(run.runId);
+        const stateRecorded = await store
+          .failDispatch(run.runId)
+          .catch(() => false);
         console.error(
-          JSON.stringify({ runId: run.runId, phase: 'dispatch_failed' }),
+          JSON.stringify({
+            runId: run.runId,
+            phase: 'dispatch_failed',
+            stateRecorded,
+          }),
         );
       }
     });

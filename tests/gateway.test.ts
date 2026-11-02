@@ -5,6 +5,7 @@ import { createMockState } from '@chat-adapter/tests';
 import type { StateAdapter } from 'chat';
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -134,6 +135,7 @@ describe.skipIf(!redisUrl)(
       vi.spyOn(console, 'info').mockImplementation(() => {});
       vi.spyOn(console, 'error').mockImplementation(() => {});
     });
+    afterEach(() => vi.useRealTimers());
     afterAll(async () => {
       const client = redis.getClient();
       for await (const keys of client.scanIterator({ MATCH: `${namespace}:*` }))
@@ -445,6 +447,25 @@ describe.skipIf(!redisUrl)(
       await sdkState.subscribe(`slack:CTEST1:${body.event.ts}`);
       await gateway.events(signed(body));
       await gateway.flush();
+      const run = await gateway.run();
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(await gateway.store.getRun(run!.runId)).toMatchObject({
+        state: 'dispatch_failed',
+      });
+    });
+
+    it('bounds SDK initialization when its external Redis connection never becomes ready', async () => {
+      const sdkState = createMockState();
+      vi.spyOn(sdkState, 'connect').mockImplementation(
+        () => new Promise<void>(() => {}),
+      );
+      const gateway = harness(sdkState);
+      await gateway.events(signed(envelope()));
+      vi.useFakeTimers();
+      const flushing = gateway.flush();
+      await vi.advanceTimersByTimeAsync(15_001);
+      vi.useRealTimers();
+      await flushing;
       const run = await gateway.run();
       expect(gateway.dispatch).not.toHaveBeenCalled();
       expect(await gateway.store.getRun(run!.runId)).toMatchObject({
