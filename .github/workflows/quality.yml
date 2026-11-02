@@ -36,6 +36,9 @@ jobs:
       - name: Check repository
         run: pnpm check
 
+      - name: Check Linux bootstrap syntax
+        run: bash -n scripts/bootstrap-toolchain.sh scripts/use-toolchain.sh
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest

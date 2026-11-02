@@ -2,4 +2,8 @@
 # Verify the intended project through a read after authentication.
 [mcp_servers.vercel]
 url = "https://mcp.vercel.com"
-enabled = false
+enabled = true
+
+[mcp_servers.upstash]
+url = "https://mcp.upstash.com/mcp?features=redis"
+enabled = true

@@ -31,7 +31,9 @@ On macOS or Linux, use a version manager that reads `.node-version`, install the
 - The repository-boundary script inspects everything visible to Git. It rejects
   local absolute paths, private handoff/course material, runtime state, and
   credential paths, and it requires the agreed repository structure.
-- CI runs Gitleaks against repository content and history with redacted output.
+- `pnpm scan:secrets` scans current Git-visible files and full Git history with
+  redacted output. Ignored local credentials stay outside the current-file scan;
+  force-tracked credential files are still included. CI scans full history.
 
 The bootstrap installs Gitleaks 8.30.1 beside the pinned Node and pnpm copies.
 The Vercel CLI is an exact project dependency; invoke it with
