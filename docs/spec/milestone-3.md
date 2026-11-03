@@ -52,3 +52,13 @@ A separate WSL probe used the pinned real worker and OpenRouter. A fresh process
 reopened the exact saved session, recalled a synthetic code, and advanced the
 recorded revision. A stale revision failed without starting Pi or changing the
 transcript. The callback in this probe was a fixture.
+
+## Sandbox replacement evidence
+
+Two fresh Vercel Sandboxes mounted the same Drive read/write in sequence. The
+first used the real worker and OpenRouter to remember a synthetic code. The
+second received only a question about that code and reopened the exact seed
+session. Its answer matched, the native and adapter IDs stayed the same, and the
+transcript revision advanced. The result manifest matched the callback payload.
+Both Sandboxes stopped. The callback endpoint was a fixture, so the test
+provides **provider integration** evidence. Live Slack continuation is pending.
