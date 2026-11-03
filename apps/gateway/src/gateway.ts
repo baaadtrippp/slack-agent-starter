@@ -11,7 +11,10 @@ import {
 } from '@chat-adapter/slack/webhook';
 import { Chat, ConsoleLogger } from 'chat';
 import type { StateAdapter } from 'chat';
-import { workerResultSchema } from '../../../packages/contracts/src/index.js';
+import {
+  WORKER_FAILURE_REPLY,
+  workerResultSchema,
+} from '../../../packages/contracts/src/index.js';
 import type {
   WorkerJob,
   WorkerResult,
@@ -212,7 +215,8 @@ export function createGateway({
     if (admission.outcome === 'duplicate') {
       if (
         admission.run.deadline <= now() &&
-        admission.run.state !== 'completed'
+        admission.run.state !== 'completed' &&
+        admission.run.state !== 'worker_failed'
       )
         console.error(
           JSON.stringify({
@@ -311,7 +315,7 @@ export function createGateway({
     if (run.generation !== generation || run.kind !== 'work')
       return new Response(null, { status: 409 });
     if (run.deadline <= now()) {
-      if (run.state !== 'completed')
+      if (run.state !== 'completed' && run.state !== 'worker_failed')
         console.error(
           JSON.stringify({
             runId: run.runId,
@@ -352,6 +356,7 @@ export function createGateway({
     }
     if (!parsed.success) return new Response(null, { status: 400 });
     const result = parsed.data;
+    if (result.type === 'failed') result.text = WORKER_FAILURE_REPLY;
     const run = await authenticate(request, result.runId, result.generation);
     if (run instanceof Response) return run;
     let claim;

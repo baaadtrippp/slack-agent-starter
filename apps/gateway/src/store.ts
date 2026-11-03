@@ -18,6 +18,7 @@ export type RunRecord = {
     | 'accepted'
     | 'publishing'
     | 'completed'
+    | 'worker_failed'
     | 'publication_uncertain'
     | 'dispatch_failed';
   result?: WorkerResult;
@@ -79,7 +80,7 @@ if run.runId ~= ARGV[1] or run.runId ~= result.runId or run.generation ~= result
   return 'conflict'
 end
 if run.deadline <= tonumber(ARGV[3]) then return 'expired' end
-if run.state == 'publishing' or run.state == 'completed' or run.state == 'publication_uncertain' then
+if run.state == 'publishing' or run.state == 'completed' or run.state == 'worker_failed' or run.state == 'publication_uncertain' then
   if run.result and run.result.eventId == result.eventId and run.result.runId == result.runId and run.result.generation == result.generation and run.result.sequence == result.sequence and run.result.type == result.type and run.result.text == result.text then
     return 'duplicate'
   end
@@ -97,7 +98,7 @@ local encoded = redis.call('GET', KEYS[1])
 if not encoded then return 0 end
 local run = cjson.decode(encoded)
 if run.state ~= 'publishing' then return 0 end
-run.state = 'completed'
+run.state = run.result.type == 'failed' and 'worker_failed' or 'completed'
 run.messageId = ARGV[1]
 redis.call('SET', KEYS[1], cjson.encode(run))
 if redis.call('GET', KEYS[2]) == run.runId then redis.call('DEL', KEYS[2]) end
@@ -230,7 +231,10 @@ export class RedisRunStore implements RunStore {
     const encoded = await this.execute((client) =>
       client.get(this.runKey(runId)),
     );
-    return encoded === null ? null : (JSON.parse(encoded) as RunRecord);
+    if (encoded === null) return null;
+    if (typeof encoded !== 'string')
+      throw new Error('Redis run lookup returned an invalid result');
+    return JSON.parse(encoded) as RunRecord;
   }
 
   async claimPublication(

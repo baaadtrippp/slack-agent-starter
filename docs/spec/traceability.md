@@ -50,6 +50,23 @@ verification remains unverified. These results do not demonstrate Pi, model
 access, Sandbox, Drive, or OpenRouter. F01 remains partial; later thread
 continuation and agent runtime acceptance criteria remain unproven.
 
+[Milestone 2 compatibility and cancellation probes](milestone-2.md#local-compatibility-evidence)
+add **deterministic** evidence for pinned ACP startup, native session reopening,
+provider failure handling, and cancellation of one Pi turn while another
+continues. The
+[OpenRouter probe](milestone-2.md#openrouter-compatibility-evidence) adds
+**provider integration** evidence for a real Pi answer, a file read, and image
+input (F12, AC06, and AC11). The
+[Sandbox recovery probe](milestone-2.md#sandbox-and-drive-recovery-evidence)
+verified that a fresh Sandbox could reopen the exact native Pi session and
+workspace on the same Drive, using a synthetic model response.
+
+The [Milestone 2 Slack test](milestone-2.md#live-slack-evidence) adds **live
+Slack** evidence for a detached Sandbox/Pi/OpenRouter answer in the originating
+thread and a distinct worker failure reply (F01, F12, AC01, AC09, and AC10).
+Ordinary Slack thread continuation across Sandbox replacement and coordinated
+Sandbox lifecycle remain unverified.
+
 ## Evidence rules
 
 For each slice, link evidence and label it as one of:

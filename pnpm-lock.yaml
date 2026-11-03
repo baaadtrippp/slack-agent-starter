@@ -220,6 +220,9 @@ importers:
       '@vercel/functions':
         specifier: 3.10.5
         version: 3.10.5(ws@8.22.1)
+      '@vercel/sandbox':
+        specifier: 3.9.1
+        version: 3.9.1
       chat:
         specifier: 4.44.0
         version: 4.44.0(zod@4.6.7)

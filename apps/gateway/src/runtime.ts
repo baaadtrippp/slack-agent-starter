@@ -1,5 +1,6 @@
 import { createRedisState } from '@chat-adapter/state-redis';
 import { waitUntil } from '@vercel/functions';
+import { Sandbox } from '@vercel/sandbox';
 import { ConsoleLogger } from 'chat';
 import { createClient } from 'redis';
 import { createGateway } from './gateway.js';
@@ -24,7 +25,14 @@ function initialize() {
   const origin = httpsUrl('GATEWAY_ORIGIN');
   if (origin.pathname !== '/' || origin.search)
     throw new Error('GATEWAY_ORIGIN must be a bare HTTPS origin');
-  const workerUrl = httpsUrl('FAKE_WORKER_URL');
+  const sandboxName = process.env.SANDBOX_WORKER_NAME;
+  const worker = sandboxName
+    ? {
+        kind: 'sandbox' as const,
+        sandboxName,
+        model: required('OPENROUTER_MODEL'),
+      }
+    : { kind: 'fake' as const, url: httpsUrl('FAKE_WORKER_URL') };
   const channelIds = required('SLACK_ENABLED_CHANNEL_IDS')
     .split(',')
     .map((id) => id.trim());
@@ -64,7 +72,29 @@ function initialize() {
     state,
     store: new RedisRunStore(client),
     dispatch: async (job) => {
-      const response = await fetch(workerUrl, {
+      if (worker.kind === 'sandbox') {
+        const signal = AbortSignal.timeout(15_000);
+        const sandbox = await Sandbox.get({
+          name: worker.sandboxName,
+          signal,
+        });
+        if (sandbox.status !== 'running')
+          throw new Error('Worker Sandbox is not running');
+        await sandbox.runCommand({
+          cmd: 'node',
+          args: ['/tmp/hydra-worker/run.mjs'],
+          cwd: '/tmp/hydra-worker',
+          env: {
+            HYDRA_JOB: JSON.stringify(job),
+            HYDRA_MODEL: worker.model,
+            OPENROUTER_API_KEY: 'sandbox-firewall',
+          },
+          detached: true,
+          signal,
+        });
+        return;
+      }
+      const response = await fetch(worker.url, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
