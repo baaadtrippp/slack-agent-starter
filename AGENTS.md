@@ -2,6 +2,11 @@
 
 ## Source of truth
 
+For Chat SDK work, read the installed `chat-sdk` skill first. Prioritize the
+installed package's `docs/` and `resources/`, then `chat-sdk.dev`. Use Context7
+only when those sources leave a gap; this overrides generic Context7-first
+guidance for this SDK.
+
 Read [docs/spec/v1.md](docs/spec/v1.md) before changing application behavior. It
 is the canonical v1 specification. Use its stable feature IDs (F01–F13),
 acceptance IDs (AC01–AC13), and open-decision IDs (O01–O07). Keep

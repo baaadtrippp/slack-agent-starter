@@ -1,5 +1,6 @@
 # Test fixtures
 
-Keep only synthetic, credential-free fixtures here. Do not copy production Slack
-payloads, course material, session transcripts, shared memory, or provider
+Keep only synthetic, credential-free fixtures here. The gateway tests construct
+Slack envelopes in memory; they do not capture production traffic. Never copy
+real Slack payloads, session transcripts, memory, credentials, or provider
 responses into the repository.

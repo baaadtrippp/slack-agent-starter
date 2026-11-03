@@ -50,12 +50,17 @@ Do not share `node_modules` between operating systems or CPU architectures.
 
 - `pnpm format:check` verifies formatting with Prettier.
 - `pnpm lint` checks repository Markdown.
+- `pnpm typecheck` runs strict, no-emit TypeScript checks across apps, packages,
+  and tests.
+- `pnpm lint:ts` checks TypeScript with ESLint and typescript-eslint.
+- `pnpm test` runs the deterministic Vitest suite with Node.js.
 - `pnpm check:repository` rejects required-path omissions, private reference
   material, local absolute paths, credentials, and runtime state visible to Git.
 - `pnpm scan:secrets` scans all current Git-visible regular files and Git
   history with redacted output. Ignored local credentials remain outside the
   current-file scan; force-tracked files remain included.
-- `pnpm check` runs formatting, lint, and repository-boundary checks.
+- `pnpm check` runs formatting, Markdown and TypeScript lint, type checking,
+  tests, and repository-boundary checks.
 
 The Windows and Linux bootstrap scripts install the pinned Gitleaks release used
 by `pnpm scan:secrets`. The Vercel CLI is an exact project dependency; invoke it
@@ -65,10 +70,31 @@ pnpm permits install scripts only for the reviewed native dependencies listed in
 `pnpm-workspace.yaml`. Review a new dependency's install script before adding it
 to that allowlist.
 
-The scaffold has no executable application source, so it does not provide
-placeholder typecheck or test commands. Add strict TypeScript, one TypeScript
-linter, and Vitest with the first tracer bullet that introduces behavior and
-meaningful acceptance tests.
+Vitest tests use synthetic fixtures and do not require provider credentials. The
+Redis store and gateway integration suites run only when `TEST_REDIS_URL` is
+set. Without it, those suites are skipped; `pnpm check` alone is then not full
+test verification. Provider connectivity and live Slack checks are separate.
+
+For full local verification on Linux or WSL, start the same pinned ephemeral
+Redis image used in CI. It listens only on loopback, disables snapshots and
+append-only persistence, and is removed when stopped:
+
+```bash
+docker run --rm --detach \
+  --name slack-agent-starter-test-redis \
+  --publish 127.0.0.1:16379:6379 \
+  redis@sha256:4eec4565e45aa0b3966554c866bc73211e281b0b3d89fe9a33c982e6faca809d \
+  redis-server --save "" --appendonly no
+
+TEST_REDIS_URL=redis://127.0.0.1:16379 pnpm check
+
+docker stop slack-agent-starter-test-redis
+```
+
+If the check exits early, stop the test container with the same `docker stop`
+command. The test suites namespace and remove their Redis keys. They mock Slack
+delivery; this verifies gateway behavior against local Redis, not Slack's live
+boundary.
 
 ## References
 
