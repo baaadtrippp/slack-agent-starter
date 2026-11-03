@@ -16,6 +16,7 @@ import {
 import { createGateway, BUSY_REPLY } from '../apps/gateway/src/gateway.js';
 import { RedisRunStore } from '../apps/gateway/src/store.js';
 import { createFakeWorker } from '../apps/worker/src/fake-worker.js';
+import { WORKER_FAILURE_REPLY } from '../packages/contracts/src/index.js';
 import type {
   WorkerJob,
   WorkerResult,
@@ -339,6 +340,36 @@ describe.skipIf(!redisUrl)(
       expect(await gateway.store.getRun(job.runId)).toMatchObject({
         state: 'completed',
         messageId: '1800000001.000001',
+      });
+    });
+
+    it('posts a safe failure once and records the worker failure separately', async () => {
+      const gateway = harness();
+      const body = envelope();
+      await gateway.events(signed(body));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      const failure = {
+        ...result(job),
+        type: 'failed',
+        text: 'private provider error',
+      } as const;
+      expect(
+        (await gateway.callback(callback(failure, job.callbackToken))).status,
+      ).toBe(202);
+      await gateway.flush();
+      expect(
+        (await gateway.callback(callback(failure, job.callbackToken))).status,
+      ).toBe(204);
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(
+        `slack:CTEST1:${body.event.ts}`,
+        WORKER_FAILURE_REPLY,
+      );
+      expect(await gateway.store.getRun(job.runId)).toMatchObject({
+        state: 'worker_failed',
+        result: { type: 'failed', text: WORKER_FAILURE_REPLY },
       });
     });
 

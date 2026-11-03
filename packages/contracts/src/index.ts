@@ -33,7 +33,7 @@ export const workerResultSchema = z
     generation: z.number().int().positive(),
     eventId: z.uuid(),
     sequence: z.literal(1),
-    type: z.literal('completed'),
+    type: z.enum(['completed', 'failed']),
     text: z.string().min(1).max(4_000),
   })
   .strict();
@@ -42,3 +42,6 @@ export type WorkerResult = z.infer<typeof workerResultSchema>;
 
 export const CANNED_REPLY =
   'Gateway round trip complete. The agent runtime is not connected yet.';
+
+export const WORKER_FAILURE_REPLY =
+  'The agent could not finish this run. You can retry by mentioning it again.';

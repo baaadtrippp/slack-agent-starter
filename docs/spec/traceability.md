@@ -50,6 +50,15 @@ verification remains unverified. These results do not demonstrate Pi, model
 access, Sandbox, Drive, or OpenRouter. F01 remains partial; later thread
 continuation and agent runtime acceptance criteria remain unproven.
 
+[Milestone 2 compatibility probe](milestone-2.md#local-compatibility-evidence)
+adds **deterministic** AC10/AC11 evidence for pinned ACP startup, local native
+session reopening, and an authentication failure that appears as a successful
+ACP stop reason. The
+[OpenRouter probe](milestone-2.md#openrouter-compatibility-evidence) adds
+**provider integration** evidence for a real Pi answer, a file read, and image
+input (F12, AC06, and AC11). Sandbox/Drive and live Slack remain unverified for
+Milestone 2.
+
 ## Evidence rules
 
 For each slice, link evidence and label it as one of:

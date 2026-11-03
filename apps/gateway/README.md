@@ -17,3 +17,9 @@ The first slice does not implement Pi, OpenRouter, Sandbox, Drive, ordinary
 thread follow-up, channel history, files, URLs, or controls. Runs whose dispatch
 or reply outcome is uncertain keep thread ownership for manual inspection; the
 gateway does not retry work or repost blindly.
+
+Milestone 2 test deployments set `SANDBOX_WORKER_NAME` and `OPENROUTER_MODEL` to
+dispatch to one prewarmed, operator-managed Sandbox. The gateway starts a
+detached worker command after admission. Configure model authentication on the
+Sandbox firewall. The gateway does not need the OpenRouter key. Keep this
+deployment within the selected test channel and Sandbox lifetime.
