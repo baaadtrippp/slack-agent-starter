@@ -61,4 +61,19 @@ second received only a question about that code and reopened the exact seed
 session. Its answer matched, the native and adapter IDs stayed the same, and the
 transcript revision advanced. The result manifest matched the callback payload.
 Both Sandboxes stopped. The callback endpoint was a fixture, so the test
-provides **provider integration** evidence. Live Slack continuation is pending.
+provides **provider integration** evidence.
+
+## Live Slack evidence
+
+An authorized synthetic mention received one acknowledgement from the first
+Sandbox. After that worker exited and the Sandbox stopped, a second Sandbox
+mounted the same Drive. An ordinary reply in the original Slack thread, without
+a second mention or the synthetic code, received one answer containing the
+correct code. The native Pi session ID and adapter ID matched the first run. The
+transcript contained one new user turn and advanced to the new committed
+revision. Both results correlated to the gateway publication records and
+recorded OpenRouter usage.
+
+The test temporarily enabled public-channel message events and used the existing
+test-channel filter. The independent-thread and stale-revision checks remain
+deterministic and local worker evidence.
