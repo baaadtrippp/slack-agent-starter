@@ -45,6 +45,19 @@ async function run(job, model, key) {
     !job.input.text.trim() ||
     job.input.text.length > 12_000 ||
     !/^[0-9a-f]{64}$/.test(job.callbackToken) ||
+    (job.session !== undefined &&
+      (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(
+        job.session?.seedRunId ?? '',
+      ) ||
+        job.session.seedRunId === job.runId ||
+        !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(
+          job.session?.nativeId ?? '',
+        ) ||
+        typeof job.session?.adapterId !== 'string' ||
+        !job.session.adapterId ||
+        job.session.adapterId.length > 128 ||
+        !Number.isSafeInteger(job.session?.revision) ||
+        job.session.revision < 1)) ||
     typeof model !== 'string' ||
     !/^[a-z0-9][a-z0-9._:/-]{1,127}$/i.test(model) ||
     !key
@@ -99,9 +112,9 @@ async function run(job, model, key) {
       return deliver(callback, headers, prior, job.deadline);
     }
     try {
-      result.text = await within(job.deadline - Date.now() - 9000, () =>
-        prompt(job, model, key, root),
-      );
+      const completed = await prompt(job, model, key, root);
+      result.text = completed.text;
+      result.session = completed.session;
       result.type = 'completed';
     } catch {
       console.error(
@@ -126,6 +139,7 @@ async function run(job, model, key) {
     );
     result.type = 'failed';
     result.text = failureText;
+    delete result.session;
   }
 
   await deliver(callback, headers, result, job.deadline);
@@ -163,33 +177,29 @@ async function deliver(callback, headers, result, deadline) {
   throw new Error('Callback was not accepted');
 }
 
-async function within(milliseconds, task) {
-  if (milliseconds <= 0) throw new Error('Worker deadline expired');
-  let timer;
-  try {
-    return await Promise.race([
-      task(),
-      new Promise((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error('Pi did not stop before the deadline')),
-          milliseconds,
-        );
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function prompt(job, model, key, root) {
-  const scratch = join('/tmp/hydra-worker-state', job.runId);
+  const seedRunId = job.session?.seedRunId ?? job.runId;
+  const sessionRoot = job.session ? join('/workspace/runs', seedRunId) : root;
+  const scratch = join('/tmp/hydra-worker-state', seedRunId);
   const agent = join(scratch, 'agent');
   const home = join(scratch, 'home');
-  const work = join(root, 'work');
-  const sessions = join(root, 'pi-sessions');
-  const adapter = join(root, 'pi-acp');
+  const work = join(sessionRoot, 'work');
+  const sessions = join(sessionRoot, 'pi-sessions');
+  const adapter = join(sessionRoot, 'pi-acp');
   const launcher = join(scratch, 'launch-pi');
+  let before;
+  let adapterId;
+  await mkdir(dirname(scratch), { recursive: true, mode: 0o700 });
+  await mkdir(scratch, { mode: 0o700 });
   try {
+    if (job.session)
+      before = await verifySavedSession(
+        job.session,
+        sessions,
+        adapter,
+        scratch,
+        work,
+      );
     await Promise.all(
       [agent, join(home, '.pi'), work, sessions, adapter].map((path) =>
         mkdir(path, { recursive: true, mode: 0o700 }),
@@ -231,7 +241,13 @@ async function prompt(job, model, key, root) {
         sessionKey: job.runId,
         agent: 'hydra',
         mode: 'persistent',
+        resumeSessionId: job.session?.adapterId,
       });
+      if (job.session && handle.backendSessionId !== job.session.adapterId)
+        throw new Error('Adapter resumed a different session');
+      adapterId = handle.backendSessionId;
+      if (typeof adapterId !== 'string' || !adapterId)
+        throw new Error('Adapter returned no session ID');
       const turn = runtime.startTurn({
         handle,
         mode: 'prompt',
@@ -249,15 +265,34 @@ async function prompt(job, model, key, root) {
       await runtime.shutdown();
     }
 
-    const files = await Array.fromAsync(glob('**/*.jsonl', { cwd: sessions }));
-    if (files.length !== 1) throw new Error('Missing exact native session');
-    const records = (await readFile(join(sessions, files[0]), 'utf8'))
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line));
-    const answer = records.findLast(
+    const saved = job.session
+      ? await verifySavedSession(
+          job.session,
+          sessions,
+          adapter,
+          scratch,
+          work,
+          false,
+        )
+      : await readNativeSession(sessions);
+    if (
+      before &&
+      (saved.file !== before.file || saved.nativeId !== before.nativeId)
+    )
+      throw new Error('Native session identity changed');
+    const newRecords = saved.records.slice(before?.records.length ?? 0);
+    const users = newRecords.filter(
+      (row) => row.type === 'message' && row.message.role === 'user',
+    );
+    const answer = newRecords.findLast(
       (row) => row.type === 'message' && row.message.role === 'assistant',
     )?.message;
+    if (
+      users.length !== 1 ||
+      messageText(users[0].message) !== job.input.text ||
+      !answer
+    )
+      throw new Error('Expected one new Pi turn');
     const text = answer?.content
       ?.filter((part) => part.type === 'text')
       .map((part) => part.text)
@@ -265,8 +300,78 @@ async function prompt(job, model, key, root) {
       .trim();
     if (answer?.stopReason !== 'stop' || !text)
       throw new Error('No successful Pi answer');
-    return text.slice(0, 4000).toWellFormed();
+    return {
+      text: text.slice(0, 4000).toWellFormed(),
+      session: {
+        seedRunId,
+        nativeId: saved.nativeId,
+        adapterId,
+        revision: saved.records.length,
+      },
+    };
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
+}
+
+function messageText(message) {
+  if (typeof message.content === 'string') return message.content;
+  return message.content
+    ?.filter((part) => part.type === 'text')
+    .map((part) => part.text)
+    .join('');
+}
+
+async function verifySavedSession(
+  reference,
+  sessions,
+  adapter,
+  scratch,
+  work,
+  requireRevision = true,
+) {
+  const saved = await readNativeSession(sessions);
+  if (
+    saved.nativeId !== reference.nativeId ||
+    (requireRevision && saved.records.length !== reference.revision)
+  )
+    throw new Error('Native session ID does not match');
+  const seed = JSON.parse(
+    await readFile(join(dirname(sessions), 'result.json'), 'utf8'),
+  );
+  if (
+    seed.runId !== reference.seedRunId ||
+    seed.type !== 'completed' ||
+    seed.session?.seedRunId !== reference.seedRunId ||
+    seed.session?.nativeId !== reference.nativeId ||
+    seed.session?.adapterId !== reference.adapterId
+  )
+    throw new Error('Seed result identity does not match');
+  const map = JSON.parse(
+    await readFile(join(adapter, 'session-map.json'), 'utf8'),
+  );
+  if (!map?.sessions || !Object.hasOwn(map.sessions, reference.adapterId))
+    throw new Error('Adapter session is missing');
+  const entry = map.sessions[reference.adapterId];
+  const expectedPath = join(scratch, 'agent', 'sessions', saved.file);
+  if (
+    entry?.sessionId !== reference.adapterId ||
+    entry.cwd !== work ||
+    entry.sessionFile !== expectedPath
+  )
+    throw new Error('Adapter session identity does not match');
+  return { ...saved, adapterId: reference.adapterId };
+}
+
+async function readNativeSession(sessions) {
+  const files = await Array.fromAsync(glob('**/*.jsonl', { cwd: sessions }));
+  if (files.length !== 1) throw new Error('Missing exact native session');
+  const records = (await readFile(join(sessions, files[0]), 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  const nativeId = records[0]?.type === 'session' ? records[0].id : undefined;
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(nativeId ?? ''))
+    throw new Error('Invalid native session ID');
+  return { file: files[0], nativeId, records };
 }

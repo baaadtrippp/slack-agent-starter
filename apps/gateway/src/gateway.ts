@@ -11,6 +11,7 @@ import {
 } from '@chat-adapter/slack/webhook';
 import { Chat, ConsoleLogger } from 'chat';
 import type { StateAdapter } from 'chat';
+import { z } from 'zod';
 import {
   WORKER_FAILURE_REPLY,
   workerResultSchema,
@@ -27,6 +28,7 @@ export type GatewayConfig = {
   workspaceId: string;
   channelIds: string[];
   origin: string;
+  threadResume?: boolean;
 };
 
 type GatewayOptions = {
@@ -44,6 +46,41 @@ export const BUSY_REPLY =
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_EVENT_BYTES = 256 * 1024;
 const RUN_DURATION_MS = 60_000;
+
+const threadReplyEnvelope = z.object({
+  type: z.literal('event_callback'),
+  team_id: z.string(),
+  event_id: z.string(),
+  is_ext_shared_channel: z.literal(false),
+  event: z.looseObject({
+    type: z.literal('message'),
+    channel_type: z.literal('channel'),
+    channel: z.string(),
+    user: z.string(),
+    ts: z.string(),
+    thread_ts: z.string(),
+    text: z.string(),
+  }),
+});
+
+function parseThreadReply(raw: unknown) {
+  const parsed = threadReplyEnvelope.safeParse(raw);
+  if (!parsed.success) return;
+  const envelope = parsed.data;
+  const event = envelope.event;
+  if (event.ts === event.thread_ts) return;
+  return {
+    teamId: envelope.team_id,
+    channelId: event.channel,
+    isExtSharedChannel: envelope.is_ext_shared_channel,
+    userId: event.user,
+    eventId: envelope.event_id,
+    ts: event.ts,
+    threadTs: event.thread_ts,
+    text: event.text,
+    raw: event,
+  };
+}
 
 export function createGateway({
   config,
@@ -96,8 +133,11 @@ export function createGateway({
         threadTs: run.threadTs,
       });
       const message = await bot.thread(threadId).post(result.text);
-      if (!message.id)
-        throw new Error('Publication did not return a message ID');
+      if (
+        !message.id ||
+        (result.session && !/^\d{10}\.\d{6}$/.test(message.id))
+      )
+        throw new Error('Publication did not return a valid message ID');
       messageId = message.id;
       if (!(await store.completePublication(run, messageId)))
         throw new Error('Publication state was not recorded');
@@ -142,27 +182,33 @@ export function createGateway({
     }
     if (payload.kind === 'url_verification')
       return Response.json({ challenge: payload.challenge });
-    if (payload.kind !== 'app_mention')
-      return new Response(null, { status: 200 });
+    const mention = payload.kind === 'app_mention';
+    const input =
+      payload.kind === 'app_mention'
+        ? payload
+        : config.threadResume && payload.kind === 'unsupported'
+          ? parseThreadReply(payload.raw)
+          : undefined;
+    if (!input) return new Response(null, { status: 200 });
 
-    const rawEvent = payload.raw;
+    const rawEvent = input.raw;
     if (
-      payload.teamId !== config.workspaceId ||
-      !config.channelIds.includes(payload.channelId) ||
-      !payload.channelId.startsWith('C') ||
-      payload.isExtSharedChannel !== false ||
-      !payload.userId ||
-      payload.userId === 'USLACKBOT' ||
-      !/^[UW][A-Z0-9]+$/.test(payload.userId) ||
-      !payload.eventId ||
-      !/^\d{10}\.\d{6}$/.test(payload.ts) ||
-      !/^\d{10}\.\d{6}$/.test(payload.threadTs) ||
-      !payload.text ||
-      payload.text.length > 12_000 ||
+      input.teamId !== config.workspaceId ||
+      !config.channelIds.includes(input.channelId) ||
+      !input.channelId.startsWith('C') ||
+      input.isExtSharedChannel !== false ||
+      !input.userId ||
+      input.userId === 'USLACKBOT' ||
+      !/^[UW][A-Z0-9]+$/.test(input.userId) ||
+      !input.eventId ||
+      !/^\d{10}\.\d{6}$/.test(input.ts) ||
+      !/^\d{10}\.\d{6}$/.test(input.threadTs) ||
+      !input.text ||
+      input.text.length > 12_000 ||
       !rawEvent ||
       rawEvent.bot_id ||
       rawEvent.bot_profile ||
-      rawEvent.subtype ||
+      rawEvent.subtype !== undefined ||
       (rawEvent.user_team !== undefined &&
         rawEvent.user_team !== config.workspaceId) ||
       (rawEvent.team !== undefined && rawEvent.team !== config.workspaceId) ||
@@ -172,29 +218,32 @@ export function createGateway({
       return new Response(null, { status: 200 });
 
     // The synchronous adapter parser does not fetch users, history, or URLs.
-    const message = slack.parseMessage({
-      type: 'app_mention',
-      user: payload.userId,
-      channel: payload.channelId,
-      ts: payload.ts,
-      thread_ts: payload.threadTs,
-      text: payload.text,
-    });
-    if (!message.isMention) return new Response(null, { status: 200 });
+    if (
+      mention &&
+      !slack.parseMessage({
+        type: 'app_mention',
+        user: input.userId,
+        channel: input.channelId,
+        ts: input.ts,
+        thread_ts: input.threadTs,
+        text: input.text,
+      }).isMention
+    )
+      return new Response(null, { status: 200 });
 
     const callbackToken = randomBytes(32).toString('hex');
     const candidate: RunRecord = {
       runId: randomUUID(),
       conversationId: digest(
-        `${payload.teamId}:${payload.channelId}:${payload.threadTs}`,
+        `${input.teamId}:${input.channelId}:${input.threadTs}`,
       ),
       generation: 1,
-      eventId: payload.eventId,
-      workspaceId: payload.teamId,
-      channelId: payload.channelId,
-      threadTs: payload.threadTs,
-      messageTs: payload.ts,
-      senderId: payload.userId,
+      eventId: input.eventId,
+      workspaceId: input.teamId,
+      channelId: input.channelId,
+      threadTs: input.threadTs,
+      messageTs: input.ts,
+      senderId: input.userId,
       deadline: now() + RUN_DURATION_MS,
       callbackHash: digest(callbackToken),
       kind: 'work',
@@ -202,7 +251,7 @@ export function createGateway({
     };
     let admission;
     try {
-      admission = await store.admit(candidate);
+      admission = await store.admit(candidate, !mention);
     } catch {
       console.error(
         JSON.stringify({
@@ -212,6 +261,8 @@ export function createGateway({
       );
       return new Response(null, { status: 503 });
     }
+    if (admission.outcome === 'inactive')
+      return new Response(null, { status: 200 });
     if (admission.outcome === 'duplicate') {
       if (
         admission.run.deadline <= now() &&
@@ -261,13 +312,14 @@ export function createGateway({
           conversationId: run.conversationId,
           generation: run.generation,
           input: {
-            text: payload.text,
+            text: input.text,
             senderId: run.senderId,
             workspaceId: run.workspaceId,
             channelId: run.channelId,
             threadTs: run.threadTs,
             messageTs: run.messageTs,
           },
+          ...(run.session ? { session: run.session } : {}),
           deadline: run.deadline,
           callbackUrl: `${config.origin}/api/worker/callback`,
           callbackToken,
@@ -356,9 +408,27 @@ export function createGateway({
     }
     if (!parsed.success) return new Response(null, { status: 400 });
     const result = parsed.data;
-    if (result.type === 'failed') result.text = WORKER_FAILURE_REPLY;
+    if (result.type === 'failed') {
+      if (result.session) return new Response(null, { status: 400 });
+      result.text = WORKER_FAILURE_REPLY;
+    }
     const run = await authenticate(request, result.runId, result.generation);
     if (run instanceof Response) return run;
+    if (result.type === 'completed') {
+      const expected = run.session;
+      const received = result.session;
+      if (
+        (!received && (expected || config.threadResume)) ||
+        (received &&
+          received.seedRunId !== (expected?.seedRunId ?? run.runId)) ||
+        (received &&
+          expected &&
+          (received.nativeId !== expected.nativeId ||
+            received.adapterId !== expected.adapterId ||
+            received.revision <= expected.revision))
+      )
+        return new Response(null, { status: 409 });
+    }
     let claim;
     try {
       claim = await store.claimPublication(run.runId, result, now());

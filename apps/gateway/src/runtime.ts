@@ -44,6 +44,8 @@ function initialize() {
     workspaceId: required('SLACK_WORKSPACE_ID'),
     channelIds,
     origin: origin.origin,
+    threadResume:
+      worker.kind === 'sandbox' && process.env.SLACK_THREAD_RESUME === '1',
   };
   const redisUrl = new URL(required('REDIS_URL'));
   if (
