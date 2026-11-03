@@ -110,7 +110,7 @@ describe('fake worker HTTP contract', () => {
     const handler = makeWorker(fetchRequest);
 
     const malformed = await handler(request('{broken'));
-    const oversized = await handler(request('x'.repeat(33 * 1024)));
+    const oversized = await handler(request('x'.repeat(129 * 1024)));
 
     expect(malformed.status).toBe(400);
     expect(oversized.status).toBe(413);
@@ -127,6 +127,26 @@ describe('fake worker HTTP contract', () => {
     expect(response.status).toBe(403);
     expect(tasks).toHaveLength(0);
   });
+
+  it.each([
+    ['multibyte', 'あ'.repeat(12_000)],
+    ['JSON-escaped', '\u0000'.repeat(12_000)],
+  ])(
+    'accepts maximum-length %s input within the worker job bound',
+    async (_kind, text) => {
+      const fetchRequest = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(null, { status: 204 }))
+        .mockResolvedValueOnce(new Response(null, { status: 202 }));
+      const tasks: Array<Promise<unknown>> = [];
+      const job = makeJob();
+      job.input.text = text;
+      expect(Buffer.byteLength(JSON.stringify(job))).toBeGreaterThan(32 * 1024);
+      const response = await makeWorker(fetchRequest, tasks)(request(job));
+      expect(response.status).toBe(202);
+      await Promise.all(tasks);
+    },
+  );
 
   it('reuses one result event across bounded retry attempts', async () => {
     const fetchRequest = vi

@@ -39,6 +39,7 @@ export const BUSY_REPLY =
   'This thread has an unfinished run. Your message was not submitted. During this test, start a new mention outside this thread and ask the operator to inspect it.';
 
 const MAX_BODY_BYTES = 32 * 1024;
+const MAX_EVENT_BYTES = 256 * 1024;
 const RUN_DURATION_MS = 60_000;
 
 export function createGateway({
@@ -49,29 +50,24 @@ export function createGateway({
   schedule,
   now = Date.now,
 }: GatewayOptions) {
-  function makeBot() {
-    const slack = createSlackAdapter({
-      botToken: config.botToken,
-      signingSecret: config.signingSecret,
-      logger: new ConsoleLogger('silent'),
-      webClientOptions: {
-        retryConfig: { retries: 0 },
-        rejectRateLimitedCalls: true,
-        timeout: 10_000,
-      },
-    });
-    const bot = new Chat({
-      userName: 'agent',
-      adapters: { slack },
-      state,
-      logger: 'silent',
-      // Application admission already serializes runs and deduplicates input.
-      concurrency: 'concurrent',
-    });
-    return { bot, slack };
-  }
+  const slack = createSlackAdapter({
+    botToken: config.botToken,
+    signingSecret: config.signingSecret,
+    logger: new ConsoleLogger('silent'),
+    webClientOptions: {
+      retryConfig: { retries: 0 },
+      rejectRateLimitedCalls: true,
+      timeout: 10_000,
+    },
+  });
+  const bot = new Chat({
+    userName: 'agent',
+    adapters: { slack },
+    state,
+    logger: 'silent',
+  });
 
-  async function initializeBot(bot: ReturnType<typeof makeBot>['bot']) {
+  async function initializeBot() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -91,8 +87,7 @@ export function createGateway({
   async function publish(run: RunRecord, result: WorkerResult) {
     let messageId: string | undefined;
     try {
-      const { bot, slack } = makeBot();
-      await initializeBot(bot);
+      await initializeBot();
       const threadId = slack.encodeThreadId({
         channel: run.channelId,
         threadTs: run.threadTs,
@@ -101,7 +96,7 @@ export function createGateway({
       if (!message.id)
         throw new Error('Publication did not return a message ID');
       messageId = message.id;
-      if (!(await store.completePublication(run.runId, messageId)))
+      if (!(await store.completePublication(run, messageId)))
         throw new Error('Publication state was not recorded');
       console.info(
         JSON.stringify({ runId: run.runId, phase: 'published', messageId }),
@@ -124,7 +119,7 @@ export function createGateway({
   async function events(request: Request): Promise<Response> {
     if (request.method !== 'POST') return new Response(null, { status: 405 });
     const body = await request.text();
-    if (Buffer.byteLength(body) > MAX_BODY_BYTES)
+    if (Buffer.byteLength(body) > MAX_EVENT_BYTES)
       return new Response(null, { status: 413 });
     try {
       await verifySlackSignature(body, request.headers, {
@@ -173,7 +168,6 @@ export function createGateway({
     )
       return new Response(null, { status: 200 });
 
-    const { bot, slack } = makeBot();
     // The synchronous adapter parser does not fetch users, history, or URLs.
     const message = slack.parseMessage({
       type: 'app_mention',
@@ -198,7 +192,6 @@ export function createGateway({
       threadTs: payload.threadTs,
       messageTs: payload.ts,
       senderId: payload.userId,
-      text: payload.text,
       deadline: now() + RUN_DURATION_MS,
       callbackHash: digest(callbackToken),
       kind: 'work',
@@ -232,57 +225,49 @@ export function createGateway({
     }
 
     const run = admission.run;
-    let handlerRan = false;
-    bot.onNewMention(async () => {
-      handlerRan = true;
-      if (run.kind === 'busy') {
-        const result: WorkerResult = {
-          version: 1,
-          runId: run.runId,
-          generation: 1,
-          eventId: randomUUID(),
-          sequence: 1,
-          type: 'completed',
-          text: BUSY_REPLY,
-        };
-        if (
-          (await store.claimPublication(run.runId, result, now())) === 'claimed'
-        )
-          await publish(run, result);
-        else
-          console.error(
-            JSON.stringify({
-              runId: run.runId,
-              phase: 'busy_reply_unavailable',
-            }),
-          );
-        return;
-      }
-      await dispatch({
-        version: 1,
-        runId: run.runId,
-        conversationId: run.conversationId,
-        generation: run.generation,
-        input: {
-          text: run.text,
-          senderId: run.senderId,
-          workspaceId: run.workspaceId,
-          channelId: run.channelId,
-          threadTs: run.threadTs,
-          messageTs: run.messageTs,
-        },
-        deadline: run.deadline,
-        callbackUrl: `${config.origin}/api/worker/callback`,
-        callbackToken,
-      });
-    });
     schedule(async () => {
       try {
-        await initializeBot(bot);
-        await bot.processMessage(slack, message.threadId, message, {
-          deduplicate: false,
+        if (run.kind === 'busy') {
+          const result: WorkerResult = {
+            version: 1,
+            runId: run.runId,
+            generation: 1,
+            eventId: randomUUID(),
+            sequence: 1,
+            type: 'completed',
+            text: BUSY_REPLY,
+          };
+          if (
+            (await store.claimPublication(run.runId, result, now())) ===
+            'claimed'
+          )
+            await publish(run, result);
+          else
+            console.error(
+              JSON.stringify({
+                runId: run.runId,
+                phase: 'busy_reply_unavailable',
+              }),
+            );
+          return;
+        }
+        await dispatch({
+          version: 1,
+          runId: run.runId,
+          conversationId: run.conversationId,
+          generation: run.generation,
+          input: {
+            text: payload.text,
+            senderId: run.senderId,
+            workspaceId: run.workspaceId,
+            channelId: run.channelId,
+            threadTs: run.threadTs,
+            messageTs: run.messageTs,
+          },
+          deadline: run.deadline,
+          callbackUrl: `${config.origin}/api/worker/callback`,
+          callbackToken,
         });
-        if (!handlerRan) throw new Error('Admitted mention was not handled');
       } catch {
         const stateRecorded = await store
           .failDispatch(run.runId)
@@ -304,13 +289,19 @@ export function createGateway({
     runId: string,
     generation: number,
   ) {
-    const run = await store.getRun(runId);
     const token = request.headers
       .get('authorization')
       ?.match(/^Bearer ([0-9a-f]{64})$/)?.[1];
     if (
-      !run ||
       !token ||
+      !workerResultSchema.shape.runId.safeParse(runId).success ||
+      !Number.isInteger(generation) ||
+      generation < 1
+    )
+      return new Response(null, { status: 401 });
+    const run = await store.getRun(runId);
+    if (
+      !run ||
       !timingSafeEqual(
         Buffer.from(digest(token), 'hex'),
         Buffer.from(run.callbackHash, 'hex'),

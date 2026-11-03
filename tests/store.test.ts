@@ -7,12 +7,12 @@ import { RedisRunStore, type RunRecord } from '../apps/gateway/src/store.js';
 const redisUrl = process.env.TEST_REDIS_URL;
 
 describe.skipIf(!redisUrl)('RedisRunStore', () => {
-  const namespace = `hydra:m1:test:${randomUUID()}`;
+  const namespace = `slack-agent:m1:test:${randomUUID()}`;
   const state = createRedisState({
     url: redisUrl ?? 'redis://127.0.0.1:1',
     keyPrefix: namespace,
   });
-  const store = new RedisRunStore(state, namespace);
+  const store = new RedisRunStore(state.getClient(), namespace);
 
   beforeAll(async () => {
     await state.connect();
@@ -82,9 +82,9 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     expect(await store.claimPublication(run.runId, result, Date.now())).toBe(
       'duplicate',
     );
-    expect(
-      await store.completePublication(run.runId, '1700000002.000003'),
-    ).toBe(true);
+    expect(await store.completePublication(run, '1700000002.000003')).toBe(
+      true,
+    );
 
     const next = await store.admit(
       makeRun({
@@ -175,9 +175,9 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     expect(await store.claimPublication(busy.runId, result, Date.now())).toBe(
       'claimed',
     );
-    expect(
-      await store.completePublication(busy.runId, '1700000008.000009'),
-    ).toBe(true);
+    expect(await store.completePublication(busyRun, '1700000008.000009')).toBe(
+      true,
+    );
     expect(
       (
         await store.admit(
@@ -210,7 +210,6 @@ function makeRun(overrides: Partial<RunRecord> = {}): RunRecord {
     threadTs,
     messageTs: nextTimestamp(),
     senderId: 'U_SYNTHETIC',
-    text: 'synthetic input',
     deadline: Date.now() + 60_000,
     callbackHash: 'b'.repeat(64),
     kind: 'work',

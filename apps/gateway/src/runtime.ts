@@ -5,8 +5,7 @@ import { createClient } from 'redis';
 import { createGateway } from './gateway.js';
 import { RedisRunStore } from './store.js';
 
-let gateway: Promise<ReturnType<typeof createGateway>> | undefined;
-let redisClient: ReturnType<typeof createClient> | undefined;
+let gateway: ReturnType<typeof createGateway> | undefined;
 
 function required(name: string) {
   const value = process.env[name];
@@ -21,7 +20,7 @@ function httpsUrl(name: string) {
   return url;
 }
 
-async function initialize() {
+function initialize() {
   const origin = httpsUrl('GATEWAY_ORIGIN');
   if (origin.pathname !== '/' || origin.search)
     throw new Error('GATEWAY_ORIGIN must be a bare HTTPS origin');
@@ -50,30 +49,20 @@ async function initialize() {
     url: redisUrl.toString(),
     socket: {
       connectTimeout: 1_000,
-      socketTimeout: 1_000,
       reconnectStrategy: false,
     },
-    commandOptions: { timeout: 1_000 },
     disableOfflineQueue: true,
   });
-  redisClient = client;
   client.on('error', () => {});
   const state = createRedisState({
     client,
     keyPrefix: 'slack-agent:chat-sdk',
     logger: new ConsoleLogger('silent'),
   });
-  client.on('end', () => {
-    if (redisClient === client) {
-      redisClient = undefined;
-      gateway = undefined;
-    }
-  });
-  await client.connect();
   return createGateway({
     config,
     state,
-    store: new RedisRunStore(state),
+    store: new RedisRunStore(client),
     dispatch: async (job) => {
       const response = await fetch(workerUrl, {
         method: 'POST',
@@ -105,12 +94,8 @@ async function initialize() {
 
 export async function handle(request: Request, route: 'events' | 'callback') {
   try {
-    if (gateway && redisClient?.isOpen === false) gateway = undefined;
-    gateway ??= initialize().catch((error: unknown) => {
-      gateway = undefined;
-      throw error;
-    });
-    return await (await gateway)[route](request);
+    gateway ??= initialize();
+    return await gateway[route](request);
   } catch {
     console.error(
       JSON.stringify({ phase: route, category: 'gateway_unavailable' }),

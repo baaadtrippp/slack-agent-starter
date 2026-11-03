@@ -27,19 +27,23 @@ Milestone 1 provides partial deterministic evidence for admission, busy input,
 deduplication, callback authentication, and same-thread canned publication. The
 local runs used disposable Redis 8.4 and mocked Slack initialization and message
 posting. The TCP-proxy runtime test also covers a dropped Redis socket and a
-stalled response followed by recovery.
+stalled response followed by recovery. It also covers a stalled cold handshake
+and successful publication when Slack initialization and posting each take
+longer than one second. Invalid credentials are rejected before Redis access;
+run records retain input references rather than the full message text.
 
-**Provider integration:** the exact admission, callback-claim, and completion
-Lua scripts were exercised on the dedicated Upstash database with synthetic
-keys. Delivery and callback duplicates were suppressed, ownership was released,
-and fixture deletion was verified. This used the management REST path. Both
-Vercel packages built successfully. The deployed gateway connected through
+**Earlier provider readiness:** the exact admission, callback-claim, and
+completion Lua scripts were exercised on the dedicated Upstash database with
+synthetic keys. Delivery and callback duplicates were suppressed, ownership was
+released, and fixture deletion was verified. This used the management REST path.
+Both Vercel packages built successfully. The deployed gateway connected through
 `REDIS_URL`, read a synthetic missing-run lookup, and rejected the
 unauthenticated callback with 401. A synthetic, unadmitted job was rejected by
 the separate worker with 403 after its real HTTPS gateway admission check. The
 minimal remote manifest validation passed. Slack URL verification and a live
 mention remain unverified. The fake worker does not demonstrate Pi, Sandbox,
-Drive, or OpenRouter.
+Drive, or OpenRouter. The subsequent simplification and Redis lifetime fixes
+have local evidence; these provider probes were not repeated for that revision.
 
 ## Evidence rules
 

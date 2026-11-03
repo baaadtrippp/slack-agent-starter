@@ -178,6 +178,9 @@ importers:
       '@types/node':
         specifier: 26.6.6
         version: 26.6.6
+      '@vercel/functions':
+        specifier: 3.10.5
+        version: 3.10.5(ws@8.22.1)
       chat:
         specifier: 4.44.0
         version: 4.44.0(zod@4.6.7)
@@ -214,9 +217,6 @@ importers:
       '@chat-adapter/state-redis':
         specifier: 4.44.0
         version: 4.44.0(zod@4.6.7)
-      '@slack-agent-starter/contracts':
-        specifier: workspace:*
-        version: link:../../packages/contracts
       '@vercel/functions':
         specifier: 3.10.5
         version: 3.10.5(ws@8.22.1)

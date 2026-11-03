@@ -41,7 +41,9 @@ service or queue is introduced.
    to a temporary project without gateway credentials. This is test scaffolding
    replaced by Sandbox dispatch in milestone 2. The job contains only its input,
    correlation fields, deadline, callback address, and a run-scoped credential;
-   no reusable gateway secrets.
+   no reusable gateway secrets. Admitted input dispatches directly; SDK
+   subscription routing belongs to the later thread-continuation slice. SDK
+   parsing and posting remain in use.
 3. The fake worker sends a canned result to the gateway callback. The callback
    validates the credential, run, generation, expiry, and transition before
    publishing through the Slack adapter. Repeated callbacks cannot intentionally
@@ -50,7 +52,13 @@ service or queue is introduced.
 4. Keep application coordination in its own Redis namespace. Retain run and
    deduplication records until an explicit retention decision; no expiry
    silently reruns an old message. Temporary locks may expire without clearing a
-   run.
+   run. Store message references, not another copy of the input text. Each Redis
+   operation has a one-second connection/response deadline; idle connections
+   remain open while Slack calls run.
+
+The scaffolding caps signed Slack envelopes at 256 KiB, worker jobs at 128 KiB,
+and callbacks at 32 KiB. The input text contract remains 12,000 characters.
+These protocol bounds do not settle O05's real-agent operating limits.
 
 ## Acceptance checks selected before implementation
 

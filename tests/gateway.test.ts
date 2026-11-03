@@ -71,7 +71,10 @@ function harness(sdkState: StateAdapter = createMockState()) {
   const dispatch = vi
     .fn<(job: WorkerJob) => Promise<void>>()
     .mockResolvedValue();
-  const store = new RedisRunStore(redis, `${namespace}:${randomUUID()}`);
+  const store = new RedisRunStore(
+    redis.getClient(),
+    `${namespace}:${randomUUID()}`,
+  );
   const admit = vi.spyOn(store, 'admit');
   const gateway = createGateway({
     config: {
@@ -220,6 +223,7 @@ describe.skipIf(!redisUrl)(
         state: 'accepted',
         threadTs: body.event.ts,
       });
+      expect(await gateway.store.getRun(run!.runId)).not.toHaveProperty('text');
       expect(gateway.dispatch).not.toHaveBeenCalled();
       await gateway.flush();
       expect(gateway.dispatch).toHaveBeenCalledTimes(1);
@@ -255,6 +259,45 @@ describe.skipIf(!redisUrl)(
       gateway.admit.mockRejectedValueOnce(new Error('Synthetic Redis outage'));
       expect((await gateway.events(signed(envelope()))).status).toBe(503);
       expect(gateway.tasks).toHaveLength(0);
+    });
+
+    it('accepts a multibyte mention whose Slack rich-text envelope exceeds 32 KiB', async () => {
+      const gateway = harness();
+      const body = envelope();
+      const text = `<@UBOT1> ${'あ'.repeat(11_900)}`;
+      const payload = {
+        ...body,
+        event: {
+          ...body.event,
+          text,
+          blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }],
+        },
+      };
+      expect(Buffer.byteLength(JSON.stringify(payload))).toBeGreaterThan(
+        32 * 1024,
+      );
+      expect((await gateway.events(signed(payload))).status).toBe(200);
+      await gateway.flush();
+      expect(gateway.dispatch.mock.calls[0]?.[0].input.text).toBe(text);
+    });
+
+    it('rejects malformed callback credentials and routing fields before reading Redis', async () => {
+      const gateway = harness();
+      const read = vi.spyOn(gateway.store, 'getRun');
+      for (const [runId, generation, bearer] of [
+        [randomUUID(), '1', 'invalid'],
+        ['invalid', '1', 'f'.repeat(64)],
+        [randomUUID(), 'invalid', 'f'.repeat(64)],
+      ]) {
+        const request = new Request(
+          `https://gateway.example/api/worker/callback?runId=${runId}&generation=${generation}`,
+          {
+            headers: { authorization: `Bearer ${bearer}` },
+          },
+        );
+        expect((await gateway.callback(request)).status).toBe(401);
+      }
+      expect(read).not.toHaveBeenCalled();
     });
 
     it('authenticates callbacks and publishes once through Chat SDK to the same thread', async () => {
@@ -440,7 +483,7 @@ describe.skipIf(!redisUrl)(
       });
     });
 
-    it('records dispatch failure if SDK subscription state routes past the mention handler', async () => {
+    it('dispatches an admitted mention independently of unrelated SDK subscription state', async () => {
       const sdkState = createMockState();
       const gateway = harness(sdkState);
       const body = envelope();
@@ -448,9 +491,9 @@ describe.skipIf(!redisUrl)(
       await gateway.events(signed(body));
       await gateway.flush();
       const run = await gateway.run();
-      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
       expect(await gateway.store.getRun(run!.runId)).toMatchObject({
-        state: 'dispatch_failed',
+        state: 'accepted',
       });
     });
 
@@ -461,15 +504,19 @@ describe.skipIf(!redisUrl)(
       );
       const gateway = harness(sdkState);
       await gateway.events(signed(envelope()));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      await gateway.callback(callback(result(job), job.callbackToken));
       vi.useFakeTimers();
       const flushing = gateway.flush();
       await vi.advanceTimersByTimeAsync(15_001);
       vi.useRealTimers();
       await flushing;
       const run = await gateway.run();
-      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+      expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
       expect(await gateway.store.getRun(run!.runId)).toMatchObject({
-        state: 'dispatch_failed',
+        state: 'publication_uncertain',
       });
     });
   },

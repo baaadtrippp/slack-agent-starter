@@ -1,15 +1,14 @@
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   CANNED_REPLY,
   workerJobSchema,
-  workerResultSchema,
 } from '../../../packages/contracts/src/index.js';
 import type {
   WorkerJob,
   WorkerResult,
 } from '../../../packages/contracts/src/index.js';
 
-const MAX_BODY_BYTES = 32 * 1024;
+const MAX_BODY_BYTES = 128 * 1024;
 const MAX_FUTURE_MS = 65_000;
 const ADMISSION_TIMEOUT_MS = 5_000;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -59,7 +58,10 @@ export function createFakeWorker({
       return new Response('Invalid worker job', { status: 400 });
 
     const job = parsed.data;
-    if (!hasBearerToken(request, job.callbackToken)) {
+    // Both values are supplied by this request; the gateway check authenticates the capability.
+    if (
+      request.headers.get('authorization') !== `Bearer ${job.callbackToken}`
+    ) {
       return new Response('Unauthorized', { status: 401 });
     }
     const currentTime = now();
@@ -103,7 +105,7 @@ export function createFakeWorker({
       return new Response('Worker job was not admitted', { status: 403 });
     }
 
-    const result: WorkerResult = workerResultSchema.parse({
+    const result: WorkerResult = {
       version: 1,
       runId: job.runId,
       generation: job.generation,
@@ -111,7 +113,7 @@ export function createFakeWorker({
       sequence: 1,
       type: 'completed',
       text: CANNED_REPLY,
-    });
+    };
 
     try {
       waitUntil(deliverResult(fetchRequest, callbackUrl, job, result));
@@ -146,15 +148,6 @@ async function readBoundedJson(request: Request): Promise<unknown | Response> {
   } catch {
     return new Response('Invalid JSON body', { status: 400 });
   }
-}
-
-function hasBearerToken(request: Request, expected: string): boolean {
-  const header = request.headers.get('authorization');
-  if (!header?.startsWith('Bearer ')) return false;
-
-  const actual = Buffer.from(header.slice('Bearer '.length));
-  const wanted = Buffer.from(expected);
-  return actual.length === wanted.length && timingSafeEqual(actual, wanted);
 }
 
 async function deliverResult(

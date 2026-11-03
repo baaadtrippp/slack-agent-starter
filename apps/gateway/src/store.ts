@@ -1,5 +1,5 @@
-import type { WorkerResult } from '@slack-agent-starter/contracts';
-import type { RedisStateAdapter } from '@chat-adapter/state-redis';
+import type { WorkerResult } from '../../../packages/contracts/src/index.js';
+import type { RedisClientType } from 'redis';
 
 export type RunRecord = {
   runId: string;
@@ -11,7 +11,6 @@ export type RunRecord = {
   threadTs: string;
   messageTs: string;
   senderId: string;
-  text: string;
   deadline: number;
   callbackHash: string;
   kind: 'work' | 'busy';
@@ -36,7 +35,7 @@ export interface RunStore {
     result: WorkerResult,
     now: number,
   ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired'>;
-  completePublication(runId: string, messageId: string): Promise<boolean>;
+  completePublication(run: RunRecord, messageId: string): Promise<boolean>;
   failPublication(runId: string): Promise<boolean>;
   failDispatch(runId: string): Promise<boolean>;
 }
@@ -126,10 +125,45 @@ return 1
 `;
 
 export class RedisRunStore implements RunStore {
+  private connectPromise: Promise<unknown> | undefined;
+
   constructor(
-    private readonly state: RedisStateAdapter,
+    private readonly client: RedisClientType,
     private readonly namespace = 'slack-agent:m1',
   ) {}
+
+  private async execute<T>(
+    operation: (client: RedisClientType) => Promise<T>,
+  ): Promise<T> {
+    const client = this.client;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        if (client.isOpen) client.destroy();
+        reject(new Error('Redis operation timed out'));
+      }, 1_000);
+    });
+    try {
+      return await Promise.race([
+        (async () => {
+          if (!client.isReady) {
+            if (!this.connectPromise) {
+              const connection = client.connect().finally(() => {
+                if (this.connectPromise === connection)
+                  this.connectPromise = undefined;
+              });
+              this.connectPromise = connection;
+            }
+            await this.connectPromise;
+          }
+          return operation(client);
+        })(),
+        timeout,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   private runKey(runId: string): string {
     return `${this.namespace}:run:${runId}`;
@@ -159,22 +193,24 @@ export class RedisRunStore implements RunStore {
     outcome: 'accepted' | 'busy' | 'duplicate';
     run: RunRecord;
   }> {
-    const outcome = await this.state.getClient().eval(ADMIT_SCRIPT, {
-      keys: [
-        this.deliveryKey(candidate.workspaceId, candidate.eventId),
-        this.logicalKey(
-          candidate.workspaceId,
-          candidate.channelId,
-          candidate.messageTs,
-        ),
-        this.ownerKey(
-          candidate.workspaceId,
-          candidate.channelId,
-          candidate.threadTs,
-        ),
-      ],
-      arguments: [`${this.namespace}:run:`, JSON.stringify(candidate)],
-    });
+    const outcome = await this.execute((client) =>
+      client.eval(ADMIT_SCRIPT, {
+        keys: [
+          this.deliveryKey(candidate.workspaceId, candidate.eventId),
+          this.logicalKey(
+            candidate.workspaceId,
+            candidate.channelId,
+            candidate.messageTs,
+          ),
+          this.ownerKey(
+            candidate.workspaceId,
+            candidate.channelId,
+            candidate.threadTs,
+          ),
+        ],
+        arguments: [`${this.namespace}:run:`, JSON.stringify(candidate)],
+      }),
+    );
     if (!Array.isArray(outcome) || outcome.length !== 2) {
       throw new Error('Redis admission returned an invalid result');
     }
@@ -191,7 +227,9 @@ export class RedisRunStore implements RunStore {
   }
 
   async getRun(runId: string): Promise<RunRecord | null> {
-    const encoded = await this.state.getClient().get(this.runKey(runId));
+    const encoded = await this.execute((client) =>
+      client.get(this.runKey(runId)),
+    );
     return encoded === null ? null : (JSON.parse(encoded) as RunRecord);
   }
 
@@ -200,27 +238,29 @@ export class RedisRunStore implements RunStore {
     result: WorkerResult,
     now: number,
   ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired'> {
-    return (await this.state.getClient().eval(CLAIM_SCRIPT, {
-      keys: [this.runKey(runId)],
-      arguments: [runId, JSON.stringify(result), String(now)],
-    })) as 'claimed' | 'duplicate' | 'conflict' | 'expired';
+    return (await this.execute((client) =>
+      client.eval(CLAIM_SCRIPT, {
+        keys: [this.runKey(runId)],
+        arguments: [runId, JSON.stringify(result), String(now)],
+      }),
+    )) as 'claimed' | 'duplicate' | 'conflict' | 'expired';
   }
 
   async completePublication(
-    runId: string,
+    run: RunRecord,
     messageId: string,
   ): Promise<boolean> {
-    const run = await this.getRun(runId);
-    if (run === null) return false;
     return (
       Number(
-        await this.state.getClient().eval(COMPLETE_SCRIPT, {
-          keys: [
-            this.runKey(runId),
-            this.ownerKey(run.workspaceId, run.channelId, run.threadTs),
-          ],
-          arguments: [messageId],
-        }),
+        await this.execute((client) =>
+          client.eval(COMPLETE_SCRIPT, {
+            keys: [
+              this.runKey(run.runId),
+              this.ownerKey(run.workspaceId, run.channelId, run.threadTs),
+            ],
+            arguments: [messageId],
+          }),
+        ),
       ) === 1
     );
   }
@@ -228,10 +268,12 @@ export class RedisRunStore implements RunStore {
   async failPublication(runId: string): Promise<boolean> {
     return (
       Number(
-        await this.state.getClient().eval(FAIL_PUBLICATION_SCRIPT, {
-          keys: [this.runKey(runId)],
-          arguments: [],
-        }),
+        await this.execute((client) =>
+          client.eval(FAIL_PUBLICATION_SCRIPT, {
+            keys: [this.runKey(runId)],
+            arguments: [],
+          }),
+        ),
       ) === 1
     );
   }
@@ -239,10 +281,12 @@ export class RedisRunStore implements RunStore {
   async failDispatch(runId: string): Promise<boolean> {
     return (
       Number(
-        await this.state.getClient().eval(FAIL_DISPATCH_SCRIPT, {
-          keys: [this.runKey(runId)],
-          arguments: [],
-        }),
+        await this.execute((client) =>
+          client.eval(FAIL_DISPATCH_SCRIPT, {
+            keys: [this.runKey(runId)],
+            arguments: [],
+          }),
+        ),
       ) === 1
     );
   }
