@@ -32,18 +32,23 @@ and successful publication when Slack initialization and posting each take
 longer than one second. Invalid credentials are rejected before Redis access;
 run records retain input references rather than the full message text.
 
-**Earlier provider readiness:** the exact admission, callback-claim, and
-completion Lua scripts were exercised on the dedicated Upstash database with
-synthetic keys. Delivery and callback duplicates were suppressed, ownership was
-released, and fixture deletion was verified. This used the management REST path.
-Both Vercel packages built successfully. The deployed gateway connected through
-`REDIS_URL`, read a synthetic missing-run lookup, and rejected the
-unauthenticated callback with 401. A synthetic, unadmitted job was rejected by
-the separate worker with 403 after its real HTTPS gateway admission check. The
-minimal remote manifest validation passed. Slack URL verification and a live
-mention remain unverified. The fake worker does not demonstrate Pi, Sandbox,
-Drive, or OpenRouter. The subsequent simplification and Redis lifetime fixes
-have local evidence; these provider probes were not repeated for that revision.
+**Provider integration and live Slack evidence:** the tested gateway and
+separate fake worker deployments matched all committed source files at the time
+of the test. One authorized mention in the selected public test channel received
+exactly one expected canned reply in its originating thread. A later read more
+than a minute afterward still found exactly one reply. The runtime Redis run and
+message records referred to the same run; the run's published message ID matched
+the Slack reply, and thread ownership was removed after completion. The
+completed run and message records remained without expiration. This demonstrates
+the real Redis read/write/delete path, worker callback, and Chat SDK publication
+for this canned flow. No Slack-generated retry was observed; duplicate coverage
+remains deterministic against disposable Redis, not live Slack retry evidence.
+
+The Slack app's manifest update saved the event endpoint without changing
+scopes, but no native URL challenge outcome was observed, so Slack URL
+verification remains unverified. These results do not demonstrate Pi, model
+access, Sandbox, Drive, or OpenRouter. F01 remains partial; later thread
+continuation and agent runtime acceptance criteria remain unproven.
 
 ## Evidence rules
 
