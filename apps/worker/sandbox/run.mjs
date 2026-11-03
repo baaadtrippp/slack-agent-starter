@@ -10,6 +10,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   createAcpRuntime,
   createAgentRegistry,
@@ -132,6 +133,12 @@ async function run(job, model, key) {
 
 async function deliver(callback, headers, result, deadline) {
   for (let attempt = 0; attempt < 3 && Date.now() < deadline; attempt += 1) {
+    if (attempt > 0) {
+      await delay(
+        Math.min(250 * 2 ** (attempt - 1), Math.max(0, deadline - Date.now())),
+      );
+      if (Date.now() >= deadline) break;
+    }
     try {
       const response = await fetch(callback, {
         method: 'POST',

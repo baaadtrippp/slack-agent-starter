@@ -34,9 +34,11 @@ For this bounded test, the operator prepares one named Sandbox with the Drive
 mounted read/write. The gateway dispatches by name and does not start or resume
 the runtime. The Sandbox firewall injects the dedicated model credential for
 OpenRouter requests. The worker runs a text-only turn with tools disabled and
-writes native state and a result manifest before callback. The gateway uses a
-generic failure reply and records a failed worker result distinctly. The
-existing fake-worker route remains available for Milestone 1 configuration.
+writes native state and a result manifest before a successful callback. If the
+Drive write or flush itself fails, the worker can report a generic failure
+without a durable manifest. The gateway uses a generic failure reply and records
+a failed worker result distinctly. The existing fake-worker route remains
+available for Milestone 1 configuration.
 
 Runtime creation, coordinated idle shutdown, tool-enabled Slack turns and thread
 continuation require later slices. The operator stops the Sandbox after the test
