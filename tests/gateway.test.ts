@@ -653,6 +653,10 @@ describe.skipIf(!redisUrl)(
       expect(
         (await gateway.events(signed(recoveryInput, gateway.clock.now))).status,
       ).toBe(200);
+      await gateway.events(
+        signed(threadReply(original.event.ts), gateway.clock.now),
+      );
+      const delayedBusyReply = gateway.tasks.pop()!;
       expect(stopped).not.toHaveBeenCalled();
       await gateway.flush();
 
@@ -703,6 +707,14 @@ describe.skipIf(!redisUrl)(
         state: 'accepted',
       });
       expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
+
+      await delayedBusyReply();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
+        `slack:CTEST1:${original.event.ts}`,
+        BUSY_REPLY,
+      );
+      expect(stopped).toHaveBeenCalledTimes(1);
+      expect(gateway.dispatch).toHaveBeenCalledTimes(2);
     });
 
     it.each(['unbound', 'unexpired', 'running', 'lookup error'])(

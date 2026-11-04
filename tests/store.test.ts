@@ -264,7 +264,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       makeRun({ threadTs: run.threadTs, messageTs: nextTimestamp() }),
     );
     expect(next.outcome).toBe('accepted');
-    expect(await store.interruptRun(bound!, run.deadline)).toBe(true);
+    expect(await store.interruptRun(bound!, run.deadline)).toBe(false);
     expect(
       (await store.admit(makeRun({ threadTs: run.threadTs }))).run.blockedBy,
     ).toBe(next.run.runId);

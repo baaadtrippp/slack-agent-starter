@@ -15,7 +15,9 @@ This adds partial evidence for F10 and AC08–AC10. O02 remains open.
    stopped session before composing the thread reply. An unavailable or
    inconclusive lookup leaves the thread locked.
 3. Compare the owner, state, deadline, and target again in Redis, then
-   atomically mark the run interrupted and release the thread. Keep event
+   atomically mark the run interrupted and release the thread. A retry can
+   confirm the interruption after a lost Redis reply. If a newer run already
+   owns the thread, retain that owner and give the busy reply. Keep event
    deduplication and any files the worker wrote. Do not dispatch the busy event
    or replay the original input. A fresh mention can start new work.
 4. Use real local Redis with synthetic Slack and provider fixtures to verify

@@ -174,14 +174,15 @@ export function createGateway({
       previous.threadTs !== run.threadTs
     )
       return false;
-    if (previous.state === 'interrupted') return true;
-    if (
-      previous.session ||
-      previous.deadline > now() ||
-      (previous.state !== 'accepted' && previous.state !== 'dispatch_failed')
-    )
-      return false;
-    if (!(await isSandboxStopped(previous.execution))) return false;
+    if (previous.state !== 'interrupted') {
+      if (
+        previous.session ||
+        previous.deadline > now() ||
+        (previous.state !== 'accepted' && previous.state !== 'dispatch_failed')
+      )
+        return false;
+      if (!(await isSandboxStopped(previous.execution))) return false;
+    }
     // The first write may have committed even if Redis did not acknowledge it.
     return store
       .interruptRun(previous, now())

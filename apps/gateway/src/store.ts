@@ -189,8 +189,10 @@ if current.runId ~= old.runId or current.eventId ~= old.eventId or current.gener
 if not current.execution or not old.execution or
    current.execution.sandboxName ~= old.execution.sandboxName or
    current.execution.sessionId ~= old.execution.sessionId then return 0 end
-if current.state == 'interrupted' then return 1 end
-if redis.call('GET', KEYS[2]) ~= current.runId then return 0 end
+local owner = redis.call('GET', KEYS[2])
+-- A retry reports the thread available only while no newer run owns it.
+if current.state == 'interrupted' then return owner and 0 or 1 end
+if owner ~= current.runId then return 0 end
 if current.kind ~= 'work' or
    (current.state ~= 'accepted' and current.state ~= 'dispatch_failed') or
    current.session or current.result or current.deadline > tonumber(ARGV[2]) then return 0 end
