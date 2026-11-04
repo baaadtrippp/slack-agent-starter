@@ -26,9 +26,9 @@ provides partial evidence for AC06 and AC12. The reply is plain Slack text.
    made locally from the original fixture.
 
 This slice uses the existing selected model and authorized channel. The file cap
-applies to the opt-in test configuration while O05 remains open. Public URL
-fetching, generated file uploads, additional input types, and full AC06 and AC12
-acceptance are subsequent work.
+applies to the opt-in test configuration while O05 remains open. The public URL
+check follows below. Generated file uploads, additional input types, and full
+AC06 and AC12 acceptance are subsequent work.
 
 ## Deterministic evidence
 
@@ -89,3 +89,38 @@ adds partial evidence for AC06 and AC12.
 
 HTTP, redirect following, other response types, combining a URL with a CSV,
 search, and generated file uploads are subsequent work.
+
+### URL download and staging tests
+
+The signed gateway tests verified that fetching happens after acknowledgement
+and that the exact fetched bytes reach the worker's staging path. The pinned
+downloader refused IPv4 loopback, IPv6 loopback, IPv4-mapped IPv6 loopback, and
+a name that resolved to a private address. Controlled responses verified
+redirect refusal and the decoded size limit for compressed data. A local Pi
+probe with a model double returned the staged file when the model supplied
+unrelated URL and path fields.
+
+### Sandbox egress probe
+
+The real Sandbox could reach the gateway while a direct fetch of the public
+source was blocked. A TCP connection to a link-local IPv4 address was
+unreachable. The temporary worker allowed the gateway and model hosts and
+explicitly denied private IPv4 subnets. The provider rejected the explicit IPv6
+loopback CIDR entry. IPv6 Sandbox egress remains an open verification item.
+
+### Public URL live Slack evidence
+
+One Slack mention supplied an immutable copy of the earlier CSV milestone note.
+The gateway staged 3,497 bytes on the writable Drive. The staged file matched an
+independent HTTPS download by SHA-256.
+[Public source](https://raw.githubusercontent.com/baaadtrippp/slack-agent-starter/1955b39f5b41c691870becbd4f47d5c07de95005/docs/spec/milestone-9.md)
+
+The real Pi worker made one successful call to `read_url_text`. The model
+supplied an extra URL field. The tool ignored it and returned exactly the
+worker-selected staged file. After the authenticated callback, one reply
+appeared in the originating thread. Its answers about the earlier CSV fixture
+matched the independently read source: 149 bytes, 11,604 cents, and snippet
+mode. A later thread read found the same single reply.
+
+The previous routing was restored and the temporary deployment, worker, Drive,
+and startup seed were removed.

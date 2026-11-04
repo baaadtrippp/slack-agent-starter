@@ -122,7 +122,12 @@ describe('public text URL fetch', () => {
     ).resolves.toMatch(expected);
   });
 
-  it.each(['https://127.0.0.1/fixture.txt', 'https://localhost/fixture.txt'])(
+  it.each([
+    'https://127.0.0.1/fixture.txt',
+    'https://[::1]/fixture.txt',
+    'https://[::ffff:127.0.0.1]/fixture.txt',
+    'https://localhost/fixture.txt',
+  ])(
     'uses the real downloader to reject private destination %s',
     async (value) => {
       useRealDownloader();
