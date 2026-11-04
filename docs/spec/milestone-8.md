@@ -66,3 +66,29 @@ Drive were removed.
 The provider probe used synthetic commands and startup assets. It verifies the
 lifecycle and writable Drive handoff, with Slack routing and result handling
 covered separately by deterministic tests.
+
+## Live Slack evidence
+
+A temporary test deployment ran the merged gateway with automatic idle mode
+enabled. A Slack mention with a synthetic test prompt received one reply from
+the real Pi worker. The gateway fenced the completed session with no active
+reservations. Fresh provider reads then confirmed that exact session stopped and
+the writable Drive detached.
+
+A second mention in the same thread asked for the original synthetic code
+without repeating it. The gateway started one replacement from the clean seed,
+using the same Drive. Pi returned the correct code in the original thread. Both
+Slack replies matched their completed gateway records. The second run used the
+same native Pi session and adapter session, and its saved revision advanced. The
+replacement then stopped and detached the Drive. A delayed thread read showed
+one bot reply for each mention.
+
+An ordinary reply also appeared in the thread. The test observed no gateway
+delivery or admitted run for that reply. The mention-based check establishes
+automatic replacement and saved conversation recall. The provider probe above
+covers Drive file persistence. See the
+[Milestone 3 test](milestone-3.md#live-slack-evidence) for live ordinary-reply
+evidence under its temporary event subscription.
+
+The previous deployment and routing settings were restored, and the temporary
+Vercel deployments, worker, Drive, and startup seed were removed.

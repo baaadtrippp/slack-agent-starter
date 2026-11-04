@@ -103,7 +103,10 @@ dispatch. The
 [automatic lifecycle probe](milestone-8.md#provider-integration-evidence) adds
 **provider integration** evidence for idle stop, reconciliation after a lost
 resume response, and preservation of the writable Drive across a clean
-replacement (AC02, AC03).
+replacement (AC02, AC03). The
+[Milestone 8 Slack test](milestone-8.md#live-slack-evidence) adds **live Slack**
+evidence for automatic idle stop and exact Pi session continuation on one
+replacement after a same-thread mention (AC02, AC03).
 
 ## Evidence rules
 
