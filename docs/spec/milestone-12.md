@@ -31,3 +31,8 @@ worker launch, including when CSV and PDF are also enabled. Download tests
 checked metadata, file and image dimension limits, the PNG header and end
 marker, the Slack host, and authenticated transfer without redirects. Slack
 delivery and Sandbox staging were simulated in these tests.
+
+The exact pinned acpx, pi-acp, and Pi packages also ran a local model-double
+probe with the fixture. The native user record retained one PNG, and the model
+request carried an image with the exact same bytes. The request advertised zero
+tools.

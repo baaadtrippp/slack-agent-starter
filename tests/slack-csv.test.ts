@@ -163,6 +163,7 @@ describe('Slack PNG validation and download', () => {
     vi.stubGlobal('fetch', request);
     for (const files of [
       [file, file],
+      [{ ...file, name: 'fixture.jpg' }],
       [{ ...file, mode: 'external' }],
       [{ ...file, mode: 'snippet' }],
       [{ ...file, is_external: true }],
