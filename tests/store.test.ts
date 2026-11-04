@@ -1,8 +1,15 @@
 import { createRedisState } from '@chat-adapter/state-redis';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { WorkerResult } from '../packages/contracts/src/index.js';
-import { RedisRunStore, type RunRecord } from '../apps/gateway/src/store.js';
+import type {
+  WorkerJob,
+  WorkerResult,
+} from '../packages/contracts/src/index.js';
+import {
+  RedisRunStore,
+  type RunRecord,
+  type SandboxTarget,
+} from '../apps/gateway/src/store.js';
 
 const redisUrl = process.env.TEST_REDIS_URL;
 
@@ -69,6 +76,38 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     const busy = outcomes.find(({ outcome }) => outcome === 'busy');
     expect(owner?.run.kind).toBe('work');
     expect(busy?.run.kind).toBe('busy');
+    expect(busy?.run.blockedBy).toBe(owner?.run.runId);
+  });
+
+  it('binds exactly one dispatch target only to the accepted thread owner', async () => {
+    const run = makeRun();
+    await store.admit(run);
+    const targets: SandboxTarget[] = [
+      { sandboxName: 'synthetic-a', sessionId: randomUUID() },
+      { sandboxName: 'synthetic-b', sessionId: randomUUID() },
+    ];
+    const bound = await Promise.all(
+      targets.map((target) => store.recordDispatchTarget(makeJob(run), target)),
+    );
+    expect(bound.sort()).toEqual([false, true]);
+
+    const saved = await store.getRun(run.runId);
+    expect(targets).toContainEqual(saved?.execution);
+    expect(
+      await store.recordDispatchTarget(makeJob(run), {
+        sandboxName: 'synthetic-c',
+        sessionId: randomUUID(),
+      }),
+    ).toBe(false);
+
+    const busy = makeRun({
+      threadTs: run.threadTs,
+      messageTs: nextTimestamp(),
+    });
+    expect((await store.admit(busy)).outcome).toBe('busy');
+    expect(await store.recordDispatchTarget(makeJob(busy), targets[0]!)).toBe(
+      false,
+    );
   });
 
   it('claims a callback once and releases only its own thread lease on completion', async () => {
@@ -189,6 +228,126 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       ).outcome,
     ).toBe('busy');
   });
+
+  it('interrupts only an expired bound owner and preserves its evidence', async () => {
+    const run = makeRun();
+    const target = {
+      sandboxName: 'synthetic-interrupted',
+      sessionId: randomUUID(),
+    };
+    await store.admit(run);
+    expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(true);
+    const bound = await store.getRun(run.runId);
+    expect(bound).not.toBeNull();
+    expect(await store.interruptRun(bound!, run.deadline - 1)).toBe(false);
+    const interrupted = await Promise.all([
+      store.interruptRun(bound!, run.deadline),
+      store.interruptRun(bound!, run.deadline),
+    ]);
+    expect(interrupted).toEqual([true, true]);
+    expect(
+      await store.claimPublication(
+        run.runId,
+        makeResult(run),
+        run.deadline - 1,
+      ),
+    ).toBe('conflict');
+    expect(await store.getRun(run.runId)).toMatchObject({
+      state: 'interrupted',
+      execution: target,
+    });
+
+    const duplicate = await store.admit(run);
+    expect(duplicate.outcome).toBe('duplicate');
+    expect(duplicate.run.state).toBe('interrupted');
+    const next = await store.admit(
+      makeRun({ threadTs: run.threadTs, messageTs: nextTimestamp() }),
+    );
+    expect(next.outcome).toBe('accepted');
+    expect(await store.interruptRun(bound!, run.deadline)).toBe(true);
+    expect(
+      (await store.admit(makeRun({ threadTs: run.threadTs }))).run.blockedBy,
+    ).toBe(next.run.runId);
+  });
+
+  it('does not interrupt an unbound, changed, native, or no-longer-owned run', async () => {
+    const unbound = makeRun();
+    await store.admit(unbound);
+    expect(await store.interruptRun(unbound, unbound.deadline)).toBe(false);
+
+    const changed = makeRun();
+    await store.admit(changed);
+    const target = {
+      sandboxName: 'synthetic-current',
+      sessionId: randomUUID(),
+    };
+    await store.recordDispatchTarget(makeJob(changed), target);
+    const bound = (await store.getRun(changed.runId))!;
+    expect(
+      await store.interruptRun(
+        {
+          ...bound,
+          execution: { ...target, sessionId: randomUUID() },
+        },
+        changed.deadline,
+      ),
+    ).toBe(false);
+
+    const native = makeRun({
+      session: {
+        seedRunId: randomUUID(),
+        nativeId: randomUUID(),
+        adapterId: randomUUID(),
+        revision: 3,
+      },
+    });
+    await store.admit(native);
+    await store.recordDispatchTarget(makeJob(native), target);
+    expect(
+      await store.interruptRun(
+        (await store.getRun(native.runId))!,
+        native.deadline,
+      ),
+    ).toBe(false);
+
+    const withResult = makeRun();
+    await store.admit(withResult);
+    await store.recordDispatchTarget(makeJob(withResult), target);
+    expect(
+      await store.claimPublication(
+        withResult.runId,
+        makeResult(withResult),
+        withResult.deadline - 1,
+      ),
+    ).toBe('claimed');
+    expect(
+      await store.interruptRun(
+        (await store.getRun(withResult.runId))!,
+        withResult.deadline,
+      ),
+    ).toBe(false);
+
+    const noLongerOwned = makeRun();
+    await store.admit(noLongerOwned);
+    await store.recordDispatchTarget(makeJob(noLongerOwned), target);
+    const stale = (await store.getRun(noLongerOwned.runId))!;
+    const replacementOwner = randomUUID();
+    const ownerKey = `${namespace}:owner:${noLongerOwned.workspaceId}:${noLongerOwned.channelId}:${noLongerOwned.threadTs}`;
+    await state.getClient().set(ownerKey, replacementOwner);
+    expect(await store.interruptRun(stale, noLongerOwned.deadline)).toBe(false);
+    expect(await state.getClient().get(ownerKey)).toBe(replacementOwner);
+
+    const failedDispatch = makeRun();
+    await store.admit(failedDispatch);
+    await store.recordDispatchTarget(makeJob(failedDispatch), target);
+    expect(await store.failDispatch(failedDispatch.runId)).toBe(true);
+    expect(
+      await store.interruptRun(
+        (await store.getRun(failedDispatch.runId))!,
+        failedDispatch.deadline,
+      ),
+    ).toBe(true);
+  });
 });
 
 let timestampCounter = 0;
@@ -227,5 +386,26 @@ function makeResult(run: RunRecord): WorkerResult {
     sequence: 1,
     type: 'completed',
     text: 'Synthetic canned reply.',
+  };
+}
+
+function makeJob(run: RunRecord): WorkerJob {
+  return {
+    version: 1,
+    runId: run.runId,
+    conversationId: run.conversationId,
+    generation: run.generation,
+    input: {
+      text: 'Synthetic store test.',
+      senderId: run.senderId,
+      workspaceId: run.workspaceId,
+      channelId: run.channelId,
+      threadTs: run.threadTs,
+      messageTs: run.messageTs,
+    },
+    session: run.session,
+    deadline: run.deadline,
+    callbackUrl: 'https://gateway.example/api/worker/callback',
+    callbackToken: 'c'.repeat(64),
   };
 }

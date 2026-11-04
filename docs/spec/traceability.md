@@ -73,6 +73,10 @@ verified a question published as normal completed text, worker exit before the
 human reply, independent work in another thread, and an ordinary answer
 reopening the exact native session after Sandbox replacement (F08, AC05).
 
+The [Milestone 5 recovery tests](milestone-5.md#deterministic-evidence) add
+**deterministic** evidence for safe first-turn interruption, explicit retry, and
+rejection of late callbacks (F10, AC08–AC10).
+
 ## Evidence rules
 
 For each slice, link evidence and label it as one of:

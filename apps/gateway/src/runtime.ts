@@ -5,6 +5,7 @@ import { ConsoleLogger } from 'chat';
 import { createClient } from 'redis';
 import { createGateway } from './gateway.js';
 import { RedisRunStore } from './store.js';
+import type { SandboxTarget } from './store.js';
 
 let gateway: ReturnType<typeof createGateway> | undefined;
 
@@ -19,6 +20,20 @@ function httpsUrl(name: string) {
   if (url.protocol !== 'https:' || url.username || url.password || url.hash)
     throw new Error(`Invalid configuration: ${name}`);
   return url;
+}
+
+async function isSandboxStopped(target: SandboxTarget) {
+  const signal = AbortSignal.timeout(5_000);
+  const sandbox = await Sandbox.get({
+    name: target.sandboxName,
+    resume: false,
+    signal,
+  });
+  const sessions = await sandbox.listSessions({ signal });
+  for await (const session of sessions) {
+    if (session.id === target.sessionId) return session.status === 'stopped';
+  }
+  return false;
 }
 
 function initialize() {
@@ -69,22 +84,33 @@ function initialize() {
     keyPrefix: 'slack-agent:chat-sdk',
     logger: new ConsoleLogger('silent'),
   });
+  const store = new RedisRunStore(client);
   return createGateway({
     config,
     state,
-    store: new RedisRunStore(client),
+    store,
+    ...(worker.kind === 'sandbox' ? { isSandboxStopped } : {}),
     dispatch: async (job) => {
       if (worker.kind === 'sandbox') {
         const signal = AbortSignal.timeout(15_000);
         const sandbox = await Sandbox.get({
           name: worker.sandboxName,
+          resume: false,
           signal,
         });
-        if (sandbox.status !== 'running')
+        const session = sandbox.currentSession();
+        if (session.status !== 'running')
           throw new Error('Worker Sandbox is not running');
+        if (
+          !(await store.recordDispatchTarget(job, {
+            sandboxName: worker.sandboxName,
+            sessionId: session.sessionId,
+          }))
+        )
+          throw new Error('Worker Sandbox target was not recorded');
         const timeoutMs = job.deadline - Date.now();
         if (timeoutMs <= 0) throw new Error('Worker deadline expired');
-        await sandbox.runCommand({
+        await session.runCommand({
           cmd: 'node',
           args: ['/tmp/hydra-worker/run.mjs'],
           cwd: '/tmp/hydra-worker',
