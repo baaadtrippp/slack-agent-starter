@@ -13,18 +13,23 @@ const file = {
 describe('Slack CSV validation and download', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('downloads exact bytes only from the Slack file origin', async () => {
-    const request = vi.fn().mockResolvedValue(new Response(csv));
-    vi.stubGlobal('fetch', request);
-    expect(await downloadSlackCsv([file], 'synthetic-token')).toEqual(csv);
-    expect(request).toHaveBeenCalledWith(
-      new URL(file.url_private),
-      expect.objectContaining({
-        headers: { authorization: 'Bearer synthetic-token' },
-        redirect: 'error',
-      }),
-    );
-  });
+  it.each(['hosted', 'snippet'])(
+    'downloads exact bytes for a Slack %s file',
+    async (mode) => {
+      const request = vi.fn().mockResolvedValue(new Response(csv));
+      vi.stubGlobal('fetch', request);
+      expect(
+        await downloadSlackCsv([{ ...file, mode }], 'synthetic-token'),
+      ).toEqual(csv);
+      expect(request).toHaveBeenCalledWith(
+        new URL(file.url_private),
+        expect.objectContaining({
+          headers: { authorization: 'Bearer synthetic-token' },
+          redirect: 'error',
+        }),
+      );
+    },
+  );
 
   it('rejects external, unsupported, multiple and oversized files before download', async () => {
     const request = vi.fn();

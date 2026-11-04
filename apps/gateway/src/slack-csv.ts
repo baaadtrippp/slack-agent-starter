@@ -8,7 +8,7 @@ const oversized =
   'The CSV exceeds the 16 KiB limit for this test. Attach a smaller file.';
 
 const csvMetadata = z.looseObject({
-  mode: z.literal('hosted'),
+  mode: z.enum(['hosted', 'snippet']),
   is_external: z.literal(false).optional(),
   name: z.string().regex(/\.csv$/i),
   mimetype: z.enum([
