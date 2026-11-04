@@ -83,6 +83,13 @@ local model fixture, and confirmation of the exact stopped Sandbox session. The
 Slack** evidence for the recovery reply and fresh mention after replacement with
 a synthetic worker result.
 
+The [Milestone 6 WSL probe](milestone-6.md#deterministic-evidence) adds
+**deterministic** evidence for isolated Pi timeout and shutdown. The
+[deployed worker probe](milestone-6.md#provider-integration-evidence) adds
+**provider integration** evidence that one timed-out worker can finish cleanup
+and deliver a failure while another worker continues in the same Sandbox (AC09,
+AC10).
+
 ## Evidence rules
 
 For each slice, link evidence and label it as one of:
