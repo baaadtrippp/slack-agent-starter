@@ -5,15 +5,17 @@ import { createRedisState } from '@chat-adapter/state-redis';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { WorkerJob } from '../packages/contracts/src/index.js';
 
-const { background, sandboxGet } = vi.hoisted(() => ({
+const { background, sandboxGet, driveGet } = vi.hoisted(() => ({
   background: [] as Promise<unknown>[],
   sandboxGet: vi.fn(),
+  driveGet: vi.fn(),
 }));
 vi.mock('@vercel/functions', () => ({
   waitUntil: (task: Promise<unknown>) => background.push(task),
 }));
 vi.mock('../apps/gateway/node_modules/@vercel/sandbox/dist/index.js', () => ({
   Sandbox: { get: sandboxGet },
+  Drive: { get: driveGet },
 }));
 
 const redisUrl = process.env.TEST_REDIS_URL;
@@ -206,6 +208,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
 
   const sandboxDispatchConditions = [
     'running',
+    'managed idle',
     'stopped',
     'unrecordable',
     'stopping',
@@ -229,6 +232,20 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       const store = new RedisRunStore(observer.getClient());
       const operationId = randomUUID();
       const startResponseLost = condition === 'start response lost';
+      const managed = condition === 'managed idle';
+      const hasResult = condition === 'running' || managed;
+      const driveName = 'synthetic-drive';
+      const seedId = 'synthetic-seed';
+      if (managed) {
+        vi.stubEnv('SANDBOX_MANAGED_DRIVE', driveName);
+        vi.stubEnv('SANDBOX_MANAGED_SEED', seedId);
+        driveGet.mockResolvedValue({
+          name: driveName,
+          driveId: 'synthetic-drive-id',
+          currentSessionId: sessionId,
+          currentSandboxName: target.sandboxName,
+        });
+      }
       expect(await store.enrollIdleSession(target)).toBe(true);
       if (condition === 'stopping')
         expect(await store.claimIdleStop(target, operationId)).toBe('claimed');
@@ -236,7 +253,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       let job: WorkerJob;
       const commandWait = vi.fn().mockImplementation(async () => {
         expect(await store.claimIdleStop(target, operationId)).toBe('active');
-        if (condition === 'running')
+        if (hasResult)
           expect(
             await store.claimPublication(
               job.runId,
@@ -265,12 +282,22 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         return { wait: commandWait };
       });
       const sandboxRunCommand = vi.fn();
+      const sessionStop = vi.fn().mockResolvedValue(undefined);
+      const readiness = vi.fn().mockResolvedValue({ exitCode: 0 });
       sandboxGet.mockResolvedValue({
         runCommand: sandboxRunCommand,
+        persistent: false,
+        currentSnapshotId: seedId,
+        mounts: { '/workspace': { mode: 'read-write', drive: driveName } },
         currentSession: () => ({
           status: condition === 'stopped' ? 'stopped' : 'running',
           sessionId,
-          runCommand: sessionRunCommand,
+          sourceSnapshotId: seedId,
+          runCommand: (command: { cmd: string }) =>
+            command.cmd === 'bash'
+              ? readiness(command)
+              : sessionRunCommand(command),
+          stop: sessionStop,
         }),
       });
       if (condition === 'unrecordable')
@@ -310,7 +337,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         });
         expect(sandboxRunCommand).not.toHaveBeenCalled();
         if (
-          condition === 'running' ||
+          hasResult ||
           condition === 'uncertain exit' ||
           condition === 'result missing' ||
           startResponseLost
@@ -318,7 +345,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           expect(JSON.parse(encoded!)).toMatchObject({
             state: startResponseLost
               ? 'dispatch_failed'
-              : condition === 'running'
+              : hasResult
                 ? 'publishing'
                 : 'accepted',
             execution: target,
@@ -330,7 +357,11 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           expect(sessionRunCommand).toHaveBeenCalledTimes(1);
           expect(commandWait).toHaveBeenCalledTimes(startResponseLost ? 0 : 1);
           expect(await store.claimIdleStop(target, operationId)).toBe(
-            condition === 'running' ? 'claimed' : 'active',
+            managed
+              ? 'stopping'
+              : condition === 'running'
+                ? 'claimed'
+                : 'active',
           );
         } else {
           expect(JSON.parse(encoded!)).toMatchObject({
@@ -342,10 +373,16 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           expect(JSON.parse(encoded!)).not.toHaveProperty('execution');
           expect(sessionRunCommand).not.toHaveBeenCalled();
         }
+        expect(readiness).toHaveBeenCalledTimes(managed ? 1 : 0);
+        expect(sessionStop).toHaveBeenCalledTimes(managed ? 1 : 0);
       } finally {
         await cleanupRuntimeRun(observer, event, runId);
         const key = `slack-agent:m1:idle:synthetic-worker:${sessionId}`;
         await observer.getClient().del([key + ':gate', key + ':active']);
+        if (managed)
+          await observer
+            .getClient()
+            .del('slack-agent:m1:runtime:synthetic-worker:managed');
         await observer.disconnect();
         vi.restoreAllMocks();
       }
@@ -370,8 +407,11 @@ async function retryUntil<T>(action: () => Promise<T | null>): Promise<T> {
 function configureRuntime(sandboxName?: string) {
   background.splice(0);
   sandboxGet.mockReset();
+  driveGet.mockReset();
   vi.stubEnv('GATEWAY_ORIGIN', 'https://gateway.example');
   vi.stubEnv('SANDBOX_WORKER_NAME', sandboxName ?? '');
+  vi.stubEnv('SANDBOX_MANAGED_DRIVE', '');
+  vi.stubEnv('SANDBOX_MANAGED_SEED', '');
   if (sandboxName) vi.stubEnv('OPENROUTER_MODEL', 'synthetic/model');
   else vi.stubEnv('FAKE_WORKER_URL', 'https://worker.example/api/fake');
   vi.stubEnv('SLACK_ENABLED_CHANNEL_IDS', 'CTEST1');

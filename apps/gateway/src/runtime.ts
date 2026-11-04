@@ -4,6 +4,7 @@ import { Sandbox } from '@vercel/sandbox';
 import { ConsoleLogger } from 'chat';
 import { createClient } from 'redis';
 import { createGateway } from './gateway.js';
+import { createManagedWorker } from './managed-worker.js';
 import { RedisRunStore } from './store.js';
 import type { SandboxTarget } from './store.js';
 
@@ -48,6 +49,15 @@ function initialize() {
         model: required('OPENROUTER_MODEL'),
       }
     : { kind: 'fake' as const, url: httpsUrl('FAKE_WORKER_URL') };
+  const managedDrive = process.env.SANDBOX_MANAGED_DRIVE;
+  const managedSeed = process.env.SANDBOX_MANAGED_SEED;
+  if (
+    (managedDrive || managedSeed) &&
+    (!sandboxName || !managedDrive || !managedSeed)
+  )
+    throw new Error(
+      'Managed worker requires a Sandbox name, Drive, and startup seed',
+    );
   const channelIds = required('SLACK_ENABLED_CHANNEL_IDS')
     .split(',')
     .map((id) => id.trim());
@@ -85,6 +95,13 @@ function initialize() {
     logger: new ConsoleLogger('silent'),
   });
   const store = new RedisRunStore(client);
+  const managed =
+    sandboxName && managedDrive && managedSeed
+      ? createManagedWorker(
+          { sandboxName, driveName: managedDrive, seedId: managedSeed },
+          store,
+        )
+      : undefined;
   return createGateway({
     config,
     state,
@@ -92,20 +109,37 @@ function initialize() {
     ...(worker.kind === 'sandbox' ? { isSandboxStopped } : {}),
     dispatch: async (job) => {
       if (worker.kind === 'sandbox') {
-        const session = await Sandbox.get({
-          name: worker.sandboxName,
-          resume: false,
-          signal: AbortSignal.timeout(15_000),
-        })
-          .then((sandbox) => sandbox.currentSession())
-          .catch(() => undefined);
+        const session = await (
+          managed
+            ? managed.getSession(job.deadline)
+            : Sandbox.get({
+                name: worker.sandboxName,
+                resume: false,
+                signal: AbortSignal.timeout(15_000),
+              }).then((sandbox) => sandbox.currentSession())
+        ).catch(() => undefined);
         if (session?.status !== 'running') return 'worker-unavailable';
         const target = {
           sandboxName: worker.sandboxName,
           sessionId: session.sessionId,
         };
-        const reservation = await store.recordDispatchTarget(job, target);
-        if (reservation === 'stopping') return 'worker-unavailable';
+        const stopIfIdle = () =>
+          managed?.stopIfIdle(session).catch(() => {
+            console.error(
+              JSON.stringify({
+                runId: job.runId,
+                phase: 'idle_stop_unconfirmed',
+              }),
+            );
+          });
+        const reservation = await store.recordDispatchTarget(
+          job,
+          target,
+          Boolean(managed),
+        );
+        if (reservation === 'stopping') await stopIfIdle();
+        if (reservation === 'stopping' || reservation === 'unavailable')
+          return 'worker-unavailable';
         if (reservation !== 'recorded')
           throw new Error('Worker Sandbox target was not recorded');
         const releaseReservation = () =>
@@ -142,6 +176,7 @@ function initialize() {
             !(await releaseReservation())
           )
             throw new Error('Worker exit was not recorded');
+          await stopIfIdle();
         } catch {
           console.error(
             JSON.stringify({
