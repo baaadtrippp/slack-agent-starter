@@ -66,3 +66,26 @@ data row. A later read found the same single reply.
 
 The previous gateway routing was restored and the temporary resources were
 removed.
+
+## Public URL tracer
+
+An internal tester mentions Hydra with one link to a small public plain-text
+resource. Hydra reads that resource and returns a result in the originating
+thread that can be checked against the source. This advances F05 and F12 and
+adds partial evidence for AC06 and AC12.
+
+1. Enable the opt-in URL check for the authorized test channel. Use one direct
+   HTTPS link, an 8-second fetch deadline, and a 16 KiB decoded body limit while
+   the broader operating limits remain open under O05.
+2. The gateway uses the signed mention's link, a DNS-pinned downloader, and
+   public destination checks. This tracer rejects redirects, credentials in
+   URLs, non-default HTTPS ports, and responses other than UTF-8 plain text.
+   Fetching happens after Slack acknowledgement.
+3. Stage the downloaded bytes on the thread's Drive. Give Pi one tool for those
+   bytes. Keep the Sandbox's existing callback and model egress rules.
+4. Check refusal and download bounds locally. In the live test, compare the
+   staged bytes with an independent download, verify the native Pi tool result,
+   and check the same-thread answer against the source.
+
+HTTP, redirect following, other response types, combining a URL with a CSV,
+search, and generated file uploads are subsequent work.

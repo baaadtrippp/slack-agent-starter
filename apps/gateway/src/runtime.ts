@@ -72,6 +72,8 @@ function initialize() {
     threadResume:
       worker.kind === 'sandbox' && process.env.SLACK_THREAD_RESUME === '1',
     csvInput: worker.kind === 'sandbox' && process.env.SLACK_CSV_INPUT === '1',
+    publicUrlInput:
+      worker.kind === 'sandbox' && process.env.SLACK_PUBLIC_URL_INPUT === '1',
   };
   const redisUrl = new URL(required('REDIS_URL'));
   if (
@@ -108,7 +110,7 @@ function initialize() {
     state,
     store,
     ...(worker.kind === 'sandbox' ? { isSandboxStopped } : {}),
-    dispatch: async (job, csv) => {
+    dispatch: async (job, stagedInput) => {
       if (worker.kind === 'sandbox') {
         const session = await (
           managed
@@ -149,7 +151,7 @@ function initialize() {
             .catch(() =>
               store.releaseDispatchTarget(job.runId, target, unsubmitted),
             );
-        if (csv) {
+        if (stagedInput) {
           try {
             const stageTimeout = Math.min(10_000, job.deadline - Date.now());
             if (stageTimeout <= 0) throw new Error('Worker deadline expired');
@@ -157,13 +159,8 @@ function initialize() {
             await session.writeFiles(
               [
                 {
-                  path:
-                    '/workspace/inputs/' +
-                    seed +
-                    '/' +
-                    job.runId +
-                    '/input.csv',
-                  content: csv,
+                  path: `/workspace/inputs/${seed}/${job.runId}/${job.input.publicUrl ? 'source.txt' : 'input.csv'}`,
+                  content: stagedInput,
                   mode: 0o600,
                 },
               ],
@@ -172,22 +169,22 @@ function initialize() {
             console.info(
               JSON.stringify({
                 runId: job.runId,
-                phase: 'csv_staged',
-                bytes: csv.length,
+                phase: job.input.publicUrl ? 'public_url_staged' : 'csv_staged',
+                bytes: stagedInput.length,
               }),
             );
           } catch {
             await releaseReservation(true);
             await stopIfIdle();
-            return 'csv-staging-failed';
+            return 'input-staging-failed';
           }
         }
         const timeoutMs = job.deadline - Date.now();
         if (timeoutMs <= 0) {
-          await releaseReservation(Boolean(csv));
-          if (csv) {
+          await releaseReservation(Boolean(stagedInput));
+          if (stagedInput) {
             await stopIfIdle();
-            return 'csv-staging-failed';
+            return 'input-staging-failed';
           }
           throw new Error('Worker deadline expired');
         }

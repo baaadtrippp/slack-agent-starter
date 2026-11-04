@@ -28,8 +28,10 @@ export const workerJobSchema = z
         threadTs: slackTimestamp,
         messageTs: slackTimestamp,
         csv: z.literal(true).optional(),
+        publicUrl: z.literal(true).optional(),
       })
-      .strict(),
+      .strict()
+      .refine((input) => !(input.csv && input.publicUrl)),
     session: workerSessionSchema.optional(),
     deadline: z.number().int().positive(),
     callbackUrl: z.url().startsWith('https://'),

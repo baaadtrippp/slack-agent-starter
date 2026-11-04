@@ -5,11 +5,14 @@ import { createRedisState } from '@chat-adapter/state-redis';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { WorkerJob } from '../packages/contracts/src/index.js';
 
-const { background, sandboxGet, driveGet } = vi.hoisted(() => ({
-  background: [] as Promise<unknown>[],
-  sandboxGet: vi.fn(),
-  driveGet: vi.fn(),
-}));
+const { background, sandboxGet, driveGet, fetchPublicText } = vi.hoisted(
+  () => ({
+    background: [] as Promise<unknown>[],
+    sandboxGet: vi.fn(),
+    driveGet: vi.fn(),
+    fetchPublicText: vi.fn(),
+  }),
+);
 vi.mock('@vercel/functions', () => ({
   waitUntil: (task: Promise<unknown>) => background.push(task),
 }));
@@ -17,6 +20,8 @@ vi.mock('../apps/gateway/node_modules/@vercel/sandbox/dist/index.js', () => ({
   Sandbox: { get: sandboxGet },
   Drive: { get: driveGet },
 }));
+
+vi.mock('../apps/gateway/src/public-url.js', () => ({ fetchPublicText }));
 
 const redisUrl = process.env.TEST_REDIS_URL;
 
@@ -389,15 +394,29 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
     },
   );
 
-  it.each(['staged', 'write failed', 'expired during staging'] as const)(
-    'handles a %s CSV before Sandbox worker launch',
+  const stagingOutcomes = [
+    'staged CSV',
+    'staged URL',
+    'write failed',
+    'expired during staging',
+  ] as const;
+
+  it.each(stagingOutcomes)(
+    'handles %s before Sandbox worker launch',
     async (outcome) => {
       configureRuntime('synthetic-worker');
-      vi.stubEnv('SLACK_CSV_INPUT', '1');
-      const csv = 'region,amount\nNorth,12\nSouth,18\n';
+      const url = 'https://example.com/source.txt';
+      const isUrl = outcome === 'staged URL';
+      const isStaged = outcome === 'staged CSV' || isUrl;
+      const content = isUrl
+        ? 'Synthetic text source.\n'
+        : 'region,amount\nNorth,12\nSouth,18\n';
+      vi.stubEnv('SLACK_PUBLIC_URL_INPUT', isUrl ? '1' : '0');
+      vi.stubEnv('SLACK_CSV_INPUT', isUrl ? '0' : '1');
+      fetchPublicText.mockResolvedValue(Buffer.from(content));
       const download = vi
         .fn<typeof fetch>()
-        .mockResolvedValue(new Response(csv));
+        .mockResolvedValue(new Response(content));
       vi.stubGlobal('fetch', download);
       const observer = createRedisState({ url: redisUrl! });
       await observer.connect();
@@ -436,16 +455,22 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           threadId,
           raw: {},
         }));
-      const event = runtimeEvent({
-        files: [syntheticCsvFile(Buffer.byteLength(csv))],
-        ...(outcome === 'staged' ? { subtype: 'file_share' } : {}),
-      });
+      const event = runtimeEvent(
+        isUrl
+          ? { text: `<@UBOT1> Read <${url}|the source>.` }
+          : {
+              files: [syntheticCsvFile(Buffer.byteLength(content))],
+              ...(isStaged ? { subtype: 'file_share' } : {}),
+            },
+      );
       let runId: string | undefined;
       try {
         expect(await store.enrollIdleSession(target)).toBe(true);
         const { handle } = await import('../apps/gateway/src/runtime.js');
         expect((await handle(event.request, 'events')).status).toBe(200);
+        expect(fetchPublicText).not.toHaveBeenCalled();
         await drainBackground();
+        if (isUrl) expect(fetchPublicText).toHaveBeenCalledExactlyOnceWith(url);
         runId =
           (await observer
             .getClient()
@@ -454,17 +479,17 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         expect(writeFiles).toHaveBeenCalledExactlyOnceWith(
           [
             {
-              path: `/workspace/inputs/${runId}/${runId}/input.csv`,
-              content: Buffer.from(csv),
+              path: `/workspace/inputs/${runId}/${runId}/${isUrl ? 'source.txt' : 'input.csv'}`,
+              content: Buffer.from(content),
               mode: 0o600,
             },
           ],
           { signal: expect.anything() },
         );
-        if (outcome === 'staged') {
+        if (isStaged) {
           expect(runCommand).toHaveBeenCalledTimes(1);
           expect(stagedBeforeLaunch).toBe(true);
-          expect(job?.input.csv).toBe(true);
+          expect(job?.input[isUrl ? 'publicUrl' : 'csv']).toBe(true);
           expect(postMessage).not.toHaveBeenCalled();
         } else {
           expect(runCommand).not.toHaveBeenCalled();
@@ -522,7 +547,11 @@ function configureRuntime(sandboxName?: string) {
   vi.resetModules();
 }
 
-function runtimeEvent(options?: { files?: unknown[]; subtype?: string }) {
+function runtimeEvent(options?: {
+  files?: unknown[];
+  subtype?: string;
+  text?: string;
+}) {
   const ts = `${Math.floor(Date.now() / 1_000)}.${String(
     Math.floor(Math.random() * 1_000_000),
   ).padStart(6, '0')}`;
@@ -536,7 +565,7 @@ function runtimeEvent(options?: { files?: unknown[]; subtype?: string }) {
       type: 'app_mention',
       user: 'UTEST1',
       channel: 'CTEST1',
-      text: '<@UBOT1> Synthetic Sandbox dispatch test',
+      text: options?.text ?? '<@UBOT1> Synthetic Sandbox dispatch test',
       ts,
       ...(options?.files ? { files: options.files } : {}),
       ...(options?.subtype ? { subtype: options.subtype } : {}),

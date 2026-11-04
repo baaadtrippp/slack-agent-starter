@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@chat-adapter/shared": "4.44.0",
     "@chat-adapter/slack": "4.44.0",
     "@chat-adapter/state-redis": "4.44.0",
     "@vercel/functions": "3.10.5",
