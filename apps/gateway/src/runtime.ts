@@ -3,6 +3,7 @@ import { waitUntil } from '@vercel/functions';
 import { Sandbox } from '@vercel/sandbox';
 import { ConsoleLogger } from 'chat';
 import { createClient } from 'redis';
+import { collectRunCsv } from './generated-csv.js';
 import { createGateway } from './gateway.js';
 import { createManagedWorker } from './managed-worker.js';
 import { RedisRunStore } from './store.js';
@@ -72,6 +73,8 @@ function initialize() {
     threadResume:
       worker.kind === 'sandbox' && process.env.SLACK_THREAD_RESUME === '1',
     csvInput: worker.kind === 'sandbox' && process.env.SLACK_CSV_INPUT === '1',
+    csvOutput:
+      worker.kind === 'sandbox' && process.env.SLACK_CSV_OUTPUT === '1',
     publicUrlInput:
       worker.kind === 'sandbox' && process.env.SLACK_PUBLIC_URL_INPUT === '1',
   };
@@ -110,6 +113,7 @@ function initialize() {
     state,
     store,
     ...(worker.kind === 'sandbox' ? { isSandboxStopped } : {}),
+    ...(config.csvOutput ? { collectCsv: collectRunCsv } : {}),
     dispatch: async (job, stagedInput) => {
       if (worker.kind === 'sandbox') {
         const session = await (

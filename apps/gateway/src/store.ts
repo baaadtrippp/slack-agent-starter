@@ -131,8 +131,12 @@ local function sameSession(a, b)
   if not a or not b then return not a and not b end
   return a.seedRunId == b.seedRunId and a.nativeId == b.nativeId and a.adapterId == b.adapterId and a.revision == b.revision
 end
+local function sameArtifact(a, b)
+  if not a or not b then return not a and not b end
+  return a.sha256 == b.sha256
+end
 if run.state == 'publishing' or run.state == 'completed' or run.state == 'worker_failed' or run.state == 'publication_uncertain' then
-  if run.result and run.result.eventId == result.eventId and run.result.runId == result.runId and run.result.generation == result.generation and run.result.sequence == result.sequence and run.result.type == result.type and run.result.text == result.text and sameSession(run.result.session, result.session) then
+  if run.result and run.result.eventId == result.eventId and run.result.runId == result.runId and run.result.generation == result.generation and run.result.sequence == result.sequence and run.result.type == result.type and run.result.text == result.text and sameArtifact(run.result.artifact, result.artifact) and sameSession(run.result.session, result.session) then
     return 'duplicate'
   end
   return 'conflict'

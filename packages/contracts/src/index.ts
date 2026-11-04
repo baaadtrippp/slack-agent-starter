@@ -33,6 +33,7 @@ export const workerJobSchema = z
       .strict()
       .refine((input) => !(input.csv && input.publicUrl)),
     session: workerSessionSchema.optional(),
+    csvOutput: z.literal(true).optional(),
     deadline: z.number().int().positive(),
     callbackUrl: z.url().startsWith('https://'),
     callbackToken: z.string().regex(/^[0-9a-f]{64}$/),
@@ -49,6 +50,10 @@ export const workerResultSchema = z
     eventId: z.uuid(),
     sequence: z.literal(1),
     type: z.enum(['completed', 'failed']),
+    artifact: z
+      .object({ sha256: z.string().regex(/^[0-9a-f]{64}$/) })
+      .strict()
+      .optional(),
     session: workerSessionSchema.optional(),
     text: z.string().min(1).max(4_000),
   })
