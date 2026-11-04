@@ -53,6 +53,11 @@ reopened the exact saved session, recalled a synthetic code, and advanced the
 recorded revision. A stale revision failed without starting Pi or changing the
 transcript. The callback in this probe was a fixture.
 
+A local streaming fixture also forced a provider error after a resumed turn
+started. The worker restored the committed transcript after shutdown, and a
+retry completed with the same native session ID. An unconfirmed exit still
+retains ownership for inspection.
+
 ## Sandbox replacement evidence
 
 Two fresh Vercel Sandboxes mounted the same Drive read/write in sequence. The

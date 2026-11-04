@@ -82,6 +82,8 @@ function initialize() {
         });
         if (sandbox.status !== 'running')
           throw new Error('Worker Sandbox is not running');
+        const timeoutMs = job.deadline - Date.now();
+        if (timeoutMs <= 0) throw new Error('Worker deadline expired');
         await sandbox.runCommand({
           cmd: 'node',
           args: ['/tmp/hydra-worker/run.mjs'],
@@ -92,6 +94,7 @@ function initialize() {
             OPENROUTER_API_KEY: 'sandbox-firewall',
           },
           detached: true,
+          timeoutMs,
           signal,
         });
         return;

@@ -20,6 +20,7 @@ import {
 const failureText =
   'The agent could not finish this run. You can retry by mentioning it again.';
 const callbackReserve = 12_000;
+const unconfirmedExit = new Error('Pi shutdown could not be verified');
 const bin = join(import.meta.dirname, 'node_modules', '.bin');
 
 try {
@@ -116,7 +117,8 @@ async function run(job, model, key) {
       result.text = completed.text;
       result.session = completed.session;
       result.type = 'completed';
-    } catch {
+    } catch (error) {
+      if (error === unconfirmedExit) throw error;
       console.error(
         JSON.stringify({ runId: job.runId, phase: 'pi_turn_failed' }),
       );
@@ -133,7 +135,8 @@ async function run(job, model, key) {
       await rm(manifest, { force: true }).catch(() => {});
       throw error;
     }
-  } catch {
+  } catch (error) {
+    if (error === unconfirmedExit) throw error;
     console.error(
       JSON.stringify({ runId: job.runId, phase: 'drive_write_failed' }),
     );
@@ -189,6 +192,8 @@ async function prompt(job, model, key, root) {
   const launcher = join(scratch, 'launch-pi');
   let before;
   let adapterId;
+  let started = false;
+  let stopped = true;
   await mkdir(dirname(scratch), { recursive: true, mode: 0o700 });
   await mkdir(scratch, { mode: 0o700 });
   try {
@@ -236,6 +241,7 @@ async function prompt(job, model, key, root) {
       terminal: false,
       timeoutMs,
     });
+    stopped = false;
     try {
       const handle = await runtime.ensureSession({
         sessionKey: job.runId,
@@ -248,6 +254,7 @@ async function prompt(job, model, key, root) {
       adapterId = handle.backendSessionId;
       if (typeof adapterId !== 'string' || !adapterId)
         throw new Error('Adapter returned no session ID');
+      started = true;
       const turn = runtime.startTurn({
         handle,
         mode: 'prompt',
@@ -262,7 +269,12 @@ async function prompt(job, model, key, root) {
       if ((await turn.result).status !== 'completed')
         throw new Error('Pi turn failed');
     } finally {
-      await runtime.shutdown();
+      try {
+        await runtime.shutdown();
+        stopped = true;
+      } catch {
+        throw unconfirmedExit;
+      }
     }
 
     const saved = job.session
@@ -309,8 +321,17 @@ async function prompt(job, model, key, root) {
         revision: saved.records.length,
       },
     };
+  } catch (error) {
+    if (before && started && stopped) {
+      // The committed transcript is safe to restore only after Pi has exited.
+      const path = join(sessions, before.file);
+      const temporary = `${path}.${job.runId}.tmp`;
+      await writeFile(temporary, before.source, { mode: 0o600, flag: 'wx' });
+      await rename(temporary, path);
+    }
+    throw error;
   } finally {
-    await rm(scratch, { recursive: true, force: true });
+    if (stopped) await rm(scratch, { recursive: true, force: true });
   }
 }
 
@@ -366,12 +387,13 @@ async function verifySavedSession(
 async function readNativeSession(sessions) {
   const files = await Array.fromAsync(glob('**/*.jsonl', { cwd: sessions }));
   if (files.length !== 1) throw new Error('Missing exact native session');
-  const records = (await readFile(join(sessions, files[0]), 'utf8'))
+  const source = await readFile(join(sessions, files[0]), 'utf8');
+  const records = source
     .trim()
     .split('\n')
     .map((line) => JSON.parse(line));
   const nativeId = records[0]?.type === 'session' ? records[0].id : undefined;
   if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(nativeId ?? ''))
     throw new Error('Invalid native session ID');
-  return { file: files[0], nativeId, records };
+  return { file: files[0], nativeId, records, source };
 }
