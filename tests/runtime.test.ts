@@ -204,7 +204,17 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
     }
   }, 10_000);
 
-  it.each(['running', 'stopped', 'unrecordable'] as const)(
+  const sandboxDispatchConditions = [
+    'running',
+    'stopped',
+    'unrecordable',
+    'stopping',
+    'uncertain exit',
+    'result missing',
+    'start response lost',
+  ] as const;
+
+  it.each(sandboxDispatchConditions)(
     'uses the exact %s Sandbox session safely',
     async (condition) => {
       configureRuntime('synthetic-worker');
@@ -214,13 +224,45 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       });
       await observer.connect();
       const sessionId = randomUUID();
+      const target = { sandboxName: 'synthetic-worker', sessionId };
+      const { RedisRunStore } = await import('../apps/gateway/src/store.js');
+      const store = new RedisRunStore(observer.getClient());
+      const operationId = randomUUID();
+      const startResponseLost = condition === 'start response lost';
+      expect(await store.enrollIdleSession(target)).toBe(true);
+      if (condition === 'stopping')
+        expect(await store.claimIdleStop(target, operationId)).toBe('claimed');
       let recorded: unknown;
+      let job: WorkerJob;
+      const commandWait = vi.fn().mockImplementation(async () => {
+        expect(await store.claimIdleStop(target, operationId)).toBe('active');
+        if (condition === 'running')
+          expect(
+            await store.claimPublication(
+              job.runId,
+              {
+                version: 1,
+                runId: job.runId,
+                generation: 1,
+                eventId: randomUUID(),
+                sequence: 1,
+                type: 'completed',
+                text: 'Synthetic terminal result',
+              },
+              Date.now(),
+            ),
+          ).toBe('claimed');
+        return { exitCode: condition === 'uncertain exit' ? 1 : 0 };
+      });
       const sessionRunCommand = vi.fn().mockImplementation(async (command) => {
-        const job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
+        job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
         const encoded = await observer
           .getClient()
           .get(`slack-agent:m1:run:${job.runId}`);
         recorded = JSON.parse(encoded!);
+        if (startResponseLost)
+          throw new Error('Synthetic command start response lost');
+        return { wait: commandWait };
       });
       const sandboxRunCommand = vi.fn();
       sandboxGet.mockResolvedValue({
@@ -231,12 +273,21 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           runCommand: sessionRunCommand,
         }),
       });
-      let restoreRecordTarget: (() => void) | undefined;
-      if (condition === 'unrecordable') {
-        const { RedisRunStore } = await import('../apps/gateway/src/store.js');
-        const spy = vi.spyOn(RedisRunStore.prototype, 'recordDispatchTarget');
-        spy.mockResolvedValue(false);
-        restoreRecordTarget = () => spy.mockRestore();
+      if (condition === 'unrecordable')
+        vi.spyOn(
+          RedisRunStore.prototype,
+          'recordDispatchTarget',
+        ).mockResolvedValue('conflict');
+      if (condition === 'stopped' || condition === 'stopping') {
+        const { SlackAdapter } = await import('@chat-adapter/slack');
+        vi.spyOn(SlackAdapter.prototype, 'initialize').mockResolvedValue();
+        vi.spyOn(SlackAdapter.prototype, 'postMessage').mockImplementation(
+          async (threadId) => ({
+            id: '1800000001.000001',
+            threadId,
+            raw: {},
+          }),
+        );
       }
       const event = runtimeEvent();
       let runId: string | undefined;
@@ -258,24 +309,45 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           signal: expect.any(AbortSignal),
         });
         expect(sandboxRunCommand).not.toHaveBeenCalled();
-        if (condition === 'running') {
+        if (
+          condition === 'running' ||
+          condition === 'uncertain exit' ||
+          condition === 'result missing' ||
+          startResponseLost
+        ) {
           expect(JSON.parse(encoded!)).toMatchObject({
-            state: 'accepted',
-            execution: { sandboxName: 'synthetic-worker', sessionId },
+            state: startResponseLost
+              ? 'dispatch_failed'
+              : condition === 'running'
+                ? 'publishing'
+                : 'accepted',
+            execution: target,
           });
-          expect(recorded).toEqual(JSON.parse(encoded!));
+          expect(recorded).toMatchObject({
+            state: 'accepted',
+            execution: target,
+          });
           expect(sessionRunCommand).toHaveBeenCalledTimes(1);
+          expect(commandWait).toHaveBeenCalledTimes(startResponseLost ? 0 : 1);
+          expect(await store.claimIdleStop(target, operationId)).toBe(
+            condition === 'running' ? 'claimed' : 'active',
+          );
         } else {
           expect(JSON.parse(encoded!)).toMatchObject({
-            state: 'dispatch_failed',
+            state:
+              condition === 'unrecordable'
+                ? 'dispatch_failed'
+                : 'worker_failed',
           });
           expect(JSON.parse(encoded!)).not.toHaveProperty('execution');
           expect(sessionRunCommand).not.toHaveBeenCalled();
         }
       } finally {
         await cleanupRuntimeRun(observer, event, runId);
+        const key = `slack-agent:m1:idle:synthetic-worker:${sessionId}`;
+        await observer.getClient().del([key + ':gate', key + ':active']);
         await observer.disconnect();
-        restoreRecordTarget?.();
+        vi.restoreAllMocks();
       }
     },
   );

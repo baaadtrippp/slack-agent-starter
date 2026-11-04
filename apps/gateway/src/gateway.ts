@@ -35,7 +35,7 @@ type GatewayOptions = {
   config: GatewayConfig;
   state: StateAdapter;
   store: RunStore;
-  dispatch: (job: WorkerJob) => Promise<void>;
+  dispatch: (job: WorkerJob) => Promise<void | 'worker-unavailable'>;
   isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>;
   schedule: (task: () => Promise<void>) => void;
   now?: () => number;
@@ -46,6 +46,9 @@ export const BUSY_REPLY =
 
 export const RECOVERED_REPLY =
   'The environment assigned to the previous run has stopped. Hydra could not confirm a result. This message was not submitted. Mention me again in this thread to try a fresh run.';
+
+export const WORKER_UNAVAILABLE_REPLY =
+  'The worker is unavailable. Your message was not submitted. Mention me again when the worker is ready.';
 
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_EVENT_BYTES = 256 * 1024;
@@ -162,6 +165,26 @@ export function createGateway({
         }),
       );
     }
+  }
+
+  async function publishNotice(
+    run: RunRecord,
+    type: WorkerResult['type'],
+    text: string,
+  ) {
+    const result: WorkerResult = {
+      version: 1,
+      runId: run.runId,
+      generation: run.generation,
+      eventId: randomUUID(),
+      sequence: 1,
+      type,
+      text,
+    };
+    if ((await store.claimPublication(run.runId, result, now())) !== 'claimed')
+      return false;
+    await publish(run, result);
+    return true;
   }
 
   async function recoverInterruptedRun(run: RunRecord) {
@@ -323,21 +346,13 @@ export function createGateway({
             );
             return false;
           });
-          const result: WorkerResult = {
-            version: 1,
-            runId: run.runId,
-            generation: 1,
-            eventId: randomUUID(),
-            sequence: 1,
-            type: 'completed',
-            text: recovered ? RECOVERED_REPLY : BUSY_REPLY,
-          };
           if (
-            (await store.claimPublication(run.runId, result, now())) ===
-            'claimed'
+            !(await publishNotice(
+              run,
+              'completed',
+              recovered ? RECOVERED_REPLY : BUSY_REPLY,
+            ))
           )
-            await publish(run, result);
-          else
             console.error(
               JSON.stringify({
                 runId: run.runId,
@@ -346,7 +361,7 @@ export function createGateway({
             );
           return;
         }
-        await dispatch({
+        const dispatchOutcome = await dispatch({
           version: 1,
           runId: run.runId,
           conversationId: run.conversationId,
@@ -364,6 +379,16 @@ export function createGateway({
           callbackUrl: `${config.origin}/api/worker/callback`,
           callbackToken,
         });
+        if (
+          dispatchOutcome === 'worker-unavailable' &&
+          !(await publishNotice(run, 'failed', WORKER_UNAVAILABLE_REPLY))
+        )
+          console.error(
+            JSON.stringify({
+              runId: run.runId,
+              phase: 'unsubmitted_reply_unavailable',
+            }),
+          );
       } catch {
         const stateRecorded = await store
           .failDispatch(run.runId)

@@ -89,7 +89,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     const bound = await Promise.all(
       targets.map((target) => store.recordDispatchTarget(makeJob(run), target)),
     );
-    expect(bound.sort()).toEqual([false, true]);
+    expect(bound.sort()).toEqual(['conflict', 'recorded']);
 
     const saved = await store.getRun(run.runId);
     expect(targets).toContainEqual(saved?.execution);
@@ -98,7 +98,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
         sandboxName: 'synthetic-c',
         sessionId: randomUUID(),
       }),
-    ).toBe(false);
+    ).toBe('conflict');
 
     const busy = makeRun({
       threadTs: run.threadTs,
@@ -106,7 +106,105 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     });
     expect((await store.admit(busy)).outcome).toBe('busy');
     expect(await store.recordDispatchTarget(makeJob(busy), targets[0]!)).toBe(
+      'conflict',
+    );
+  });
+
+  it('serializes dispatch and idle stop in either race order without reopening', async () => {
+    const dispatchFirst = makeTarget('dispatch-first');
+    const firstRun = makeRun();
+    await store.admit(firstRun);
+    expect(await store.enrollIdleSession(dispatchFirst)).toBe(true);
+    expect(await store.enrollIdleSession(dispatchFirst)).toBe(true);
+    expect(
+      await store.recordDispatchTarget(makeJob(firstRun), dispatchFirst),
+    ).toBe('recorded');
+    expect(
+      await store.claimIdleStop(dispatchFirst, 'operation-dispatch-first'),
+    ).toBe('active');
+    expect(
+      await store.releaseDispatchTarget(firstRun.runId, dispatchFirst),
+    ).toBe(true);
+    expect(
+      await store.claimIdleStop(dispatchFirst, 'operation-dispatch-first'),
+    ).toBe('claimed');
+    expect(
+      await store.claimIdleStop(dispatchFirst, 'operation-dispatch-first'),
+    ).toBe('claimed');
+    expect(await store.claimIdleStop(dispatchFirst, 'operation-other')).toBe(
+      'stopping',
+    );
+    expect(await store.enrollIdleSession(dispatchFirst)).toBe(false);
+    expect(
+      await state.getClient().pTTL(idleGateKey(namespace, dispatchFirst)),
+    ).toBe(-1);
+
+    const stopFirst = makeTarget('stop-first');
+    const secondRun = makeRun();
+    await store.admit(secondRun);
+    expect(await store.enrollIdleSession(stopFirst)).toBe(true);
+    expect(await store.claimIdleStop(stopFirst, 'operation-stop-first')).toBe(
+      'claimed',
+    );
+    expect(
+      await store.recordDispatchTarget(makeJob(secondRun), stopFirst),
+    ).toBe('stopping');
+    expect(await store.getRun(secondRun.runId)).not.toHaveProperty('execution');
+    expect(await store.releaseDispatchTarget(secondRun.runId, stopFirst)).toBe(
       false,
+    );
+
+    const unenrolled = makeTarget('unenrolled');
+    const thirdRun = makeRun();
+    await store.admit(thirdRun);
+    expect(
+      await store.recordDispatchTarget(makeJob(thirdRun), unenrolled),
+    ).toBe('recorded');
+    expect(await store.claimIdleStop(unenrolled, 'operation-unenrolled')).toBe(
+      'unenrolled',
+    );
+    expect(await store.enrollIdleSession(unenrolled)).toBe(false);
+    expect(await store.releaseDispatchTarget(thirdRun.runId, unenrolled)).toBe(
+      true,
+    );
+    expect(await store.enrollIdleSession(unenrolled)).toBe(true);
+  });
+
+  it('waits for every exact active reservation before claiming idle stop', async () => {
+    const target = makeTarget('shared');
+    const wrongTarget = makeTarget('wrong');
+    const first = makeRun();
+    const second = makeRun();
+    await Promise.all([store.admit(first), store.admit(second)]);
+    expect(await store.enrollIdleSession(target)).toBe(true);
+    expect(await store.recordDispatchTarget(makeJob(first), target)).toBe(
+      'recorded',
+    );
+    expect(await store.recordDispatchTarget(makeJob(second), target)).toBe(
+      'recorded',
+    );
+    expect(await store.claimIdleStop(target, 'operation-shared')).toBe(
+      'active',
+    );
+
+    expect(await store.releaseDispatchTarget(first.runId, wrongTarget)).toBe(
+      false,
+    );
+    expect(await store.claimIdleStop(target, 'operation-shared')).toBe(
+      'active',
+    );
+    const firstResult = makeResult(first);
+    expect(
+      await store.claimPublication(first.runId, firstResult, Date.now()),
+    ).toBe('claimed');
+    expect(await store.completePublication(first, nextTimestamp())).toBe(true);
+    expect(await store.releaseDispatchTarget(first.runId, target)).toBe(true);
+    expect(await store.claimIdleStop(target, 'operation-shared')).toBe(
+      'active',
+    );
+    expect(await store.releaseDispatchTarget(second.runId, target)).toBe(true);
+    expect(await store.claimIdleStop(target, 'operation-shared')).toBe(
+      'claimed',
     );
   });
 
@@ -236,7 +334,9 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       sessionId: randomUUID(),
     };
     await store.admit(run);
-    expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(true);
+    expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(
+      'recorded',
+    );
     const bound = await store.getRun(run.runId);
     expect(bound).not.toBeNull();
     expect(await store.interruptRun(bound!, run.deadline - 1)).toBe(false);
@@ -408,4 +508,12 @@ function makeJob(run: RunRecord): WorkerJob {
     callbackUrl: 'https://gateway.example/api/worker/callback',
     callbackToken: 'c'.repeat(64),
   };
+}
+
+function makeTarget(label: string): SandboxTarget {
+  return { sandboxName: `synthetic-${label}`, sessionId: randomUUID() };
+}
+
+function idleGateKey(namespace: string, target: SandboxTarget): string {
+  return `${namespace}:idle:${target.sandboxName}:${target.sessionId}:gate`;
 }

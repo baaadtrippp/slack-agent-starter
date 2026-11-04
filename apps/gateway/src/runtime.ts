@@ -92,25 +92,32 @@ function initialize() {
     ...(worker.kind === 'sandbox' ? { isSandboxStopped } : {}),
     dispatch: async (job) => {
       if (worker.kind === 'sandbox') {
-        const signal = AbortSignal.timeout(15_000);
-        const sandbox = await Sandbox.get({
+        const session = await Sandbox.get({
           name: worker.sandboxName,
           resume: false,
-          signal,
-        });
-        const session = sandbox.currentSession();
-        if (session.status !== 'running')
-          throw new Error('Worker Sandbox is not running');
-        if (
-          !(await store.recordDispatchTarget(job, {
-            sandboxName: worker.sandboxName,
-            sessionId: session.sessionId,
-          }))
-        )
+          signal: AbortSignal.timeout(15_000),
+        })
+          .then((sandbox) => sandbox.currentSession())
+          .catch(() => undefined);
+        if (session?.status !== 'running') return 'worker-unavailable';
+        const target = {
+          sandboxName: worker.sandboxName,
+          sessionId: session.sessionId,
+        };
+        const reservation = await store.recordDispatchTarget(job, target);
+        if (reservation === 'stopping') return 'worker-unavailable';
+        if (reservation !== 'recorded')
           throw new Error('Worker Sandbox target was not recorded');
+        const releaseReservation = () =>
+          store
+            .releaseDispatchTarget(job.runId, target)
+            .catch(() => store.releaseDispatchTarget(job.runId, target));
         const timeoutMs = job.deadline - Date.now();
-        if (timeoutMs <= 0) throw new Error('Worker deadline expired');
-        await session.runCommand({
+        if (timeoutMs <= 0) {
+          await releaseReservation();
+          throw new Error('Worker deadline expired');
+        }
+        const command = await session.runCommand({
           cmd: 'node',
           args: ['/tmp/hydra-worker/run.mjs'],
           cwd: '/tmp/hydra-worker',
@@ -121,8 +128,28 @@ function initialize() {
           },
           detached: true,
           timeoutMs,
-          signal,
+          signal: AbortSignal.timeout(Math.min(15_000, timeoutMs)),
         });
+        try {
+          const finished = await command.wait({
+            signal: AbortSignal.timeout(
+              Math.max(1, job.deadline - Date.now() + 1_000),
+            ),
+          });
+          if (
+            finished.exitCode !== 0 ||
+            !(await store.getRun(job.runId))?.result ||
+            !(await releaseReservation())
+          )
+            throw new Error('Worker exit was not recorded');
+        } catch {
+          console.error(
+            JSON.stringify({
+              runId: job.runId,
+              phase: 'worker_exit_unconfirmed',
+            }),
+          );
+        }
         return;
       }
       const response = await fetch(worker.url, {
