@@ -12,6 +12,11 @@ files, and progress. It includes scopes and events that milestone 1 does not
 need. Do not apply it for the canned-reply deployment. Resolve the remaining
 open decisions before enabling those later behaviors.
 
+`milestone-9.yaml` adds the `files:read` bot scope to the mention-only
+configuration. Reinstall the app after applying it so the installed token can
+download the CSV. Invite the app only to the selected public test channel. See
+[the CSV tracer](../../docs/spec/milestone-9.md) for the gateway setting.
+
 `proposed-controls-and-feedback.yaml` contains the separate, still-proposed
 Stop/Status and feedback overlay. It is not used in milestone 1.
 

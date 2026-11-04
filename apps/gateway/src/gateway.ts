@@ -20,6 +20,7 @@ import type {
   WorkerJob,
   WorkerResult,
 } from '../../../packages/contracts/src/index.js';
+import { downloadSlackCsv } from './slack-csv.js';
 import type { RunRecord, RunStore, SandboxTarget } from './store.js';
 
 export type GatewayConfig = {
@@ -29,13 +30,17 @@ export type GatewayConfig = {
   channelIds: string[];
   origin: string;
   threadResume?: boolean;
+  csvInput?: boolean;
 };
 
 type GatewayOptions = {
   config: GatewayConfig;
   state: StateAdapter;
   store: RunStore;
-  dispatch: (job: WorkerJob) => Promise<void | 'worker-unavailable'>;
+  dispatch: (
+    job: WorkerJob,
+    csv?: Buffer,
+  ) => Promise<void | 'worker-unavailable' | 'csv-staging-failed'>;
   isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>;
   schedule: (task: () => Promise<void>) => void;
   now?: () => number;
@@ -49,6 +54,9 @@ export const RECOVERED_REPLY =
 
 export const WORKER_UNAVAILABLE_REPLY =
   'The worker is unavailable. Your message was not submitted. Mention me again when the worker is ready.';
+
+const CSV_STAGING_FAILURE_REPLY =
+  'The CSV could not be staged. Mention me again with the file to retry.';
 
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_EVENT_BYTES = 256 * 1024;
@@ -249,6 +257,13 @@ export function createGateway({
     if (!input) return new Response(null, { status: 200 });
 
     const rawEvent = input.raw;
+    const attachedFiles = rawEvent?.files;
+    const hasFiles = Array.isArray(attachedFiles) && attachedFiles.length > 0;
+    const fileShare =
+      config.csvInput &&
+      mention &&
+      rawEvent?.subtype === 'file_share' &&
+      hasFiles;
     if (
       input.teamId !== config.workspaceId ||
       !config.channelIds.includes(input.channelId) ||
@@ -265,7 +280,7 @@ export function createGateway({
       !rawEvent ||
       rawEvent.bot_id ||
       rawEvent.bot_profile ||
-      rawEvent.subtype !== undefined ||
+      (rawEvent.subtype !== undefined && !fileShare) ||
       (rawEvent.user_team !== undefined &&
         rawEvent.user_team !== config.workspaceId) ||
       (rawEvent.team !== undefined && rawEvent.team !== config.workspaceId) ||
@@ -365,7 +380,19 @@ export function createGateway({
             );
           return;
         }
-        const dispatchOutcome = await dispatch({
+        let csv: Buffer | undefined;
+        if (config.csvInput && hasFiles) {
+          const attachment = await downloadSlackCsv(
+            attachedFiles,
+            config.botToken,
+          );
+          if (typeof attachment === 'string') {
+            await publishNotice(run, 'failed', attachment);
+            return;
+          }
+          csv = attachment;
+        }
+        const job: WorkerJob = {
           version: 1,
           runId: run.runId,
           conversationId: run.conversationId,
@@ -377,16 +404,23 @@ export function createGateway({
             channelId: run.channelId,
             threadTs: run.threadTs,
             messageTs: run.messageTs,
+            ...(csv ? { csv: true } : {}),
           },
           ...(run.session ? { session: run.session } : {}),
           deadline: run.deadline,
           callbackUrl: `${config.origin}/api/worker/callback`,
           callbackToken,
-        });
-        if (
-          dispatchOutcome === 'worker-unavailable' &&
-          !(await publishNotice(run, 'failed', WORKER_UNAVAILABLE_REPLY))
-        )
+        };
+        const dispatchOutcome = csv
+          ? await dispatch(job, csv)
+          : await dispatch(job);
+        const notice =
+          dispatchOutcome === 'worker-unavailable'
+            ? WORKER_UNAVAILABLE_REPLY
+            : dispatchOutcome === 'csv-staging-failed'
+              ? CSV_STAGING_FAILURE_REPLY
+              : undefined;
+        if (notice && !(await publishNotice(run, 'failed', notice)))
           console.error(
             JSON.stringify({
               runId: run.runId,

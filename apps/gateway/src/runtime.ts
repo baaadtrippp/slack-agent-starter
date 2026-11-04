@@ -71,6 +71,7 @@ function initialize() {
     origin: origin.origin,
     threadResume:
       worker.kind === 'sandbox' && process.env.SLACK_THREAD_RESUME === '1',
+    csvInput: worker.kind === 'sandbox' && process.env.SLACK_CSV_INPUT === '1',
   };
   const redisUrl = new URL(required('REDIS_URL'));
   if (
@@ -107,7 +108,7 @@ function initialize() {
     state,
     store,
     ...(worker.kind === 'sandbox' ? { isSandboxStopped } : {}),
-    dispatch: async (job) => {
+    dispatch: async (job, csv) => {
       if (worker.kind === 'sandbox') {
         const session = await (
           managed
@@ -142,10 +143,45 @@ function initialize() {
           return 'worker-unavailable';
         if (reservation !== 'recorded')
           throw new Error('Worker Sandbox target was not recorded');
-        const releaseReservation = () =>
+        const releaseReservation = (unsubmitted = false) =>
           store
-            .releaseDispatchTarget(job.runId, target)
-            .catch(() => store.releaseDispatchTarget(job.runId, target));
+            .releaseDispatchTarget(job.runId, target, unsubmitted)
+            .catch(() =>
+              store.releaseDispatchTarget(job.runId, target, unsubmitted),
+            );
+        if (csv) {
+          try {
+            const stageTimeout = Math.min(10_000, job.deadline - Date.now());
+            if (stageTimeout <= 0) throw new Error('Worker deadline expired');
+            const seed = job.session?.seedRunId ?? job.runId;
+            await session.writeFiles(
+              [
+                {
+                  path:
+                    '/workspace/inputs/' +
+                    seed +
+                    '/' +
+                    job.runId +
+                    '/input.csv',
+                  content: csv,
+                  mode: 0o600,
+                },
+              ],
+              { signal: AbortSignal.timeout(stageTimeout) },
+            );
+            console.info(
+              JSON.stringify({
+                runId: job.runId,
+                phase: 'csv_staged',
+                bytes: csv.length,
+              }),
+            );
+          } catch {
+            await releaseReservation(true);
+            await stopIfIdle();
+            return 'csv-staging-failed';
+          }
+        }
         const timeoutMs = job.deadline - Date.now();
         if (timeoutMs <= 0) {
           await releaseReservation();
