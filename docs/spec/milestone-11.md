@@ -38,3 +38,19 @@ from those values returned 7,490 cents. The final bounded extractor also
 rejected malformed input and a small compressed PDF whose extracted text
 exceeded 16 KiB. The probe exercised extraction in the Sandbox before the live
 Slack run.
+
+## Live Slack evidence
+
+One mention in the authorized test channel included the synthetic text-based
+PDF. The installed bot token had `files:read`. The gateway downloaded and staged
+the attachment in the reserved Sandbox. The 2,456-byte staged file matched the
+independently prepared PDF byte for byte.
+
+The real Pi worker's native session recorded one successful `read_pdf_text`
+call. Hydra posted one answer in the originating thread. Its reference ID, three
+data rows, and total of 7,490 cents matched the independent fixture check. The
+gateway's recorded publication ID matched that reply. A later thread read still
+found one answer.
+
+The previous gateway routing was restored, and the temporary deployment, worker,
+Drive, and startup seed were removed. AC06 remains partial.
