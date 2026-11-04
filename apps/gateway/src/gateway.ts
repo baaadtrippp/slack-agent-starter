@@ -602,6 +602,7 @@ export function createGateway({
     }
     const claimAt = now();
     let csv: Buffer | undefined;
+    let csvLease: string | undefined;
     if (
       result.artifact &&
       config.csvOutput &&
@@ -611,6 +612,13 @@ export function createGateway({
       !run.result &&
       claimAt < run.deadline
     ) {
+      // Keep retries from racing the collection or acknowledging it early.
+      csvLease = randomUUID();
+      const reserved = await store
+        .reserveCsvCollection(run.runId, csvLease)
+        .catch(() => false);
+      if (!reserved) return new Response(null, { status: 503 });
+
       // Collect before the worker can exit and release its Sandbox reservation.
       const bytes = await collectCsv(run.runId, run.execution).catch(
         () => undefined,
@@ -620,7 +628,12 @@ export function createGateway({
     let claim;
     try {
       // Collection failure must not expire a text result already received on time.
-      claim = await store.claimPublication(run.runId, result, claimAt);
+      claim = await store.claimPublication(
+        run.runId,
+        result,
+        claimAt,
+        csvLease,
+      );
     } catch {
       console.error(
         JSON.stringify({
@@ -632,6 +645,7 @@ export function createGateway({
     }
     if (claim === 'duplicate') return new Response(null, { status: 204 });
     if (claim === 'expired') return new Response(null, { status: 410 });
+    if (claim === 'retry') return new Response(null, { status: 503 });
     if (claim !== 'claimed') return new Response(null, { status: 409 });
     schedule(() => publish(run, result, csv));
     return new Response(null, { status: 202 });

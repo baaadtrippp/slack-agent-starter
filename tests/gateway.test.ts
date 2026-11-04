@@ -455,9 +455,26 @@ describe.skipIf(!redisUrl)(
         ).status,
       ).toBe(400);
       expect(collectCsv).not.toHaveBeenCalled();
-      expect(
-        (await gateway.callback(callback(output, job.callbackToken))).status,
-      ).toBe(202);
+      if (outcome === 'uploaded') {
+        const collecting = Promise.withResolvers<void>();
+        const collected = Promise.withResolvers<Buffer>();
+        collectCsv.mockImplementationOnce(() => {
+          collecting.resolve();
+          return collected.promise;
+        });
+        const first = gateway.callback(callback(output, job.callbackToken));
+        await collecting.promise;
+        const overlap = await gateway.callback(
+          callback(output, job.callbackToken),
+        );
+        collected.resolve(csv);
+        expect(overlap.status).toBe(503);
+        expect((await first).status).toBe(202);
+      } else {
+        expect(
+          (await gateway.callback(callback(output, job.callbackToken))).status,
+        ).toBe(202);
+      }
       gateway.clock.now = initialTime;
       expect(
         (await gateway.callback(callback(output, job.callbackToken))).status,
