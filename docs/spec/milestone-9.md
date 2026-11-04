@@ -42,3 +42,26 @@ validation. Slack delivery and Drive writes were simulated.
 A local probe through the pinned acpx, pi-acp, and Pi versions offered only the
 CSV tool to a model double. Pi invoked the tool and passed the exact synthetic
 CSV to the model double.
+
+## Sandbox and Pi evidence
+
+During the live run, the temporary gateway staged the CSV on the Vercel worker's
+writable Drive. The staged file's SHA-256 matched the independently hashed
+149-byte source fixture. The real Pi worker used OpenRouter. Its native session
+recorded one successful call to the scoped CSV tool, and the tool result's text
+matched the staged file's UTF-8 contents exactly.
+
+## Live Slack evidence
+
+Slack identified the first upload as a snippet. The initial validator returned
+an unsupported-file notice in the originating thread. The gateway now applies
+the same validation to Slack files in `snippet` and `hosted` modes.
+
+A fresh mention with the same synthetic CSV passed through the gateway and
+separate worker. Hydra posted one reply in the originating thread after the
+authenticated callback. A local calculation independently matched the four data
+rows, the per-label sums, the 11,604-cent total, and the receipt in the third
+data row. A later read found the same single reply.
+
+The previous gateway routing was restored and the temporary resources were
+removed.
