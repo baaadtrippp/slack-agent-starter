@@ -388,6 +388,106 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       }
     },
   );
+
+  it.each(['staged', 'write failed', 'expired during staging'] as const)(
+    'handles a %s CSV before Sandbox worker launch',
+    async (outcome) => {
+      configureRuntime('synthetic-worker');
+      vi.stubEnv('SLACK_CSV_INPUT', '1');
+      const csv = 'region,amount\nNorth,12\nSouth,18\n';
+      const download = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(csv));
+      vi.stubGlobal('fetch', download);
+      const observer = createRedisState({ url: redisUrl! });
+      await observer.connect();
+      const sessionId = randomUUID();
+      const target = { sandboxName: 'synthetic-worker', sessionId };
+      const { RedisRunStore } = await import('../apps/gateway/src/store.js');
+      const store = new RedisRunStore(observer.getClient());
+      let staged = false;
+      const writeFiles = vi.fn().mockImplementation(async () => {
+        if (outcome === 'write failed') throw new Error('Synthetic fault');
+        if (outcome === 'expired during staging')
+          vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+        staged = true;
+      });
+      let job: WorkerJob | undefined;
+      let stagedBeforeLaunch = false;
+      const runCommand = vi.fn().mockImplementation(async (command) => {
+        stagedBeforeLaunch = staged;
+        job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
+        return { wait: async () => ({ exitCode: 1 }) };
+      });
+      sandboxGet.mockResolvedValue({
+        currentSession: () => ({
+          status: 'running',
+          sessionId,
+          writeFiles,
+          runCommand,
+        }),
+      });
+      const { SlackAdapter } = await import('@chat-adapter/slack');
+      vi.spyOn(SlackAdapter.prototype, 'initialize').mockResolvedValue();
+      const postMessage = vi
+        .spyOn(SlackAdapter.prototype, 'postMessage')
+        .mockImplementation(async (threadId) => ({
+          id: '1800000001.000001',
+          threadId,
+          raw: {},
+        }));
+      const event = runtimeEvent({
+        files: [syntheticCsvFile(Buffer.byteLength(csv))],
+        ...(outcome === 'staged' ? { subtype: 'file_share' } : {}),
+      });
+      let runId: string | undefined;
+      try {
+        expect(await store.enrollIdleSession(target)).toBe(true);
+        const { handle } = await import('../apps/gateway/src/runtime.js');
+        expect((await handle(event.request, 'events')).status).toBe(200);
+        await drainBackground();
+        runId =
+          (await observer
+            .getClient()
+            .get(`slack-agent:m1:event:TTEST1:${event.eventId}`)) ?? undefined;
+        expect(runId).toBeDefined();
+        expect(writeFiles).toHaveBeenCalledExactlyOnceWith(
+          [
+            {
+              path: `/workspace/inputs/${runId}/${runId}/input.csv`,
+              content: Buffer.from(csv),
+              mode: 0o600,
+            },
+          ],
+          { signal: expect.anything() },
+        );
+        if (outcome === 'staged') {
+          expect(runCommand).toHaveBeenCalledTimes(1);
+          expect(stagedBeforeLaunch).toBe(true);
+          expect(job?.input.csv).toBe(true);
+          expect(postMessage).not.toHaveBeenCalled();
+        } else {
+          expect(runCommand).not.toHaveBeenCalled();
+          expect(await store.claimIdleStop(target, randomUUID())).toBe(
+            'claimed',
+          );
+          expect(await store.getRun(runId!)).toMatchObject({
+            state: 'worker_failed',
+          });
+          expect(postMessage).toHaveBeenCalledExactlyOnceWith(
+            `slack:CTEST1:${event.ts}`,
+            'The CSV could not be staged. Mention me again with the file to retry.',
+          );
+        }
+      } finally {
+        await cleanupRuntimeRun(observer, event, runId);
+        const key = `slack-agent:m1:idle:synthetic-worker:${sessionId}`;
+        await observer.getClient().del([key + ':gate', key + ':active']);
+        await observer.disconnect();
+        vi.restoreAllMocks();
+      }
+    },
+  );
 });
 
 async function drainBackground() {
@@ -422,7 +522,7 @@ function configureRuntime(sandboxName?: string) {
   vi.resetModules();
 }
 
-function runtimeEvent() {
+function runtimeEvent(options?: { files?: unknown[]; subtype?: string }) {
   const ts = `${Math.floor(Date.now() / 1_000)}.${String(
     Math.floor(Math.random() * 1_000_000),
   ).padStart(6, '0')}`;
@@ -438,6 +538,8 @@ function runtimeEvent() {
       channel: 'CTEST1',
       text: '<@UBOT1> Synthetic Sandbox dispatch test',
       ts,
+      ...(options?.files ? { files: options.files } : {}),
+      ...(options?.subtype ? { subtype: options.subtype } : {}),
     },
   });
   const stamp = String(Math.floor(Date.now() / 1_000));
@@ -456,6 +558,17 @@ function runtimeEvent() {
         'x-slack-signature': `v0=${signature}`,
       },
     }),
+  };
+}
+
+function syntheticCsvFile(size: number) {
+  return {
+    id: 'FTEST1',
+    name: 'test.csv',
+    mode: 'hosted',
+    mimetype: 'text/csv',
+    size,
+    url_private: 'https://files.slack.com/files-pri/TTEST1-FTEST1/test.csv',
   };
 }
 

@@ -27,6 +27,7 @@ export const workerJobSchema = z
         channelId: z.string().min(1),
         threadTs: slackTimestamp,
         messageTs: slackTimestamp,
+        csv: z.literal(true).optional(),
       })
       .strict(),
     session: workerSessionSchema.optional(),

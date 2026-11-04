@@ -240,6 +240,10 @@ local target = cjson.decode(ARGV[2])
 if run.runId ~= ARGV[1] or not run.execution or
    run.execution.sandboxName ~= target.sandboxName or
    run.execution.sessionId ~= target.sessionId then return 0 end
+if ARGV[3] == 'unsubmitted' and run.state == 'accepted' then
+  run.execution = nil
+  redis.call('SET', KEYS[1], cjson.encode(run), 'KEEPTTL')
+end
 redis.call('SREM', KEYS[2], run.runId)
 return 1
 `;
@@ -574,13 +578,18 @@ export class RedisRunStore implements RunStore {
   async releaseDispatchTarget(
     runId: string,
     target: SandboxTarget,
+    unsubmitted = false,
   ): Promise<boolean> {
     return (
       Number(
         await this.execute((client) =>
           client.eval(RELEASE_DISPATCH_TARGET_SCRIPT, {
             keys: [this.runKey(runId), this.activeDispatchKey(target)],
-            arguments: [runId, JSON.stringify(target)],
+            arguments: [
+              runId,
+              JSON.stringify(target),
+              unsubmitted ? 'unsubmitted' : '',
+            ],
           }),
         ),
       ) === 1

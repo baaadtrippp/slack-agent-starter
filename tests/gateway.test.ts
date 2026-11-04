@@ -90,6 +90,7 @@ function harness(
   sdkState: StateAdapter = createMockState(),
   threadResume = false,
   isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>,
+  csvInput = false,
 ) {
   const clock = { now: initialTime };
   const tasks: Array<() => Promise<void>> = [];
@@ -109,6 +110,7 @@ function harness(
       channelIds: ['CTEST1'],
       origin: 'https://gateway.example',
       threadResume,
+      csvInput,
     },
     state: sdkState,
     store,
@@ -515,8 +517,8 @@ describe.skipIf(!redisUrl)(
       expect(gateway.dispatch.mock.calls[3]![0].session).toBeUndefined();
     });
 
-    it('rejects root, bot and external ordinary events and reports a busy thread while its first run is active', async () => {
-      const gateway = harness(createMockState(), true);
+    it('rejects ineligible ordinary events and reports a busy thread while its first run is active', async () => {
+      const gateway = harness(createMockState(), true, undefined, true);
       const mention = envelope();
       await gateway.events(signed(mention));
       await gateway.flush();
@@ -536,6 +538,10 @@ describe.skipIf(!redisUrl)(
           event: { ...ordinary.event, subtype: 'thread_broadcast' },
         },
         { ...ordinary, event: { ...ordinary.event, subtype: 'file_share' } },
+        {
+          ...ordinary,
+          event: { ...ordinary.event, files: [{ id: 'FTEST1' }] },
+        },
         { ...ordinary, is_ext_shared_channel: true },
         { ...ordinary, event: { ...ordinary.event, user_team: 'TOTHER' } },
       ]) {
