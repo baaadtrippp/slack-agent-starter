@@ -22,6 +22,7 @@ const failureText =
 const callbackReserve = 12_000;
 const uncertainRun = new Error('Worker state requires inspection');
 const unreadablePdf = new Error('PDF text extraction failed');
+const oversizedPdfText = new Error('PDF text exceeds the test limit');
 const bin = join(import.meta.dirname, 'node_modules', '.bin');
 
 const readStagedInputExtension = `
@@ -172,6 +173,7 @@ async function run(job, model, key) {
     } catch (error) {
       if (error === uncertainRun) throw error;
       if (error === unreadablePdf) result.inputError = 'pdf_unreadable';
+      if (error === oversizedPdfText) result.inputError = 'pdf_text_too_large';
       console.error(
         JSON.stringify({
           runId: job.runId,
@@ -495,6 +497,7 @@ function extractPdfText(path, timeout) {
       [
         '--as=268435456',
         '--cpu=3',
+        '--core=0',
         '--',
         '/usr/bin/pdftotext',
         '-enc',
@@ -509,11 +512,13 @@ function extractPdfText(path, timeout) {
         env: { LC_ALL: 'C.UTF-8' },
         killSignal: 'SIGKILL',
         maxBuffer: 16 * 1024,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['ignore', 'pipe', 'ignore'],
         timeout,
       },
     );
-  } catch {
+  } catch (error) {
+    if (error.code === 'ENOBUFS') throw oversizedPdfText;
+    if (error.code === 'ENOENT' || error.status === 127) throw error;
     throw unreadablePdf;
   }
   if (!text.trim()) throw unreadablePdf;

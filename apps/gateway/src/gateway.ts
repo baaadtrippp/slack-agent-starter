@@ -67,6 +67,8 @@ const PDF_STAGING_FAILURE_REPLY =
   'The PDF could not be staged. Mention me again with the file to retry.';
 const PDF_UNREADABLE_REPLY =
   'I could not extract readable text from this PDF. Mention me again with a small text-based PDF.';
+const PDF_TEXT_TOO_LARGE_REPLY =
+  'The PDF contains more than 16 KiB of text for this test. Mention me again with a shorter PDF.';
 const URL_STAGING_FAILURE_REPLY =
   'The public URL text could not be staged. Mention me again with the link to retry.';
 
@@ -599,7 +601,9 @@ export function createGateway({
       result.text =
         result.inputError === 'pdf_unreadable'
           ? PDF_UNREADABLE_REPLY
-          : WORKER_FAILURE_REPLY;
+          : result.inputError === 'pdf_text_too_large'
+            ? PDF_TEXT_TOO_LARGE_REPLY
+            : WORKER_FAILURE_REPLY;
     } else if (result.inputError) {
       return new Response(null, { status: 400 });
     }

@@ -54,7 +54,7 @@ export const workerResultSchema = z
     eventId: z.uuid(),
     sequence: z.literal(1),
     type: z.enum(['completed', 'failed']),
-    inputError: z.literal('pdf_unreadable').optional(),
+    inputError: z.enum(['pdf_unreadable', 'pdf_text_too_large']).optional(),
     artifact: z
       .object({ sha256: z.string().regex(/^[0-9a-f]{64}$/) })
       .strict()

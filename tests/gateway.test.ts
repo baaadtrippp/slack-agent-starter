@@ -528,6 +528,10 @@ describe.skipIf(!redisUrl)(
         'pdf_unreadable',
         'I could not extract readable text from this PDF. Mention me again with a small text-based PDF.',
       ],
+      [
+        'pdf_text_too_large',
+        'The PDF contains more than 16 KiB of text for this test. Mention me again with a shorter PDF.',
+      ],
     ] as const)(
       'posts a safe failure once for %s',
       async (inputError, notice) => {

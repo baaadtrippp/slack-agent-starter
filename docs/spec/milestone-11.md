@@ -29,3 +29,12 @@ oversized attachment, denied access, truncated bytes, and an invalid PDF header.
 The callback tests checked that the fixed unreadable-PDF notice is published
 once in the originating thread. Slack delivery and Sandbox writes were simulated
 in these tests.
+
+## Sandbox extraction probe
+
+The reserved Sandbox extracted the reference and three item values from the
+2,456-byte fixture with its bounded Poppler command. An independent calculation
+from those values returned 7,490 cents. The final bounded extractor also
+rejected malformed input and a small compressed PDF whose extracted text
+exceeded 16 KiB. The probe exercised extraction in the Sandbox before the live
+Slack run.
