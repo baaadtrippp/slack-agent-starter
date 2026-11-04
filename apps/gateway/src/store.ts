@@ -1,8 +1,14 @@
 import type {
+  WorkerJob,
   WorkerResult,
   WorkerSession,
 } from '../../../packages/contracts/src/index.js';
 import type { RedisClientType } from 'redis';
+
+export type SandboxTarget = {
+  sandboxName: string;
+  sessionId: string;
+};
 
 export type RunRecord = {
   runId: string;
@@ -23,9 +29,12 @@ export type RunRecord = {
     | 'completed'
     | 'worker_failed'
     | 'publication_uncertain'
-    | 'dispatch_failed';
+    | 'dispatch_failed'
+    | 'interrupted';
   session?: WorkerSession;
   result?: WorkerResult;
+  execution?: SandboxTarget;
+  blockedBy?: string;
   messageId?: string;
 };
 
@@ -46,6 +55,8 @@ export interface RunStore {
   completePublication(run: RunRecord, messageId: string): Promise<boolean>;
   failPublication(runId: string): Promise<boolean>;
   failDispatch(runId: string): Promise<boolean>;
+  recordDispatchTarget(job: WorkerJob, target: SandboxTarget): Promise<boolean>;
+  interruptRun(run: RunRecord, now: number): Promise<boolean>;
 }
 
 const ADMIT_SCRIPT = `
@@ -72,6 +83,7 @@ if session then candidate.session = session.reference end
 local outcome = 'accepted'
 if owner then
   candidate.kind = 'busy'
+  candidate.blockedBy = owner
   outcome = 'busy'
 end
 
@@ -152,6 +164,41 @@ local run = cjson.decode(encoded)
 if run.state ~= 'accepted' then return 0 end
 run.state = 'dispatch_failed'
 redis.call('SET', KEYS[1], cjson.encode(run))
+return 1
+`;
+
+const RECORD_DISPATCH_TARGET_SCRIPT = `
+local encoded = redis.call('GET', KEYS[1])
+if not encoded then return 0 end
+local run = cjson.decode(encoded)
+if run.runId ~= ARGV[1] or run.generation ~= tonumber(ARGV[2]) then return 0 end
+if run.kind ~= 'work' or run.state ~= 'accepted' or run.execution then return 0 end
+if redis.call('GET', KEYS[2]) ~= run.runId then return 0 end
+run.execution = cjson.decode(ARGV[3])
+redis.call('SET', KEYS[1], cjson.encode(run))
+return 1
+`;
+
+const INTERRUPT_RUN_SCRIPT = `
+local encoded = redis.call('GET', KEYS[1])
+if not encoded then return 0 end
+local current = cjson.decode(encoded)
+local old = cjson.decode(ARGV[1])
+if current.runId ~= old.runId or current.eventId ~= old.eventId or current.generation ~= old.generation or
+   current.workspaceId ~= old.workspaceId or current.channelId ~= old.channelId or current.threadTs ~= old.threadTs then return 0 end
+if not current.execution or not old.execution or
+   current.execution.sandboxName ~= old.execution.sandboxName or
+   current.execution.sessionId ~= old.execution.sessionId then return 0 end
+local owner = redis.call('GET', KEYS[2])
+-- A retry reports the thread available only while no newer run owns it.
+if current.state == 'interrupted' then return owner and 0 or 1 end
+if owner ~= current.runId then return 0 end
+if current.kind ~= 'work' or
+   (current.state ~= 'accepted' and current.state ~= 'dispatch_failed') or
+   current.session or current.result or current.deadline > tonumber(ARGV[2]) then return 0 end
+current.state = 'interrupted'
+redis.call('SET', KEYS[1], cjson.encode(current))
+redis.call('DEL', KEYS[2])
 return 1
 `;
 
@@ -335,6 +382,49 @@ export class RedisRunStore implements RunStore {
           client.eval(FAIL_DISPATCH_SCRIPT, {
             keys: [this.runKey(runId)],
             arguments: [],
+          }),
+        ),
+      ) === 1
+    );
+  }
+
+  async recordDispatchTarget(
+    job: WorkerJob,
+    target: SandboxTarget,
+  ): Promise<boolean> {
+    return (
+      Number(
+        await this.execute((client) =>
+          client.eval(RECORD_DISPATCH_TARGET_SCRIPT, {
+            keys: [
+              this.runKey(job.runId),
+              this.ownerKey(
+                job.input.workspaceId,
+                job.input.channelId,
+                job.input.threadTs,
+              ),
+            ],
+            arguments: [
+              job.runId,
+              String(job.generation),
+              JSON.stringify(target),
+            ],
+          }),
+        ),
+      ) === 1
+    );
+  }
+
+  async interruptRun(run: RunRecord, now: number): Promise<boolean> {
+    return (
+      Number(
+        await this.execute((client) =>
+          client.eval(INTERRUPT_RUN_SCRIPT, {
+            keys: [
+              this.runKey(run.runId),
+              this.ownerKey(run.workspaceId, run.channelId, run.threadTs),
+            ],
+            arguments: [JSON.stringify(run), String(now)],
           }),
         ),
       ) === 1

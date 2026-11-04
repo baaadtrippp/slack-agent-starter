@@ -13,8 +13,13 @@ import {
   it,
   vi,
 } from 'vitest';
-import { createGateway, BUSY_REPLY } from '../apps/gateway/src/gateway.js';
+import {
+  createGateway,
+  BUSY_REPLY,
+  RECOVERED_REPLY,
+} from '../apps/gateway/src/gateway.js';
 import { RedisRunStore } from '../apps/gateway/src/store.js';
+import type { SandboxTarget } from '../apps/gateway/src/store.js';
 import { createFakeWorker } from '../apps/worker/src/fake-worker.js';
 import { WORKER_FAILURE_REPLY } from '../packages/contracts/src/index.js';
 import type {
@@ -83,6 +88,7 @@ function signed(body: unknown, sentAt = initialTime, secret = signingSecret) {
 function harness(
   sdkState: StateAdapter = createMockState(),
   threadResume = false,
+  isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>,
 ) {
   const clock = { now: initialTime };
   const tasks: Array<() => Promise<void>> = [];
@@ -106,6 +112,7 @@ function harness(
     state: sdkState,
     store,
     dispatch,
+    ...(isSandboxStopped ? { isSandboxStopped } : {}),
     schedule: (task) => tasks.push(task),
     now: () => clock.now,
   });
@@ -615,6 +622,144 @@ describe.skipIf(!redisUrl)(
         BUSY_REPLY,
       );
     });
+
+    it('releases an expired first turn only after stop proof, without replaying either event', async () => {
+      const target = {
+        sandboxName: 'synthetic-worker',
+        sessionId: 'synthetic-session',
+      };
+      const stopped = vi.fn().mockResolvedValue(true);
+      const gateway = harness(createMockState(), true, stopped);
+      const interruptRun = gateway.store.interruptRun.bind(gateway.store);
+      const interrupted = vi
+        .spyOn(gateway.store, 'interruptRun')
+        .mockImplementationOnce(async (run, now) => {
+          if (!(await interruptRun(run, now)))
+            throw new Error('Expected interruption to commit');
+          throw new Error('Synthetic Redis acknowledgement loss');
+        });
+      gateway.dispatch.mockImplementationOnce(async (job) => {
+        expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+          true,
+        );
+        throw new Error('Synthetic dispatch acknowledgement loss');
+      });
+      const original = envelope();
+      await gateway.events(signed(original));
+      await gateway.flush();
+      const oldJob = gateway.dispatch.mock.calls[0]![0];
+      const recoveryInput = threadReply(original.event.ts);
+      gateway.clock.now = oldJob.deadline;
+      expect(
+        (await gateway.events(signed(recoveryInput, gateway.clock.now))).status,
+      ).toBe(200);
+      await gateway.events(
+        signed(threadReply(original.event.ts), gateway.clock.now),
+      );
+      const delayedBusyReply = gateway.tasks.pop()!;
+      expect(stopped).not.toHaveBeenCalled();
+      await gateway.flush();
+
+      expect(stopped).toHaveBeenCalledExactlyOnceWith(target);
+      expect(interrupted).toHaveBeenCalledTimes(2);
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+      expect(await gateway.store.getRun(oldJob.runId)).toMatchObject({
+        state: 'interrupted',
+        execution: target,
+      });
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(
+        `slack:CTEST1:${original.event.ts}`,
+        RECOVERED_REPLY,
+      );
+      await gateway.events(signed(original, gateway.clock.now));
+      await gateway.events(signed(recoveryInput, gateway.clock.now));
+      await gateway.flush();
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
+
+      const fresh = envelope();
+      await gateway.events(
+        signed(
+          {
+            ...fresh,
+            event: { ...fresh.event, thread_ts: original.event.ts },
+          },
+          gateway.clock.now,
+        ),
+      );
+      await gateway.flush();
+      expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+      const newJob = gateway.dispatch.mock.calls[1]![0];
+      expect(newJob.input.threadTs).toBe(original.event.ts);
+      expect(newJob.session).toBeUndefined();
+      expect(newJob.runId).not.toBe(oldJob.runId);
+
+      expect(
+        (await gateway.callback(callback(result(oldJob), oldJob.callbackToken)))
+          .status,
+      ).toBe(410);
+      expect(await gateway.store.getRun(oldJob.runId)).toMatchObject({
+        state: 'interrupted',
+      });
+      expect(await gateway.store.getRun(newJob.runId)).toMatchObject({
+        state: 'accepted',
+      });
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
+
+      await delayedBusyReply();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
+        `slack:CTEST1:${original.event.ts}`,
+        BUSY_REPLY,
+      );
+      expect(stopped).toHaveBeenCalledTimes(1);
+      expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(['unbound', 'unexpired', 'running', 'lookup error'])(
+      'keeps ownership when the previous worker is %s',
+      async (reason) => {
+        const target = {
+          sandboxName: 'synthetic-worker',
+          sessionId: 'synthetic-session',
+        };
+        const stopped = vi.fn().mockResolvedValue(false);
+        if (reason === 'lookup error')
+          stopped.mockRejectedValue(new Error('Synthetic provider outage'));
+        const gateway = harness(createMockState(), true, stopped);
+        if (reason !== 'unbound') {
+          gateway.dispatch.mockImplementationOnce(async (job) => {
+            expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+              true,
+            );
+          });
+        }
+        const original = envelope();
+        await gateway.events(signed(original));
+        await gateway.flush();
+        const job = gateway.dispatch.mock.calls[0]![0];
+        if (reason !== 'unexpired') gateway.clock.now = job.deadline;
+        await gateway.events(
+          signed(threadReply(original.event.ts), gateway.clock.now),
+        );
+        await gateway.flush();
+
+        expect(stopped).toHaveBeenCalledTimes(
+          reason === 'running' || reason === 'lookup error' ? 1 : 0,
+        );
+        expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+        expect(await gateway.store.getRun(job.runId)).toMatchObject({
+          state: 'accepted',
+        });
+        expect(
+          SlackAdapter.prototype.postMessage,
+        ).toHaveBeenCalledExactlyOnceWith(
+          `slack:CTEST1:${original.event.ts}`,
+          BUSY_REPLY,
+        );
+      },
+    );
 
     it('accepts the original worker result if the dispatch response was lost', async () => {
       const gateway = harness();

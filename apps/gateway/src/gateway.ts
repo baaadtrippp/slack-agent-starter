@@ -20,7 +20,7 @@ import type {
   WorkerJob,
   WorkerResult,
 } from '../../../packages/contracts/src/index.js';
-import type { RunRecord, RunStore } from './store.js';
+import type { RunRecord, RunStore, SandboxTarget } from './store.js';
 
 export type GatewayConfig = {
   signingSecret: string;
@@ -36,12 +36,16 @@ type GatewayOptions = {
   state: StateAdapter;
   store: RunStore;
   dispatch: (job: WorkerJob) => Promise<void>;
+  isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>;
   schedule: (task: () => Promise<void>) => void;
   now?: () => number;
 };
 
 export const BUSY_REPLY =
-  'This thread has an unfinished run. Your message was not submitted. During this test, start a new mention outside this thread and ask the operator to inspect it.';
+  'This thread had an unfinished run when your message arrived. Your message was not submitted. During this test, start a new mention outside this thread and ask the operator to inspect it.';
+
+export const RECOVERED_REPLY =
+  'The environment assigned to the previous run has stopped. Hydra could not confirm a result. This message was not submitted. Mention me again in this thread to try a fresh run.';
 
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_EVENT_BYTES = 256 * 1024;
@@ -87,6 +91,7 @@ export function createGateway({
   state,
   store,
   dispatch,
+  isSandboxStopped,
   schedule,
   now = Date.now,
 }: GatewayOptions) {
@@ -157,6 +162,31 @@ export function createGateway({
         }),
       );
     }
+  }
+
+  async function recoverInterruptedRun(run: RunRecord) {
+    if (!isSandboxStopped || !run.blockedBy) return false;
+    const previous = await store.getRun(run.blockedBy);
+    if (
+      !previous?.execution ||
+      previous.workspaceId !== run.workspaceId ||
+      previous.channelId !== run.channelId ||
+      previous.threadTs !== run.threadTs
+    )
+      return false;
+    if (previous.state !== 'interrupted') {
+      if (
+        previous.session ||
+        previous.deadline > now() ||
+        (previous.state !== 'accepted' && previous.state !== 'dispatch_failed')
+      )
+        return false;
+      if (!(await isSandboxStopped(previous.execution))) return false;
+    }
+    // The first write may have committed even if Redis did not acknowledge it.
+    return store
+      .interruptRun(previous, now())
+      .catch(() => store.interruptRun(previous, now()));
   }
 
   async function events(request: Request): Promise<Response> {
@@ -267,7 +297,8 @@ export function createGateway({
       if (
         admission.run.deadline <= now() &&
         admission.run.state !== 'completed' &&
-        admission.run.state !== 'worker_failed'
+        admission.run.state !== 'worker_failed' &&
+        admission.run.state !== 'interrupted'
       )
         console.error(
           JSON.stringify({
@@ -283,6 +314,15 @@ export function createGateway({
     schedule(async () => {
       try {
         if (run.kind === 'busy') {
+          const recovered = await recoverInterruptedRun(run).catch(() => {
+            console.error(
+              JSON.stringify({
+                runId: run.runId,
+                phase: 'recovery_unavailable',
+              }),
+            );
+            return false;
+          });
           const result: WorkerResult = {
             version: 1,
             runId: run.runId,
@@ -290,7 +330,7 @@ export function createGateway({
             eventId: randomUUID(),
             sequence: 1,
             type: 'completed',
-            text: BUSY_REPLY,
+            text: recovered ? RECOVERED_REPLY : BUSY_REPLY,
           };
           if (
             (await store.claimPublication(run.runId, result, now())) ===
@@ -367,7 +407,11 @@ export function createGateway({
     if (run.generation !== generation || run.kind !== 'work')
       return new Response(null, { status: 409 });
     if (run.deadline <= now()) {
-      if (run.state !== 'completed' && run.state !== 'worker_failed')
+      if (
+        run.state !== 'completed' &&
+        run.state !== 'worker_failed' &&
+        run.state !== 'interrupted'
+      )
         console.error(
           JSON.stringify({
             runId: run.runId,

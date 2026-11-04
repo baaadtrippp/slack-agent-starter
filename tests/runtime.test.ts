@@ -5,11 +5,15 @@ import { createRedisState } from '@chat-adapter/state-redis';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { WorkerJob } from '../packages/contracts/src/index.js';
 
-const { background } = vi.hoisted(() => ({
+const { background, sandboxGet } = vi.hoisted(() => ({
   background: [] as Promise<unknown>[],
+  sandboxGet: vi.fn(),
 }));
 vi.mock('@vercel/functions', () => ({
   waitUntil: (task: Promise<unknown>) => background.push(task),
+}));
+vi.mock('../apps/gateway/node_modules/@vercel/sandbox/dist/index.js', () => ({
+  Sandbox: { get: sandboxGet },
 }));
 
 const redisUrl = process.env.TEST_REDIS_URL;
@@ -131,14 +135,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
   }, 10_000);
 
   it('completes publication when Slack initialization and posting each take longer than one second', async () => {
-    vi.stubEnv('GATEWAY_ORIGIN', 'https://gateway.example');
-    vi.stubEnv('FAKE_WORKER_URL', 'https://worker.example/api/fake');
-    vi.stubEnv('SLACK_ENABLED_CHANNEL_IDS', 'CTEST1');
-    vi.stubEnv('SLACK_SIGNING_SECRET', 'synthetic-signing-secret');
-    vi.stubEnv('SLACK_BOT_TOKEN', 'synthetic-bot-token');
-    vi.stubEnv('SLACK_WORKSPACE_ID', 'TTEST1');
-    vi.stubEnv('REDIS_URL', redisUrl!);
-    vi.resetModules();
+    configureRuntime();
     const { SlackAdapter } = await import('@chat-adapter/slack');
     const initialize = vi
       .spyOn(SlackAdapter.prototype, 'initialize')
@@ -160,43 +157,14 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       }),
     );
     const { handle } = await import('../apps/gateway/src/runtime.js');
-    const ts = `${Math.floor(Date.now() / 1_000)}.000001`;
-    const eventId = `Ev${randomUUID()}`;
-    const body = JSON.stringify({
-      type: 'event_callback',
-      team_id: 'TTEST1',
-      event_id: eventId,
-      is_ext_shared_channel: false,
-      event: {
-        type: 'app_mention',
-        user: 'UTEST1',
-        channel: 'CTEST1',
-        text: '<@UBOT1> Synthetic delayed Slack test',
-        ts,
-      },
-    });
-    const stamp = String(Math.floor(Date.now() / 1_000));
-    const signature = createHmac('sha256', 'synthetic-signing-secret')
-      .update(`v0:${stamp}:${body}`)
-      .digest('hex');
+    const event = runtimeEvent();
     const observer = createRedisState({
       url: redisUrl!,
       keyPrefix: `runtime-observer:${randomUUID()}`,
     });
     await observer.connect();
     try {
-      const response = await handle(
-        new Request('https://gateway.example/api/slack/events', {
-          method: 'POST',
-          body,
-          headers: {
-            'content-type': 'application/json',
-            'x-slack-request-timestamp': stamp,
-            'x-slack-signature': `v0=${signature}`,
-          },
-        }),
-        'events',
-      );
+      const response = await handle(event.request, 'events');
       expect(response.status).toBe(200);
       await drainBackground();
       expect(job).toBeDefined();
@@ -231,19 +199,86 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         messageId: '1800000001.000001',
       });
     } finally {
-      const client = observer.getClient();
-      const eventKey = `slack-agent:m1:event:TTEST1:${eventId}`;
-      const runId = await client.get(eventKey);
-      const keys = [
-        eventKey,
-        `slack-agent:m1:message:TTEST1:CTEST1:${ts}`,
-        `slack-agent:m1:owner:TTEST1:CTEST1:${ts}`,
-      ];
-      if (runId) keys.push(`slack-agent:m1:run:${runId}`);
-      await client.del(keys);
+      await cleanupRuntimeRun(observer, event);
       await observer.disconnect();
     }
   }, 10_000);
+
+  it.each(['running', 'stopped', 'unrecordable'] as const)(
+    'uses the exact %s Sandbox session safely',
+    async (condition) => {
+      configureRuntime('synthetic-worker');
+      const observer = createRedisState({
+        url: redisUrl!,
+        keyPrefix: `runtime-sandbox-observer:${randomUUID()}`,
+      });
+      await observer.connect();
+      const sessionId = randomUUID();
+      let recorded: unknown;
+      const sessionRunCommand = vi.fn().mockImplementation(async (command) => {
+        const job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
+        const encoded = await observer
+          .getClient()
+          .get(`slack-agent:m1:run:${job.runId}`);
+        recorded = JSON.parse(encoded!);
+      });
+      const sandboxRunCommand = vi.fn();
+      sandboxGet.mockResolvedValue({
+        runCommand: sandboxRunCommand,
+        currentSession: () => ({
+          status: condition === 'stopped' ? 'stopped' : 'running',
+          sessionId,
+          runCommand: sessionRunCommand,
+        }),
+      });
+      let restoreRecordTarget: (() => void) | undefined;
+      if (condition === 'unrecordable') {
+        const { RedisRunStore } = await import('../apps/gateway/src/store.js');
+        const spy = vi.spyOn(RedisRunStore.prototype, 'recordDispatchTarget');
+        spy.mockResolvedValue(false);
+        restoreRecordTarget = () => spy.mockRestore();
+      }
+      const event = runtimeEvent();
+      let runId: string | undefined;
+      try {
+        const { handle } = await import('../apps/gateway/src/runtime.js');
+        expect((await handle(event.request, 'events')).status).toBe(200);
+        await drainBackground();
+        runId =
+          (await observer
+            .getClient()
+            .get(`slack-agent:m1:event:TTEST1:${event.eventId}`)) ?? undefined;
+        expect(runId).toBeDefined();
+        const encoded = await observer
+          .getClient()
+          .get(`slack-agent:m1:run:${runId}`);
+        expect(sandboxGet).toHaveBeenCalledWith({
+          name: 'synthetic-worker',
+          resume: false,
+          signal: expect.any(AbortSignal),
+        });
+        expect(sandboxRunCommand).not.toHaveBeenCalled();
+        if (condition === 'running') {
+          expect(JSON.parse(encoded!)).toMatchObject({
+            state: 'accepted',
+            execution: { sandboxName: 'synthetic-worker', sessionId },
+          });
+          expect(recorded).toEqual(JSON.parse(encoded!));
+          expect(sessionRunCommand).toHaveBeenCalledTimes(1);
+        } else {
+          expect(JSON.parse(encoded!)).toMatchObject({
+            state: 'dispatch_failed',
+          });
+          expect(JSON.parse(encoded!)).not.toHaveProperty('execution');
+          expect(sessionRunCommand).not.toHaveBeenCalled();
+        }
+      } finally {
+        await cleanupRuntimeRun(observer, event, runId);
+        await observer.disconnect();
+        restoreRecordTarget?.();
+      }
+    },
+  );
 });
 
 async function drainBackground() {
@@ -258,4 +293,73 @@ async function retryUntil<T>(action: () => Promise<T | null>): Promise<T> {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error('Runtime did not recover before the test deadline');
+}
+
+function configureRuntime(sandboxName?: string) {
+  background.splice(0);
+  sandboxGet.mockReset();
+  vi.stubEnv('GATEWAY_ORIGIN', 'https://gateway.example');
+  vi.stubEnv('SANDBOX_WORKER_NAME', sandboxName ?? '');
+  if (sandboxName) vi.stubEnv('OPENROUTER_MODEL', 'synthetic/model');
+  else vi.stubEnv('FAKE_WORKER_URL', 'https://worker.example/api/fake');
+  vi.stubEnv('SLACK_ENABLED_CHANNEL_IDS', 'CTEST1');
+  vi.stubEnv('SLACK_SIGNING_SECRET', 'synthetic-signing-secret');
+  vi.stubEnv('SLACK_BOT_TOKEN', 'synthetic-bot-token');
+  vi.stubEnv('SLACK_WORKSPACE_ID', 'TTEST1');
+  vi.stubEnv('REDIS_URL', redisUrl!);
+  vi.resetModules();
+}
+
+function runtimeEvent() {
+  const ts = `${Math.floor(Date.now() / 1_000)}.${String(
+    Math.floor(Math.random() * 1_000_000),
+  ).padStart(6, '0')}`;
+  const eventId = `Ev${randomUUID()}`;
+  const body = JSON.stringify({
+    type: 'event_callback',
+    team_id: 'TTEST1',
+    event_id: eventId,
+    is_ext_shared_channel: false,
+    event: {
+      type: 'app_mention',
+      user: 'UTEST1',
+      channel: 'CTEST1',
+      text: '<@UBOT1> Synthetic Sandbox dispatch test',
+      ts,
+    },
+  });
+  const stamp = String(Math.floor(Date.now() / 1_000));
+  const signature = createHmac('sha256', 'synthetic-signing-secret')
+    .update(`v0:${stamp}:${body}`)
+    .digest('hex');
+  return {
+    eventId,
+    ts,
+    request: new Request('https://gateway.example/api/slack/events', {
+      method: 'POST',
+      body,
+      headers: {
+        'content-type': 'application/json',
+        'x-slack-request-timestamp': stamp,
+        'x-slack-signature': `v0=${signature}`,
+      },
+    }),
+  };
+}
+
+async function cleanupRuntimeRun(
+  observer: ReturnType<typeof createRedisState>,
+  event: { eventId: string; ts: string },
+  knownRunId?: string,
+) {
+  const client = observer.getClient();
+  const eventKey = `slack-agent:m1:event:TTEST1:${event.eventId}`;
+  const runId = knownRunId ?? (await client.get(eventKey));
+  const keys = [
+    eventKey,
+    `slack-agent:m1:message:TTEST1:CTEST1:${event.ts}`,
+    `slack-agent:m1:owner:TTEST1:CTEST1:${event.ts}`,
+  ];
+  if (runId) keys.push(`slack-agent:m1:run:${runId}`);
+  await client.del(keys);
 }
