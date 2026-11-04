@@ -55,8 +55,10 @@ transcript. The callback in this probe was a fixture.
 
 A local streaming fixture also forced a provider error after a resumed turn
 started. The worker restored the committed transcript after shutdown, and a
-retry completed with the same native session ID. An unconfirmed exit still
-retains ownership for inspection.
+retry completed with the same native session ID. An unconfirmed exit or
+uncertain Drive write after a resumed turn retains ownership for inspection. A
+stale scratch directory is removed only after the process is confirmed gone or
+the Sandbox is replaced.
 
 ## Sandbox replacement evidence
 

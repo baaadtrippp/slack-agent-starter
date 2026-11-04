@@ -20,7 +20,7 @@ import {
 const failureText =
   'The agent could not finish this run. You can retry by mentioning it again.';
 const callbackReserve = 12_000;
-const unconfirmedExit = new Error('Pi shutdown could not be verified');
+const uncertainRun = new Error('Worker state requires inspection');
 const bin = join(import.meta.dirname, 'node_modules', '.bin');
 
 try {
@@ -118,7 +118,7 @@ async function run(job, model, key) {
       result.session = completed.session;
       result.type = 'completed';
     } catch (error) {
-      if (error === unconfirmedExit) throw error;
+      if (error === uncertainRun) throw error;
       console.error(
         JSON.stringify({ runId: job.runId, phase: 'pi_turn_failed' }),
       );
@@ -136,10 +136,11 @@ async function run(job, model, key) {
       throw error;
     }
   } catch (error) {
-    if (error === unconfirmedExit) throw error;
+    if (error === uncertainRun) throw error;
     console.error(
       JSON.stringify({ runId: job.runId, phase: 'drive_write_failed' }),
     );
+    if (job.session && result.type === 'completed') throw uncertainRun;
     result.type = 'failed';
     result.text = failureText;
     delete result.session;
@@ -273,7 +274,7 @@ async function prompt(job, model, key, root) {
         await runtime.shutdown();
         stopped = true;
       } catch {
-        throw unconfirmedExit;
+        throw uncertainRun;
       }
     }
 
@@ -326,12 +327,19 @@ async function prompt(job, model, key, root) {
       // The committed transcript is safe to restore only after Pi has exited.
       const path = join(sessions, before.file);
       const temporary = `${path}.${job.runId}.tmp`;
-      await writeFile(temporary, before.source, { mode: 0o600, flag: 'wx' });
-      await rename(temporary, path);
+      try {
+        await writeFile(temporary, before.source, { mode: 0o600, flag: 'wx' });
+        await rename(temporary, path);
+      } catch {
+        throw uncertainRun;
+      }
     }
     throw error;
   } finally {
-    if (stopped) await rm(scratch, { recursive: true, force: true });
+    if (stopped)
+      await rm(scratch, { recursive: true, force: true }).catch(() => {
+        throw uncertainRun;
+      });
   }
 }
 
