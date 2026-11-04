@@ -13,7 +13,7 @@ evidence cell means the requirement has not been demonstrated.
 | F05 Read public URLs      | AC06, AC10                  | Specified   | —                                                                                                                                                                                                                                                            |
 | F06 Return useful work    | AC06, AC10, AC12            | Specified   | —                                                                                                                                                                                                                                                            |
 | F07 Show progress         | AC07, AC10                  | Specified   | —                                                                                                                                                                                                                                                            |
-| F08 Ask questions         | AC05                        | Specified   | —                                                                                                                                                                                                                                                            |
+| F08 Ask questions         | AC05                        | Partial     | **live Slack:** [clarification and same-session answer](milestone-4.md#live-slack-evidence).                                                                                                                                                                 |
 | F09 Stop and inspect      | AC03, AC07, AC10            | Proposed    | —                                                                                                                                                                                                                                                            |
 | F10 Handle busy threads   | AC08                        | Partial     | **deterministic:** [gateway and store tests](../../tests/gateway.test.ts), [Redis store tests](../../tests/store.test.ts)                                                                                                                                    |
 | F11 Recognize reactions   | AC07                        | Proposed    | —                                                                                                                                                                                                                                                            |
@@ -67,6 +67,11 @@ thread and a distinct worker failure reply (F01, F12, AC01, AC09, and AC10).
 Coordinated Sandbox lifecycle remains unverified. The
 [Milestone 3 Slack test](milestone-3.md#live-slack-evidence) verified ordinary
 thread continuation after operator-managed Sandbox replacement (F02, AC02).
+
+The [Milestone 4 clarification test](milestone-4.md#live-slack-evidence)
+verified a question published as normal completed text, worker exit before the
+human reply, independent work in another thread, and an ordinary answer
+reopening the exact native session after Sandbox replacement (F08, AC05).
 
 ## Evidence rules
 
