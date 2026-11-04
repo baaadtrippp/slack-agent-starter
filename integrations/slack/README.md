@@ -17,6 +17,10 @@ configuration. Reinstall the app after applying it so the installed token can
 download the CSV. Invite the app only to the selected public test channel. See
 [the CSV tracer](../../docs/spec/milestone-9.md) for the gateway setting.
 
+`milestone-10.yaml` keeps the mention-only configuration and adds the
+`files:write` bot scope. Reinstall and verify the installed scope before
+enabling the [generated CSV check](../../docs/spec/milestone-10.md).
+
 `proposed-controls-and-feedback.yaml` contains the separate, still-proposed
 Stop/Status and feedback overlay. It is not used in milestone 1.
 

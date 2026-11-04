@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { createRedisState } from '@chat-adapter/state-redis';
 import { SlackAdapter } from '@chat-adapter/slack';
 import { createMockState } from '@chat-adapter/tests';
@@ -90,7 +90,12 @@ function harness(
   sdkState: StateAdapter = createMockState(),
   threadResume = false,
   isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>,
-  inputConfig: { csvInput?: boolean; publicUrlInput?: boolean } = {},
+  inputConfig: {
+    csvInput?: boolean;
+    publicUrlInput?: boolean;
+    csvOutput?: boolean;
+  } = {},
+  collectCsv?: (runId: string, target: SandboxTarget) => Promise<Buffer>,
 ) {
   const clock = { now: initialTime };
   const tasks: Array<() => Promise<void>> = [];
@@ -116,6 +121,7 @@ function harness(
     store,
     dispatch,
     ...(isSandboxStopped ? { isSandboxStopped } : {}),
+    ...(collectCsv ? { collectCsv } : {}),
     schedule: (task) => tasks.push(task),
     now: () => clock.now,
   });
@@ -140,7 +146,7 @@ function result(job: WorkerJob): WorkerResult {
   };
 }
 
-function callback(body: WorkerResult, token: string) {
+function callback(body: unknown, token: string) {
   return new Request('https://gateway.example/api/worker/callback', {
     method: 'POST',
     headers: {
@@ -365,6 +371,151 @@ describe.skipIf(!redisUrl)(
         `slack:CTEST1:${body.event.ts}`,
         output.text,
       );
+      expect(await gateway.store.getRun(job.runId)).toMatchObject({
+        state: 'completed',
+        messageId: '1800000001.000001',
+      });
+    });
+
+    it.each([
+      'uploaded',
+      'upload rejected',
+      'upload unconfirmed',
+      'collection rejected',
+      'collection timed out',
+      'execution target missing',
+      'digest mismatched',
+    ])('preserves the text reply with CSV outcome %s', async (outcome) => {
+      const csv = Buffer.from('label,cents\r\néclair,17\r\n');
+      const collectCsv = vi.fn().mockResolvedValue(csv);
+      if (outcome === 'collection rejected')
+        collectCsv.mockRejectedValue(new Error('Artifact is unavailable'));
+      if (outcome === 'digest mismatched')
+        collectCsv.mockResolvedValue(Buffer.from('different bytes'));
+      const gateway = harness(
+        createMockState(),
+        false,
+        undefined,
+        { csvOutput: true },
+        collectCsv,
+      );
+      const body = envelope();
+      await gateway.events(signed(body));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      if (outcome === 'collection timed out')
+        collectCsv.mockImplementation(async () => {
+          gateway.clock.now = job.deadline;
+          throw new Error('Artifact collection timed out');
+        });
+      expect(job.csvOutput).toBe(true);
+      const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
+      if (outcome !== 'execution target missing')
+        expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+          'recorded',
+        );
+      const output: WorkerResult = {
+        ...result(job),
+        artifact: { sha256: createHash('sha256').update(csv).digest('hex') },
+        session: {
+          seedRunId: job.runId,
+          nativeId: randomUUID(),
+          adapterId: randomUUID(),
+          revision: 1,
+        },
+      };
+      const post = vi.mocked(SlackAdapter.prototype.postMessage);
+      post.mockResolvedValueOnce({
+        id: '1800000001.000001',
+        threadId: 'synthetic-thread',
+        raw: {},
+      });
+      if (outcome === 'upload rejected')
+        post.mockRejectedValueOnce(new Error('Slack refused the upload'));
+      if (outcome === 'uploaded' || outcome === 'upload unconfirmed')
+        post.mockResolvedValueOnce({
+          id: 'file-synthetic',
+          threadId: 'synthetic-thread',
+          raw: outcome === 'uploaded' ? { uploadedFileIds: ['FTEST'] } : {},
+        });
+
+      expect(
+        (await gateway.callback(callback(output, 'f'.repeat(64)))).status,
+      ).toBe(401);
+      expect(
+        (
+          await gateway.callback(
+            callback(
+              {
+                ...output,
+                artifact: { ...output.artifact, path: '../result.csv' },
+              },
+              job.callbackToken,
+            ),
+          )
+        ).status,
+      ).toBe(400);
+      expect(collectCsv).not.toHaveBeenCalled();
+      if (outcome === 'uploaded') {
+        const collecting = Promise.withResolvers<void>();
+        const collected = Promise.withResolvers<Buffer>();
+        collectCsv.mockImplementationOnce(() => {
+          collecting.resolve();
+          return collected.promise;
+        });
+        const first = gateway.callback(callback(output, job.callbackToken));
+        await collecting.promise;
+        const overlap = await gateway.callback(
+          callback(output, job.callbackToken),
+        );
+        collected.resolve(csv);
+        expect(overlap.status).toBe(503);
+        expect((await first).status).toBe(202);
+      } else {
+        expect(
+          (await gateway.callback(callback(output, job.callbackToken))).status,
+        ).toBe(202);
+      }
+      gateway.clock.now = initialTime;
+      expect(
+        (await gateway.callback(callback(output, job.callbackToken))).status,
+      ).toBe(204);
+      expect(
+        (
+          await gateway.callback(
+            callback(
+              { ...output, artifact: { sha256: 'a'.repeat(64) } },
+              job.callbackToken,
+            ),
+          )
+        ).status,
+      ).toBe(409);
+      expect(
+        (
+          await gateway.callback(
+            callback({ ...output, artifact: undefined }, job.callbackToken),
+          )
+        ).status,
+      ).toBe(409);
+      await gateway.flush();
+
+      const threadId = `slack:CTEST1:${body.event.ts}`;
+      if (outcome === 'execution target missing')
+        expect(collectCsv).not.toHaveBeenCalled();
+      else
+        expect(collectCsv).toHaveBeenCalledExactlyOnceWith(job.runId, target);
+      expect(post).toHaveBeenNthCalledWith(1, threadId, output.text);
+      if (outcome.startsWith('upload'))
+        expect(post).toHaveBeenNthCalledWith(2, threadId, {
+          markdown: '',
+          files: [{ data: csv, filename: 'result.csv', mimeType: 'text/csv' }],
+        });
+      if (outcome !== 'uploaded')
+        expect(post).toHaveBeenLastCalledWith(
+          threadId,
+          'I could not confirm the CSV attachment. The text result is above.',
+        );
+      expect(post).toHaveBeenCalledTimes(outcome.startsWith('upload ') ? 3 : 2);
       expect(await gateway.store.getRun(job.runId)).toMatchObject({
         state: 'completed',
         messageId: '1800000001.000001',

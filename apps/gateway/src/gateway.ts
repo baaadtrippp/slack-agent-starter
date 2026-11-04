@@ -33,6 +33,7 @@ export type GatewayConfig = {
   origin: string;
   threadResume?: boolean;
   csvInput?: boolean;
+  csvOutput?: boolean;
   publicUrlInput?: boolean;
 };
 
@@ -44,6 +45,7 @@ type GatewayOptions = {
     job: WorkerJob,
     stagedInput?: Buffer,
   ) => Promise<void | 'worker-unavailable' | 'input-staging-failed'>;
+  collectCsv?: (runId: string, target: SandboxTarget) => Promise<Buffer>;
   isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>;
   schedule: (task: () => Promise<void>) => void;
   now?: () => number;
@@ -107,6 +109,7 @@ export function createGateway({
   state,
   store,
   dispatch,
+  collectCsv,
   isSandboxStopped,
   schedule,
   now = Date.now,
@@ -145,11 +148,12 @@ export function createGateway({
     }
   }
 
-  async function publish(run: RunRecord, result: WorkerResult) {
+  async function publish(run: RunRecord, result: WorkerResult, csv?: Buffer) {
     let messageId: string | undefined;
+    let threadId: string;
     try {
       await initializeBot();
-      const threadId = slack.encodeThreadId({
+      threadId = slack.encodeThreadId({
         channel: run.channelId,
         threadTs: run.threadTs,
       });
@@ -177,6 +181,42 @@ export function createGateway({
           stateRecorded,
         }),
       );
+      return;
+    }
+
+    if (!result.artifact) return;
+    const thread = bot.thread(threadId);
+    try {
+      if (!csv) throw new Error('Generated CSV was unavailable');
+      const upload = await slack.postMessage(threadId, {
+        markdown: '',
+        files: [{ data: csv, filename: 'result.csv', mimeType: 'text/csv' }],
+      });
+      const receipt = z.object({
+        uploadedFileIds: z.tuple([z.string().min(1)]),
+      });
+      if (!receipt.safeParse(upload.raw).success)
+        throw new Error('Slack did not confirm the upload');
+      console.info(
+        JSON.stringify({
+          runId: run.runId,
+          phase: 'csv_uploaded',
+          bytes: csv.length,
+        }),
+      );
+    } catch {
+      console.error(
+        JSON.stringify({
+          runId: run.runId,
+          phase: 'csv_attachment_unconfirmed',
+          category: csv ? 'slack_upload' : 'artifact_unavailable',
+        }),
+      );
+      await thread
+        .post(
+          'I could not confirm the CSV attachment. The text result is above.',
+        )
+        .catch(() => {});
     }
   }
 
@@ -427,6 +467,7 @@ export function createGateway({
               : {}),
           },
           ...(run.session ? { session: run.session } : {}),
+          ...(config.csvOutput && !stagedInput ? { csvOutput: true } : {}),
           deadline: run.deadline,
           callbackUrl: `${config.origin}/api/worker/callback`,
           callbackToken,
@@ -538,7 +579,8 @@ export function createGateway({
     if (!parsed.success) return new Response(null, { status: 400 });
     const result = parsed.data;
     if (result.type === 'failed') {
-      if (result.session) return new Response(null, { status: 400 });
+      if (result.session || result.artifact)
+        return new Response(null, { status: 400 });
       result.text = WORKER_FAILURE_REPLY;
     }
     const run = await authenticate(request, result.runId, result.generation);
@@ -558,9 +600,40 @@ export function createGateway({
       )
         return new Response(null, { status: 409 });
     }
+    const claimAt = now();
+    let csv: Buffer | undefined;
+    let csvLease: string | undefined;
+    if (
+      result.artifact &&
+      config.csvOutput &&
+      collectCsv &&
+      run.execution &&
+      result.session &&
+      !run.result &&
+      claimAt < run.deadline
+    ) {
+      // Keep retries from racing the collection or acknowledging it early.
+      csvLease = randomUUID();
+      const reserved = await store
+        .reserveCsvCollection(run.runId, csvLease)
+        .catch(() => false);
+      if (!reserved) return new Response(null, { status: 503 });
+
+      // Collect before the worker can exit and release its Sandbox reservation.
+      const bytes = await collectCsv(run.runId, run.execution).catch(
+        () => undefined,
+      );
+      if (bytes && digest(bytes) === result.artifact.sha256) csv = bytes;
+    }
     let claim;
     try {
-      claim = await store.claimPublication(run.runId, result, now());
+      // Collection failure must not expire a text result already received on time.
+      claim = await store.claimPublication(
+        run.runId,
+        result,
+        claimAt,
+        csvLease,
+      );
     } catch {
       console.error(
         JSON.stringify({
@@ -572,14 +645,15 @@ export function createGateway({
     }
     if (claim === 'duplicate') return new Response(null, { status: 204 });
     if (claim === 'expired') return new Response(null, { status: 410 });
+    if (claim === 'retry') return new Response(null, { status: 503 });
     if (claim !== 'claimed') return new Response(null, { status: 409 });
-    schedule(() => publish(run, result));
+    schedule(() => publish(run, result, csv));
     return new Response(null, { status: 202 });
   }
 
   return { events, callback };
 }
 
-function digest(value: string) {
+function digest(value: string | Buffer) {
   return createHash('sha256').update(value).digest('hex');
 }

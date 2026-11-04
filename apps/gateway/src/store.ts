@@ -60,11 +60,13 @@ export interface RunStore {
     run: RunRecord;
   }>;
   getRun(runId: string): Promise<RunRecord | null>;
+  reserveCsvCollection(runId: string, lease: string): Promise<boolean>;
   claimPublication(
     runId: string,
     result: WorkerResult,
     now: number,
-  ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired'>;
+    csvLease?: string,
+  ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry'>;
   claimUnsubmitted(run: RunRecord, result: WorkerResult): Promise<boolean>;
   completePublication(run: RunRecord, messageId: string): Promise<boolean>;
   failPublication(runId: string): Promise<boolean>;
@@ -131,13 +133,18 @@ local function sameSession(a, b)
   if not a or not b then return not a and not b end
   return a.seedRunId == b.seedRunId and a.nativeId == b.nativeId and a.adapterId == b.adapterId and a.revision == b.revision
 end
+local function sameArtifact(a, b)
+  if not a or not b then return not a and not b end
+  return a.sha256 == b.sha256
+end
 if run.state == 'publishing' or run.state == 'completed' or run.state == 'worker_failed' or run.state == 'publication_uncertain' then
-  if run.result and run.result.eventId == result.eventId and run.result.runId == result.runId and run.result.generation == result.generation and run.result.sequence == result.sequence and run.result.type == result.type and run.result.text == result.text and sameSession(run.result.session, result.session) then
+  if run.result and run.result.eventId == result.eventId and run.result.runId == result.runId and run.result.generation == result.generation and run.result.sequence == result.sequence and run.result.type == result.type and run.result.text == result.text and sameArtifact(run.result.artifact, result.artifact) and sameSession(run.result.session, result.session) then
     return 'duplicate'
   end
   return 'conflict'
 end
 if run.state ~= 'accepted' and run.state ~= 'dispatch_failed' then return 'conflict' end
+if ARGV[4] and redis.call('GET', KEYS[2]) ~= ARGV[4] then return 'retry' end
 run.result = result
 run.state = 'publishing'
 redis.call('SET', KEYS[1], cjson.encode(run))
@@ -432,17 +439,38 @@ export class RedisRunStore implements RunStore {
     return JSON.parse(encoded) as RunRecord;
   }
 
+  private csvCollectionKey(runId: string) {
+    return `${this.runKey(runId)}:csv-collection`;
+  }
+
+  async reserveCsvCollection(runId: string, lease: string): Promise<boolean> {
+    return (
+      (await this.execute((client) =>
+        client.set(this.csvCollectionKey(runId), lease, {
+          NX: true,
+          PX: 7_000,
+        }),
+      )) === 'OK'
+    );
+  }
+
   async claimPublication(
     runId: string,
     result: WorkerResult,
     now: number,
-  ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired'> {
+    csvLease?: string,
+  ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry'> {
     return (await this.execute((client) =>
       client.eval(CLAIM_SCRIPT, {
-        keys: [this.runKey(runId)],
-        arguments: [runId, JSON.stringify(result), String(now)],
+        keys: [this.runKey(runId), this.csvCollectionKey(runId)],
+        arguments: [
+          runId,
+          JSON.stringify(result),
+          String(now),
+          ...(csvLease ? [csvLease] : []),
+        ],
       }),
-    )) as 'claimed' | 'duplicate' | 'conflict' | 'expired';
+    )) as 'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry';
   }
 
   async claimUnsubmitted(
