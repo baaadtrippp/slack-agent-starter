@@ -52,6 +52,7 @@ export interface RunStore {
     result: WorkerResult,
     now: number,
   ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired'>;
+  claimUnsubmitted(run: RunRecord, result: WorkerResult): Promise<boolean>;
   completePublication(run: RunRecord, messageId: string): Promise<boolean>;
   failPublication(runId: string): Promise<boolean>;
   failDispatch(runId: string): Promise<boolean>;
@@ -108,7 +109,10 @@ local result = cjson.decode(ARGV[2])
 if run.runId ~= ARGV[1] or run.runId ~= result.runId or run.generation ~= result.generation then
   return 'conflict'
 end
-if run.deadline <= tonumber(ARGV[3]) then return 'expired' end
+if ARGV[3] == 'unsubmitted' then
+  if run.kind ~= 'work' or run.execution or result.type ~= 'failed' or result.session or
+     redis.call('GET', KEYS[2]) ~= run.runId then return 'conflict' end
+elseif run.deadline <= tonumber(ARGV[3]) then return 'expired' end
 local function sameSession(a, b)
   if not a or not b then return not a and not b end
   return a.seedRunId == b.seedRunId and a.nativeId == b.nativeId and a.adapterId == b.adapterId and a.revision == b.revision
@@ -388,6 +392,23 @@ export class RedisRunStore implements RunStore {
         arguments: [runId, JSON.stringify(result), String(now)],
       }),
     )) as 'claimed' | 'duplicate' | 'conflict' | 'expired';
+  }
+
+  async claimUnsubmitted(
+    run: RunRecord,
+    result: WorkerResult,
+  ): Promise<boolean> {
+    return (
+      (await this.execute((client) =>
+        client.eval(CLAIM_SCRIPT, {
+          keys: [
+            this.runKey(run.runId),
+            this.ownerKey(run.workspaceId, run.channelId, run.threadTs),
+          ],
+          arguments: [run.runId, JSON.stringify(result), 'unsubmitted'],
+        }),
+      )) === 'claimed'
+    );
   }
 
   async completePublication(

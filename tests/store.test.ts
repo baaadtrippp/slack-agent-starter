@@ -327,6 +327,30 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     ).toBe('busy');
   });
 
+  it('limits deadline-independent refusals to unbound thread owners', async () => {
+    const run = makeRun();
+    await store.admit(run);
+    const result: WorkerResult = { ...makeResult(run), type: 'failed' };
+    expect(await store.claimUnsubmitted(run, makeResult(run))).toBe(false);
+    expect(
+      await store.claimUnsubmitted(
+        { ...run, threadTs: nextTimestamp() },
+        result,
+      ),
+    ).toBe(false);
+    expect(await store.claimPublication(run.runId, result, run.deadline)).toBe(
+      'expired',
+    );
+    expect(
+      await store.recordDispatchTarget(makeJob(run), {
+        sandboxName: 'synthetic-refusal',
+        sessionId: randomUUID(),
+      }),
+    ).toBe('recorded');
+    expect(await store.claimUnsubmitted(run, result)).toBe(false);
+    expect(await store.getRun(run.runId)).toMatchObject({ state: 'accepted' });
+  });
+
   it('interrupts only an expired bound owner and preserves its evidence', async () => {
     const run = makeRun();
     const target = {

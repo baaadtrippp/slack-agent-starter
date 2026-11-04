@@ -762,40 +762,45 @@ describe.skipIf(!redisUrl)(
       },
     );
 
-    it('releases an unsubmitted run after replying that the worker is unavailable', async () => {
-      const gateway = harness();
-      gateway.dispatch.mockResolvedValueOnce('worker-unavailable');
-      const original = envelope();
-      await gateway.events(signed(original));
-      await gateway.flush();
-      const job = gateway.dispatch.mock.calls[0]![0];
-      expect(await gateway.store.getRun(job.runId)).toMatchObject({
-        state: 'worker_failed',
-      });
-      expect(
-        SlackAdapter.prototype.postMessage,
-      ).toHaveBeenCalledExactlyOnceWith(
-        `slack:CTEST1:${original.event.ts}`,
-        WORKER_UNAVAILABLE_REPLY,
-      );
-      await gateway.events(signed(original));
-      await gateway.flush();
-      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+    it.each(['active', 'expired'])(
+      'releases an unsubmitted %s run after a worker refusal',
+      async (state) => {
+        const gateway = harness();
+        gateway.dispatch.mockResolvedValueOnce('worker-unavailable');
+        const original = envelope();
+        await gateway.events(signed(original));
+        if (state === 'expired')
+          gateway.clock.now = (await gateway.run())!.deadline;
+        await gateway.flush();
+        const job = gateway.dispatch.mock.calls[0]![0];
+        expect(await gateway.store.getRun(job.runId)).toMatchObject({
+          state: 'worker_failed',
+        });
+        expect(
+          SlackAdapter.prototype.postMessage,
+        ).toHaveBeenCalledExactlyOnceWith(
+          `slack:CTEST1:${original.event.ts}`,
+          WORKER_UNAVAILABLE_REPLY,
+        );
+        await gateway.events(signed(original));
+        await gateway.flush();
+        expect(gateway.dispatch).toHaveBeenCalledTimes(1);
 
-      const fresh = envelope();
-      await gateway.events(
-        signed({
-          ...fresh,
-          event: { ...fresh.event, thread_ts: original.event.ts },
-        }),
-      );
-      await gateway.flush();
-      expect(gateway.dispatch).toHaveBeenCalledTimes(2);
-      expect(gateway.dispatch.mock.calls[1]![0].input.threadTs).toBe(
-        original.event.ts,
-      );
-      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
-    });
+        const fresh = envelope();
+        await gateway.events(
+          signed({
+            ...fresh,
+            event: { ...fresh.event, thread_ts: original.event.ts },
+          }),
+        );
+        await gateway.flush();
+        expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+        expect(gateway.dispatch.mock.calls[1]![0].input.threadTs).toBe(
+          original.event.ts,
+        );
+        expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
+      },
+    );
 
     it('accepts the original worker result if the dispatch response was lost', async () => {
       const gateway = harness();

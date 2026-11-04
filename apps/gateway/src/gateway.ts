@@ -181,8 +181,12 @@ export function createGateway({
       type,
       text,
     };
-    if ((await store.claimPublication(run.runId, result, now())) !== 'claimed')
-      return false;
+    const claimed =
+      type === 'failed'
+        ? await store.claimUnsubmitted(run, result)
+        : (await store.claimPublication(run.runId, result, now())) ===
+          'claimed';
+    if (!claimed) return false;
     await publish(run, result);
     return true;
   }
