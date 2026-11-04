@@ -5,6 +5,7 @@ import {
   timingSafeEqual,
 } from 'node:crypto';
 import { createSlackAdapter } from '@chat-adapter/slack';
+import { unescapeSlackText } from '@chat-adapter/slack/format';
 import {
   parseSlackWebhookBody,
   verifySlackSignature,
@@ -20,6 +21,7 @@ import type {
   WorkerJob,
   WorkerResult,
 } from '../../../packages/contracts/src/index.js';
+import { fetchPublicText } from './public-url.js';
 import { downloadSlackCsv } from './slack-csv.js';
 import type { RunRecord, RunStore, SandboxTarget } from './store.js';
 
@@ -31,6 +33,7 @@ export type GatewayConfig = {
   origin: string;
   threadResume?: boolean;
   csvInput?: boolean;
+  publicUrlInput?: boolean;
 };
 
 type GatewayOptions = {
@@ -39,8 +42,8 @@ type GatewayOptions = {
   store: RunStore;
   dispatch: (
     job: WorkerJob,
-    csv?: Buffer,
-  ) => Promise<void | 'worker-unavailable' | 'csv-staging-failed'>;
+    stagedInput?: Buffer,
+  ) => Promise<void | 'worker-unavailable' | 'input-staging-failed'>;
   isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>;
   schedule: (task: () => Promise<void>) => void;
   now?: () => number;
@@ -57,6 +60,8 @@ export const WORKER_UNAVAILABLE_REPLY =
 
 const CSV_STAGING_FAILURE_REPLY =
   'The CSV could not be staged. Mention me again with the file to retry.';
+const URL_STAGING_FAILURE_REPLY =
+  'The public URL text could not be staged. Mention me again with the link to retry.';
 
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_EVENT_BYTES = 256 * 1024;
@@ -291,17 +296,17 @@ export function createGateway({
       return new Response(null, { status: 200 });
 
     // The synchronous adapter parser does not fetch users, history, or URLs.
-    if (
-      mention &&
-      !slack.parseMessage({
-        type: 'app_mention',
-        user: input.userId,
-        channel: input.channelId,
-        ts: input.ts,
-        thread_ts: input.threadTs,
-        text: input.text,
-      }).isMention
-    )
+    const message = mention
+      ? slack.parseMessage({
+          type: 'app_mention',
+          user: input.userId,
+          channel: input.channelId,
+          ts: input.ts,
+          thread_ts: input.threadTs,
+          text: input.text,
+        })
+      : undefined;
+    if (message && !message.isMention)
       return new Response(null, { status: 200 });
 
     const callbackToken = randomBytes(32).toString('hex');
@@ -381,17 +386,27 @@ export function createGateway({
             );
           return;
         }
-        let csv: Buffer | undefined;
-        if (config.csvInput && hasFiles) {
-          const attachment = await downloadSlackCsv(
-            attachedFiles,
-            config.botToken,
+        const links = config.publicUrlInput ? (message?.links ?? []) : [];
+        const publicUrl = links[0] && unescapeSlackText(links[0].url);
+        if (links.length > 1 || (publicUrl && hasFiles)) {
+          await publishNotice(
+            run,
+            'failed',
+            'Mention me with one public HTTPS link on its own for this test.',
           );
-          if (typeof attachment === 'string') {
-            await publishNotice(run, 'failed', attachment);
+          return;
+        }
+
+        let stagedInput: Buffer | undefined;
+        if (publicUrl || (config.csvInput && hasFiles)) {
+          const source = publicUrl
+            ? await fetchPublicText(publicUrl)
+            : await downloadSlackCsv(attachedFiles, config.botToken);
+          if (typeof source === 'string') {
+            await publishNotice(run, 'failed', source);
             return;
           }
-          csv = attachment;
+          stagedInput = source;
         }
         const job: WorkerJob = {
           version: 1,
@@ -405,21 +420,27 @@ export function createGateway({
             channelId: run.channelId,
             threadTs: run.threadTs,
             messageTs: run.messageTs,
-            ...(csv ? { csv: true } : {}),
+            ...(stagedInput
+              ? publicUrl
+                ? { publicUrl: true }
+                : { csv: true }
+              : {}),
           },
           ...(run.session ? { session: run.session } : {}),
           deadline: run.deadline,
           callbackUrl: `${config.origin}/api/worker/callback`,
           callbackToken,
         };
-        const dispatchOutcome = csv
-          ? await dispatch(job, csv)
+        const dispatchOutcome = stagedInput
+          ? await dispatch(job, stagedInput)
           : await dispatch(job);
         const notice =
           dispatchOutcome === 'worker-unavailable'
             ? WORKER_UNAVAILABLE_REPLY
-            : dispatchOutcome === 'csv-staging-failed'
-              ? CSV_STAGING_FAILURE_REPLY
+            : dispatchOutcome === 'input-staging-failed'
+              ? publicUrl
+                ? URL_STAGING_FAILURE_REPLY
+                : CSV_STAGING_FAILURE_REPLY
               : undefined;
         if (notice && !(await publishNotice(run, 'failed', notice)))
           console.error(

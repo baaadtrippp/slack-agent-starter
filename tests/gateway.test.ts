@@ -90,7 +90,7 @@ function harness(
   sdkState: StateAdapter = createMockState(),
   threadResume = false,
   isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>,
-  csvInput = false,
+  inputConfig: { csvInput?: boolean; publicUrlInput?: boolean } = {},
 ) {
   const clock = { now: initialTime };
   const tasks: Array<() => Promise<void>> = [];
@@ -110,7 +110,7 @@ function harness(
       channelIds: ['CTEST1'],
       origin: 'https://gateway.example',
       threadResume,
-      csvInput,
+      ...inputConfig,
     },
     state: sdkState,
     store,
@@ -518,7 +518,9 @@ describe.skipIf(!redisUrl)(
     });
 
     it('rejects ineligible ordinary events and reports a busy thread while its first run is active', async () => {
-      const gateway = harness(createMockState(), true, undefined, true);
+      const gateway = harness(createMockState(), true, undefined, {
+        csvInput: true,
+      });
       const mention = envelope();
       await gateway.events(signed(mention));
       await gateway.flush();
@@ -556,6 +558,25 @@ describe.skipIf(!redisUrl)(
       ).toHaveBeenCalledExactlyOnceWith(
         `slack:CTEST1:${mention.event.ts}`,
         BUSY_REPLY,
+      );
+    });
+
+    it('posts a private URL refusal to the originating thread without dispatch', async () => {
+      const gateway = harness(createMockState(), false, undefined, {
+        publicUrlInput: true,
+      });
+      const mention = envelope();
+      mention.event.text = '<@UBOT1> Read <https://127.0.0.1/source.txt>.';
+
+      expect((await gateway.events(signed(mention))).status).toBe(200);
+      await gateway.flush();
+
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(
+        `slack:CTEST1:${mention.event.ts}`,
+        'That URL points to a private or restricted network address.',
       );
     });
 
