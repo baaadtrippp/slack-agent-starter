@@ -17,6 +17,7 @@ import {
   createGateway,
   BUSY_REPLY,
   RECOVERED_REPLY,
+  WORKER_UNAVAILABLE_REPLY,
 } from '../apps/gateway/src/gateway.js';
 import { RedisRunStore } from '../apps/gateway/src/store.js';
 import type { SandboxTarget } from '../apps/gateway/src/store.js';
@@ -93,7 +94,7 @@ function harness(
   const clock = { now: initialTime };
   const tasks: Array<() => Promise<void>> = [];
   const dispatch = vi
-    .fn<(job: WorkerJob) => Promise<void>>()
+    .fn<(job: WorkerJob) => Promise<void | 'worker-unavailable'>>()
     .mockResolvedValue();
   const store = new RedisRunStore(
     redis.getClient(),
@@ -640,7 +641,7 @@ describe.skipIf(!redisUrl)(
         });
       gateway.dispatch.mockImplementationOnce(async (job) => {
         expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
-          true,
+          'recorded',
         );
         throw new Error('Synthetic dispatch acknowledgement loss');
       });
@@ -731,7 +732,7 @@ describe.skipIf(!redisUrl)(
         if (reason !== 'unbound') {
           gateway.dispatch.mockImplementationOnce(async (job) => {
             expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
-              true,
+              'recorded',
             );
           });
         }
@@ -758,6 +759,46 @@ describe.skipIf(!redisUrl)(
           `slack:CTEST1:${original.event.ts}`,
           BUSY_REPLY,
         );
+      },
+    );
+
+    it.each(['active', 'expired'])(
+      'releases an unsubmitted %s run after a worker refusal',
+      async (state) => {
+        const gateway = harness();
+        gateway.dispatch.mockResolvedValueOnce('worker-unavailable');
+        const original = envelope();
+        await gateway.events(signed(original));
+        if (state === 'expired')
+          gateway.clock.now = (await gateway.run())!.deadline;
+        await gateway.flush();
+        const job = gateway.dispatch.mock.calls[0]![0];
+        expect(await gateway.store.getRun(job.runId)).toMatchObject({
+          state: 'worker_failed',
+        });
+        expect(
+          SlackAdapter.prototype.postMessage,
+        ).toHaveBeenCalledExactlyOnceWith(
+          `slack:CTEST1:${original.event.ts}`,
+          WORKER_UNAVAILABLE_REPLY,
+        );
+        await gateway.events(signed(original));
+        await gateway.flush();
+        expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+
+        const fresh = envelope();
+        await gateway.events(
+          signed({
+            ...fresh,
+            event: { ...fresh.event, thread_ts: original.event.ts },
+          }),
+        );
+        await gateway.flush();
+        expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+        expect(gateway.dispatch.mock.calls[1]![0].input.threadTs).toBe(
+          original.event.ts,
+        );
+        expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
       },
     );
 

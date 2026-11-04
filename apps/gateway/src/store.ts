@@ -52,10 +52,14 @@ export interface RunStore {
     result: WorkerResult,
     now: number,
   ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired'>;
+  claimUnsubmitted(run: RunRecord, result: WorkerResult): Promise<boolean>;
   completePublication(run: RunRecord, messageId: string): Promise<boolean>;
   failPublication(runId: string): Promise<boolean>;
   failDispatch(runId: string): Promise<boolean>;
-  recordDispatchTarget(job: WorkerJob, target: SandboxTarget): Promise<boolean>;
+  recordDispatchTarget(
+    job: WorkerJob,
+    target: SandboxTarget,
+  ): Promise<'recorded' | 'conflict' | 'stopping'>;
   interruptRun(run: RunRecord, now: number): Promise<boolean>;
 }
 
@@ -105,7 +109,10 @@ local result = cjson.decode(ARGV[2])
 if run.runId ~= ARGV[1] or run.runId ~= result.runId or run.generation ~= result.generation then
   return 'conflict'
 end
-if run.deadline <= tonumber(ARGV[3]) then return 'expired' end
+if ARGV[3] == 'unsubmitted' then
+  if run.kind ~= 'work' or run.execution or result.type ~= 'failed' or result.session or
+     redis.call('GET', KEYS[2]) ~= run.runId then return 'conflict' end
+elseif run.deadline <= tonumber(ARGV[3]) then return 'expired' end
 local function sameSession(a, b)
   if not a or not b then return not a and not b end
   return a.seedRunId == b.seedRunId and a.nativeId == b.nativeId and a.adapterId == b.adapterId and a.revision == b.revision
@@ -169,14 +176,49 @@ return 1
 
 const RECORD_DISPATCH_TARGET_SCRIPT = `
 local encoded = redis.call('GET', KEYS[1])
-if not encoded then return 0 end
+if not encoded then return 'conflict' end
 local run = cjson.decode(encoded)
-if run.runId ~= ARGV[1] or run.generation ~= tonumber(ARGV[2]) then return 0 end
-if run.kind ~= 'work' or run.state ~= 'accepted' or run.execution then return 0 end
-if redis.call('GET', KEYS[2]) ~= run.runId then return 0 end
+if run.runId ~= ARGV[1] or run.generation ~= tonumber(ARGV[2]) then return 'conflict' end
+if run.kind ~= 'work' or run.state ~= 'accepted' or run.execution then return 'conflict' end
+if redis.call('GET', KEYS[2]) ~= run.runId then return 'conflict' end
+local gate = redis.call('GET', KEYS[3])
+if gate and gate ~= 'open' then return 'stopping' end
 run.execution = cjson.decode(ARGV[3])
 redis.call('SET', KEYS[1], cjson.encode(run))
+redis.call('SADD', KEYS[4], run.runId)
+return 'recorded'
+`;
+
+const RELEASE_DISPATCH_TARGET_SCRIPT = `
+local encoded = redis.call('GET', KEYS[1])
+if not encoded then return 0 end
+local run = cjson.decode(encoded)
+local target = cjson.decode(ARGV[2])
+if run.runId ~= ARGV[1] or not run.execution or
+   run.execution.sandboxName ~= target.sandboxName or
+   run.execution.sessionId ~= target.sessionId then return 0 end
+redis.call('SREM', KEYS[2], run.runId)
 return 1
+`;
+
+const ENROLL_IDLE_SESSION_SCRIPT = `
+local gate = redis.call('GET', KEYS[1])
+if gate then return gate == 'open' and 1 or 0 end
+if redis.call('SCARD', KEYS[2]) ~= 0 then return 0 end
+redis.call('SET', KEYS[1], 'open')
+return 1
+`;
+
+const CLAIM_IDLE_STOP_SCRIPT = `
+local gate = redis.call('GET', KEYS[1])
+if not gate then return 'unenrolled' end
+if gate ~= 'open' then
+  local stopping = cjson.decode(gate)
+  return stopping.operationId == ARGV[1] and 'claimed' or 'stopping'
+end
+if redis.call('SCARD', KEYS[2]) ~= 0 then return 'active' end
+redis.call('SET', KEYS[1], cjson.encode({state = 'stopping', operationId = ARGV[1]}))
+return 'claimed'
 `;
 
 const INTERRUPT_RUN_SCRIPT = `
@@ -204,11 +246,13 @@ return 1
 
 export class RedisRunStore implements RunStore {
   private connectPromise: Promise<unknown> | undefined;
+  private readonly client: RedisClientType;
+  private readonly namespace: string;
 
-  constructor(
-    private readonly client: RedisClientType,
-    private readonly namespace = 'slack-agent:m1',
-  ) {}
+  constructor(client: RedisClientType, namespace = 'slack-agent:m1') {
+    this.client = client;
+    this.namespace = namespace;
+  }
 
   private async execute<T>(
     operation: (client: RedisClientType) => Promise<T>,
@@ -269,6 +313,14 @@ export class RedisRunStore implements RunStore {
 
   private sessionKey(conversationId: string): string {
     return `${this.namespace}:session:${conversationId}`;
+  }
+
+  private idleGateKey(target: SandboxTarget): string {
+    return `${this.namespace}:idle:${target.sandboxName}:${target.sessionId}:gate`;
+  }
+
+  private activeDispatchKey(target: SandboxTarget): string {
+    return `${this.namespace}:idle:${target.sandboxName}:${target.sessionId}:active`;
   }
 
   async admit(
@@ -342,6 +394,23 @@ export class RedisRunStore implements RunStore {
     )) as 'claimed' | 'duplicate' | 'conflict' | 'expired';
   }
 
+  async claimUnsubmitted(
+    run: RunRecord,
+    result: WorkerResult,
+  ): Promise<boolean> {
+    return (
+      (await this.execute((client) =>
+        client.eval(CLAIM_SCRIPT, {
+          keys: [
+            this.runKey(run.runId),
+            this.ownerKey(run.workspaceId, run.channelId, run.threadTs),
+          ],
+          arguments: [run.runId, JSON.stringify(result), 'unsubmitted'],
+        }),
+      )) === 'claimed'
+    );
+  }
+
   async completePublication(
     run: RunRecord,
     messageId: string,
@@ -391,28 +460,63 @@ export class RedisRunStore implements RunStore {
   async recordDispatchTarget(
     job: WorkerJob,
     target: SandboxTarget,
+  ): Promise<'recorded' | 'conflict' | 'stopping'> {
+    return (await this.execute((client) =>
+      client.eval(RECORD_DISPATCH_TARGET_SCRIPT, {
+        keys: [
+          this.runKey(job.runId),
+          this.ownerKey(
+            job.input.workspaceId,
+            job.input.channelId,
+            job.input.threadTs,
+          ),
+          this.idleGateKey(target),
+          this.activeDispatchKey(target),
+        ],
+        arguments: [job.runId, String(job.generation), JSON.stringify(target)],
+      }),
+    )) as 'recorded' | 'conflict' | 'stopping';
+  }
+
+  async releaseDispatchTarget(
+    runId: string,
+    target: SandboxTarget,
   ): Promise<boolean> {
     return (
       Number(
         await this.execute((client) =>
-          client.eval(RECORD_DISPATCH_TARGET_SCRIPT, {
-            keys: [
-              this.runKey(job.runId),
-              this.ownerKey(
-                job.input.workspaceId,
-                job.input.channelId,
-                job.input.threadTs,
-              ),
-            ],
-            arguments: [
-              job.runId,
-              String(job.generation),
-              JSON.stringify(target),
-            ],
+          client.eval(RELEASE_DISPATCH_TARGET_SCRIPT, {
+            keys: [this.runKey(runId), this.activeDispatchKey(target)],
+            arguments: [runId, JSON.stringify(target)],
           }),
         ),
       ) === 1
     );
+  }
+
+  async enrollIdleSession(target: SandboxTarget): Promise<boolean> {
+    return (
+      Number(
+        await this.execute((client) =>
+          client.eval(ENROLL_IDLE_SESSION_SCRIPT, {
+            keys: [this.idleGateKey(target), this.activeDispatchKey(target)],
+            arguments: [],
+          }),
+        ),
+      ) === 1
+    );
+  }
+
+  async claimIdleStop(
+    target: SandboxTarget,
+    operationId: string,
+  ): Promise<'claimed' | 'active' | 'unenrolled' | 'stopping'> {
+    return (await this.execute((client) =>
+      client.eval(CLAIM_IDLE_STOP_SCRIPT, {
+        keys: [this.idleGateKey(target), this.activeDispatchKey(target)],
+        arguments: [operationId],
+      }),
+    )) as 'claimed' | 'active' | 'unenrolled' | 'stopping';
   }
 
   async interruptRun(run: RunRecord, now: number): Promise<boolean> {

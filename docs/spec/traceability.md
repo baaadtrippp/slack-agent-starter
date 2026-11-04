@@ -90,6 +90,13 @@ The [Milestone 6 WSL probe](milestone-6.md#deterministic-evidence) adds
 and deliver a failure while another worker continues in the same Sandbox (AC09,
 AC10).
 
+The [Milestone 7 tests](milestone-7.md#deterministic-evidence) add
+**deterministic** evidence for the idle-stop fence and a retry notice after
+known prelaunch refusal. The
+[idle-stop probe](milestone-7.md#provider-integration-evidence) adds **provider
+integration** evidence for exact-session stop, a fenced dispatch, and writable
+Drive handoff to a replacement (AC03).
+
 ## Evidence rules
 
 For each slice, link evidence and label it as one of:
