@@ -10,8 +10,16 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { readRunCsv } from '../apps/gateway/src/generated-csv.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  collectRunCsv,
+  readRunCsv,
+} from '../apps/gateway/src/generated-csv.js';
+
+const { sandboxGet } = vi.hoisted(() => ({ sandboxGet: vi.fn() }));
+vi.mock('../apps/gateway/node_modules/@vercel/sandbox/dist/index.js', () => ({
+  Sandbox: { get: sandboxGet },
+}));
 
 const runId = '11111111-1111-4111-8111-111111111111';
 const otherRun = '22222222-2222-4222-8222-222222222222';
@@ -77,3 +85,24 @@ describe.skipIf(process.platform !== 'linux')('Sandbox result reader', () => {
     expect(read.stdout.length).toBe(0);
   });
 });
+
+it.each([
+  { status: 'stopped', sessionId: 'test-session' },
+  { status: 'running', sessionId: 'other-session' },
+])(
+  'does not collect from a Sandbox session with $status status and ID $sessionId',
+  async (session) => {
+    const runCommand = vi.fn();
+    sandboxGet.mockResolvedValueOnce({
+      currentSession: () => ({ ...session, runCommand }),
+    });
+
+    await expect(
+      collectRunCsv(runId, {
+        sandboxName: 'test-worker',
+        sessionId: 'test-session',
+      }),
+    ).rejects.toThrow('Artifact Sandbox session is unavailable');
+    expect(runCommand).not.toHaveBeenCalled();
+  },
+);

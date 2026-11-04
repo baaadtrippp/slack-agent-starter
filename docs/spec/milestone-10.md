@@ -14,14 +14,15 @@ remains open.
    and the current run's results directory itself.
 3. The worker sends an artifact reference with its authenticated terminal
    callback. The gateway collects the file from the reserved Sandbox session at
-   the run's fixed output path. It rejects symbolic links, hard links,
-   non-regular files, and files outside the test size limit.
+   the run's fixed output path and checks it against the tool's SHA-256. It
+   rejects symbolic links, hard links, non-regular files, and files outside the
+   test size limit.
 4. Publish the text answer before attempting the Slack upload. Verify the exact
    bytes in the originating thread and exercise the upload failure path
    separately.
 
-Other output types, arbitrary filenames, and multiple artifacts are outside this
-slice. Broader AC06 remains partial.
+Other output types, arbitrary filenames, multiple artifacts, and combining the
+tool with staged inputs are outside this slice. Broader AC06 remains partial.
 
 ## Deterministic evidence
 
@@ -31,11 +32,30 @@ symbolic links in the file and directory positions, hard links, directories, and
 oversized files.
 
 Signed callback tests with disposable Redis checked the recorded Sandbox target
-and Slack thread, including duplicate and conflicting callbacks. Simulated
-upload rejection, transfer failure, transfer timeout, and a checksum mismatch
-all preserved the text reply. Slack delivery was mocked.
+and Slack thread. Overlapping callbacks caused one collection attempt and one
+upload. A repeat callback with a different digest was rejected. Simulated upload
+rejection, a missing upload receipt, transfer failure, transfer timeout, an
+unavailable execution target, and a checksum mismatch all preserved the text
+reply. Slack delivery was mocked.
 
 A local probe through the pinned acpx, pi-acp, and Pi packages used a model
 double. Pi advertised only `write_csv`, ignored extra path and filename
 arguments, wrote the expected bytes, and recorded their SHA-256 in its native
 session.
+
+## Live Slack evidence
+
+The installed bot token had `files:write` in the authorized test workspace. One
+mention asked the real Pi worker to generate a two-row synthetic CSV. Its native
+session recorded one successful `write_csv` call. The authenticated callback
+carried the tool's SHA-256. The gateway collected the artifact from the worker's
+reserved Sandbox session.
+
+One text answer and one `result.csv` upload appeared in the originating thread.
+An independent calculation matched the answer's total of 18. The 28-byte Slack
+download, Drive file, and independently prepared fixture had identical SHA-256
+digests. A later thread read still found one answer and one upload. Upload
+failure was verified separately in the deterministic checks.
+
+The previous gateway routing was restored. The temporary gateway, scope probe,
+worker, Drive, and startup seed were removed.

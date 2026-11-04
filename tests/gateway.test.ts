@@ -380,6 +380,7 @@ describe.skipIf(!redisUrl)(
     it.each([
       'uploaded',
       'upload rejected',
+      'upload unconfirmed',
       'collection rejected',
       'collection timed out',
       'execution target missing',
@@ -431,11 +432,11 @@ describe.skipIf(!redisUrl)(
       });
       if (outcome === 'upload rejected')
         post.mockRejectedValueOnce(new Error('Slack refused the upload'));
-      if (outcome === 'uploaded')
+      if (outcome === 'uploaded' || outcome === 'upload unconfirmed')
         post.mockResolvedValueOnce({
           id: 'file-synthetic',
           threadId: 'synthetic-thread',
-          raw: { uploadedFileIds: ['FTEST'] },
+          raw: outcome === 'uploaded' ? { uploadedFileIds: ['FTEST'] } : {},
         });
 
       expect(
@@ -482,6 +483,16 @@ describe.skipIf(!redisUrl)(
       expect(
         (
           await gateway.callback(
+            callback(
+              { ...output, artifact: { sha256: 'a'.repeat(64) } },
+              job.callbackToken,
+            ),
+          )
+        ).status,
+      ).toBe(409);
+      expect(
+        (
+          await gateway.callback(
             callback({ ...output, artifact: undefined }, job.callbackToken),
           )
         ).status,
@@ -494,7 +505,7 @@ describe.skipIf(!redisUrl)(
       else
         expect(collectCsv).toHaveBeenCalledExactlyOnceWith(job.runId, target);
       expect(post).toHaveBeenNthCalledWith(1, threadId, output.text);
-      if (outcome === 'uploaded' || outcome === 'upload rejected')
+      if (outcome.startsWith('upload'))
         expect(post).toHaveBeenNthCalledWith(2, threadId, {
           markdown: '',
           files: [{ data: csv, filename: 'result.csv', mimeType: 'text/csv' }],
@@ -504,7 +515,7 @@ describe.skipIf(!redisUrl)(
           threadId,
           'I could not confirm the CSV attachment. The text result is above.',
         );
-      expect(post).toHaveBeenCalledTimes(outcome === 'upload rejected' ? 3 : 2);
+      expect(post).toHaveBeenCalledTimes(outcome.startsWith('upload ') ? 3 : 2);
       expect(await gateway.store.getRun(job.runId)).toMatchObject({
         state: 'completed',
         messageId: '1800000001.000001',
