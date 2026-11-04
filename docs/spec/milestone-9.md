@@ -79,8 +79,9 @@ adds partial evidence for AC06 and AC12.
    the broader operating limits remain open under O05.
 2. The gateway uses the signed mention's link, a DNS-pinned downloader, and
    public destination checks. This tracer rejects redirects, credentials in
-   URLs, non-default HTTPS ports, and responses other than UTF-8 plain text.
-   Fetching happens after Slack acknowledgement.
+   URLs, non-default HTTPS ports, and responses other than UTF-8 plain text. If
+   a response declares a charset, it must be UTF-8. Fetching happens after Slack
+   acknowledgement.
 3. Stage the downloaded bytes on the thread's Drive. Give Pi one tool for those
    bytes. Keep the Sandbox's existing callback and model egress rules.
 4. Check refusal and download bounds locally. In the live test, compare the
@@ -92,13 +93,14 @@ search, and generated file uploads are subsequent work.
 
 ### URL download and staging tests
 
-The signed gateway tests verified that fetching happens after acknowledgement
-and that the exact fetched bytes reach the worker's staging path. The pinned
-downloader refused IPv4 loopback, IPv6 loopback, IPv4-mapped IPv6 loopback, and
-a name that resolved to a private address. Controlled responses verified
-redirect refusal and the decoded size limit for compressed data. A local Pi
-probe with a model double returned the staged file when the model supplied
-unrelated URL and path fields.
+The signed gateway tests verified that Slack's escaped query separator is
+restored before fetching, that fetching happens after acknowledgement and that
+the exact fetched bytes reach the worker's staging path. The pinned downloader
+refused IPv4 loopback, IPv6 loopback, IPv4-mapped IPv6 loopback, and a name that
+resolved to a private address. Controlled responses verified redirect refusal
+and the decoded size limit for compressed data. A local Pi probe with a model
+double returned the staged file when the model supplied unrelated URL and path
+fields.
 
 ### Sandbox egress probe
 

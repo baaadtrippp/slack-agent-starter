@@ -1,3 +1,4 @@
+import { MIMEType } from 'node:util';
 import { downloadAttachment, NetworkError } from '@chat-adapter/shared';
 
 const invalid =
@@ -26,11 +27,18 @@ export async function fetchPublicText(value: string): Promise<Buffer | string> {
       timeoutMs: 8_000,
       redirects: 0,
       onResponse(response) {
-        const type = response.headers['content-type']
-          ?.split(';', 1)[0]
-          ?.trim()
-          .toLowerCase();
-        if (type !== 'text/plain') throw unexpectedType;
+        let type: MIMEType;
+        try {
+          type = new MIMEType(response.headers['content-type'] ?? '');
+        } catch {
+          throw unexpectedType;
+        }
+        const charset = type.params.get('charset')?.toLowerCase();
+        if (
+          type.essence !== 'text/plain' ||
+          (charset !== undefined && charset !== 'utf-8')
+        )
+          throw unexpectedType;
       },
     });
   } catch (error) {

@@ -62,7 +62,10 @@ describe('public text URL fetch', () => {
 
   it('downloads a direct HTTPS URL with the fixed safety limits', async () => {
     const body = Buffer.from('label,cents\nblue,123\n');
-    shared.downloadAttachment.mockResolvedValue(body);
+    shared.downloadAttachment.mockImplementation(async (_value, options) => {
+      options.onResponse?.(response('Text/Plain; charset="UTF-8"'));
+      return body;
+    });
 
     await expect(
       fetchPublicText('https://example.com:443/fixture.txt'),
@@ -89,24 +92,23 @@ describe('public text URL fetch', () => {
     expect(shared.downloadAttachment).not.toHaveBeenCalled();
   });
 
-  it('rejects an unsupported response type and invalid UTF-8', async () => {
-    shared.downloadAttachment
-      .mockImplementationOnce(async (_value, options) => {
-        options.onResponse?.(response('application/json'));
-        return Buffer.from('{}');
-      })
-      .mockImplementationOnce(async (_value, options) => {
-        options.onResponse?.(response('text/plain'));
-        return Buffer.from([0xff]);
+  it.each([
+    ['application/json', Buffer.from('{}')],
+    ['text/plain; charset=windows-1252', Buffer.from('plain ASCII')],
+    ['text/plain', Buffer.from([0xff])],
+  ])(
+    'rejects an unsupported response type or encoding: %s',
+    async (type, body) => {
+      shared.downloadAttachment.mockImplementation(async (_value, options) => {
+        options.onResponse?.(response(type));
+        return body;
       });
 
-    await expect(
-      fetchPublicText('https://example.com/fixture.txt'),
-    ).resolves.toMatch(/UTF-8 plain text/);
-    await expect(
-      fetchPublicText('https://example.com/fixture.txt'),
-    ).resolves.toMatch(/UTF-8 plain text/);
-  });
+      await expect(
+        fetchPublicText('https://example.com/fixture.txt'),
+      ).resolves.toMatch(/UTF-8 plain text/);
+    },
+  );
 
   it.each([
     ['Attachment exceeds the download limit', /16 KiB/],

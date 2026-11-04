@@ -405,7 +405,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
     'handles %s before Sandbox worker launch',
     async (outcome) => {
       configureRuntime('synthetic-worker');
-      const url = 'https://example.com/source.txt';
+      const url = 'https://example.com/source.txt?a=1&b=2';
+      const slackUrl = 'https://example.com/source.txt?a=1&amp;b=2';
       const isUrl = outcome === 'staged URL';
       const isStaged = outcome === 'staged CSV' || isUrl;
       const content = isUrl
@@ -457,7 +458,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         }));
       const event = runtimeEvent(
         isUrl
-          ? { text: `<@UBOT1> Read <${url}|the source>.` }
+          ? { text: `<@UBOT1> Read <${slackUrl}|the source>.` }
           : {
               files: [syntheticCsvFile(Buffer.byteLength(content))],
               ...(isStaged ? { subtype: 'file_share' } : {}),
