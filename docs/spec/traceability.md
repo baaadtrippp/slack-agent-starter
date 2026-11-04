@@ -15,7 +15,7 @@ evidence cell means the requirement has not been demonstrated.
 | F07 Show progress         | AC07, AC10                  | Specified   | —                                                                                                                                                                                                                                                            |
 | F08 Ask questions         | AC05                        | Partial     | **live Slack:** [clarification and same-session answer](milestone-4.md#live-slack-evidence).                                                                                                                                                                 |
 | F09 Stop and inspect      | AC03, AC07, AC10            | Proposed    | —                                                                                                                                                                                                                                                            |
-| F10 Handle busy threads   | AC08                        | Partial     | **deterministic:** [gateway and store tests](../../tests/gateway.test.ts), [Redis store tests](../../tests/store.test.ts)                                                                                                                                    |
+| F10 Handle busy threads   | AC08                        | Partial     | **deterministic:** [gateway](../../tests/gateway.test.ts), [store](../../tests/store.test.ts). **provider integration:** [Pi](milestone-5.md#provider-integration-evidence). **live Slack:** [recovery](milestone-5.md#live-slack-recovery-evidence).        |
 | F11 Recognize reactions   | AC07                        | Proposed    | —                                                                                                                                                                                                                                                            |
 | F12 Use actual tools      | AC06, AC09, AC12            | Specified   | —                                                                                                                                                                                                                                                            |
 | F13 Share agent knowledge | AC02, AC04                  | Policy open | —                                                                                                                                                                                                                                                            |
@@ -76,12 +76,12 @@ reopening the exact native session after Sandbox replacement (F08, AC05).
 The [Milestone 5 recovery tests](milestone-5.md#deterministic-evidence) add
 **deterministic** evidence for safe first-turn interruption, explicit retry, and
 rejection of late callbacks (F10, AC08–AC10). The separate
-[provider probe](milestone-5.md#provider-integration-evidence) verified isolated
-Pi cancellation and a fresh Pi turn against a local model fixture, plus the
-exact stopped Sandbox session. The
-[live Slack recovery test](milestone-5.md#live-slack-recovery-evidence) verified
-the recovery reply and fresh mention after replacement with a synthetic worker
-result.
+[provider probe](milestone-5.md#provider-integration-evidence) adds **provider
+integration** evidence for isolated Pi cancellation, a fresh Pi turn against a
+local model fixture, and confirmation of the exact stopped Sandbox session. The
+[Slack recovery test](milestone-5.md#live-slack-recovery-evidence) adds **live
+Slack** evidence for the recovery reply and fresh mention after replacement with
+a synthetic worker result.
 
 ## Evidence rules
 
