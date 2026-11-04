@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { downloadSlackCsv } from '../apps/gateway/src/slack-csv.js';
+import { downloadSlackFile } from '../apps/gateway/src/slack-file.js';
+
+const downloadSlackCsv = (files: unknown, token: string) =>
+  downloadSlackFile(files, token, 'csv');
 
 const csv = Buffer.from('label,cents\nblue,123\n');
 const file = {
@@ -68,5 +71,74 @@ describe('Slack CSV validation and download', () => {
         /could not read/,
       );
     expect(await downloadSlackCsv([file], 'synthetic-token')).toMatch(/UTF-8/);
+  });
+});
+
+describe('Slack PDF validation and download', () => {
+  const pdf = Buffer.from('%PDF-1.4\nSynthetic transfer bytes only.\n');
+  const attachment = {
+    name: 'fixture.pdf',
+    mode: 'hosted',
+    size: pdf.length,
+    mimetype: 'application/pdf',
+    url_private: 'https://files.slack.com/files-pri/TTEST1-FTEST1/fixture.pdf',
+  };
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('checks metadata and downloads the exact bytes without following redirects', async () => {
+    const request = vi.fn().mockResolvedValue(new Response(pdf));
+    vi.stubGlobal('fetch', request);
+    for (const files of [
+      [attachment, attachment],
+      [{ ...attachment, name: 'fixture.txt' }],
+      [{ ...attachment, mimetype: 'image/png' }],
+      [
+        {
+          ...attachment,
+          url_private: 'https://files.slack.com.example/files-pri/fixture.pdf',
+        },
+      ],
+      [{ ...attachment, is_external: true }],
+    ])
+      expect(await downloadSlackFile(files, 'synthetic-token', 'pdf')).toMatch(
+        /one Slack-hosted text-based PDF/,
+      );
+    expect(
+      await downloadSlackFile(
+        [{ ...attachment, size: 16 * 1024 + 1 }],
+        'synthetic-token',
+        'pdf',
+      ),
+    ).toMatch(/exceeds the 16 KiB limit/);
+    expect(request).not.toHaveBeenCalled();
+    expect(
+      await downloadSlackFile([attachment], 'synthetic-token', 'pdf'),
+    ).toEqual(pdf);
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      new URL(attachment.url_private),
+      expect.objectContaining({
+        headers: { authorization: 'Bearer synthetic-token' },
+        redirect: 'error',
+      }),
+    );
+  });
+
+  it('rejects inaccessible, truncated, and mislabelled documents', async () => {
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('denied', { status: 403 }))
+      .mockResolvedValueOnce(new Response(pdf.subarray(1)))
+      .mockResolvedValueOnce(new Response(Buffer.alloc(pdf.length, 0x2e)));
+    vi.stubGlobal('fetch', request);
+    expect(
+      await downloadSlackFile([attachment], 'synthetic-token', 'pdf'),
+    ).toMatch(/could not read/);
+    expect(
+      await downloadSlackFile([attachment], 'synthetic-token', 'pdf'),
+    ).toMatch(/could not read/);
+    expect(
+      await downloadSlackFile([attachment], 'synthetic-token', 'pdf'),
+    ).toMatch(/text-based PDF/);
   });
 });

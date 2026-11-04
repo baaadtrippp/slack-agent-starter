@@ -28,10 +28,14 @@ export const workerJobSchema = z
         threadTs: slackTimestamp,
         messageTs: slackTimestamp,
         csv: z.literal(true).optional(),
+        pdf: z.literal(true).optional(),
         publicUrl: z.literal(true).optional(),
       })
       .strict()
-      .refine((input) => !(input.csv && input.publicUrl)),
+      .refine(
+        ({ csv, pdf, publicUrl }) =>
+          [csv, pdf, publicUrl].filter(Boolean).length <= 1,
+      ),
     session: workerSessionSchema.optional(),
     csvOutput: z.literal(true).optional(),
     deadline: z.number().int().positive(),
@@ -50,6 +54,7 @@ export const workerResultSchema = z
     eventId: z.uuid(),
     sequence: z.literal(1),
     type: z.enum(['completed', 'failed']),
+    inputError: z.enum(['pdf_unreadable', 'pdf_text_too_large']).optional(),
     artifact: z
       .object({ sha256: z.string().regex(/^[0-9a-f]{64}$/) })
       .strict()

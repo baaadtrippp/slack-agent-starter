@@ -522,35 +522,49 @@ describe.skipIf(!redisUrl)(
       });
     });
 
-    it('posts a safe failure once and records the worker failure separately', async () => {
-      const gateway = harness();
-      const body = envelope();
-      await gateway.events(signed(body));
-      await gateway.flush();
-      const job = gateway.dispatch.mock.calls[0]![0];
-      const failure = {
-        ...result(job),
-        type: 'failed',
-        text: 'private provider error',
-      } as const;
-      expect(
-        (await gateway.callback(callback(failure, job.callbackToken))).status,
-      ).toBe(202);
-      await gateway.flush();
-      expect(
-        (await gateway.callback(callback(failure, job.callbackToken))).status,
-      ).toBe(204);
-      expect(
-        SlackAdapter.prototype.postMessage,
-      ).toHaveBeenCalledExactlyOnceWith(
-        `slack:CTEST1:${body.event.ts}`,
-        WORKER_FAILURE_REPLY,
-      );
-      expect(await gateway.store.getRun(job.runId)).toMatchObject({
-        state: 'worker_failed',
-        result: { type: 'failed', text: WORKER_FAILURE_REPLY },
-      });
-    });
+    it.each([
+      [undefined, WORKER_FAILURE_REPLY],
+      [
+        'pdf_unreadable',
+        'I could not extract readable text from this PDF. Mention me again with a small text-based PDF.',
+      ],
+      [
+        'pdf_text_too_large',
+        'The PDF contains more than 16 KiB of text for this test. Mention me again with a shorter PDF.',
+      ],
+    ] as const)(
+      'posts a safe failure once for %s',
+      async (inputError, notice) => {
+        const gateway = harness();
+        const body = envelope();
+        await gateway.events(signed(body));
+        await gateway.flush();
+        const job = gateway.dispatch.mock.calls[0]![0];
+        const failure = {
+          ...result(job),
+          type: 'failed',
+          inputError,
+          text: 'private provider error',
+        } as const;
+        expect(
+          (await gateway.callback(callback(failure, job.callbackToken))).status,
+        ).toBe(202);
+        await gateway.flush();
+        expect(
+          (await gateway.callback(callback(failure, job.callbackToken))).status,
+        ).toBe(204);
+        expect(
+          SlackAdapter.prototype.postMessage,
+        ).toHaveBeenCalledExactlyOnceWith(
+          `slack:CTEST1:${body.event.ts}`,
+          notice,
+        );
+        expect(await gateway.store.getRun(job.runId)).toMatchObject({
+          state: 'worker_failed',
+          result: { type: 'failed', text: notice },
+        });
+      },
+    );
 
     it('activates only after a real session result and routes one ordinary turn with that exact reference', async () => {
       const gateway = harness(createMockState(), true);

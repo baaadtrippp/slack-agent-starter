@@ -36,3 +36,9 @@ The gateway launches the command by Sandbox name with SDK detachment enabled.
 The SDK request signal bounds launch acknowledgement. The worker deadline and
 Sandbox lifetime bound execution. If delivery is uncertain, inspect the run's
 Drive result manifest and gateway record before taking manual action.
+
+For the [text-based PDF tracer](../../docs/spec/milestone-11.md), prepare the
+startup seed with the distribution's security-maintained Poppler tools and
+`prlimit` from util-linux. Verify `/usr/bin/pdftotext` and `/usr/bin/prlimit`
+before enabling PDF input on the gateway. The worker extracts at most 16 KiB of
+text with a 256 MiB parser address-space limit and a three-second deadline.

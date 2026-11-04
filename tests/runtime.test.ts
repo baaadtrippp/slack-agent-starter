@@ -397,6 +397,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
   const stagingOutcomes = [
     'staged CSV',
     'staged URL',
+    'staged PDF',
+    'staged PDF with CSV enabled',
     'write failed',
     'expired during staging',
   ] as const;
@@ -408,12 +410,20 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       const url = 'https://example.com/source.txt?a=1&b=2';
       const slackUrl = 'https://example.com/source.txt?a=1&amp;b=2';
       const isUrl = outcome === 'staged URL';
-      const isStaged = outcome === 'staged CSV' || isUrl;
+      const isPdf = outcome.startsWith('staged PDF');
+      const kind = isUrl ? 'publicUrl' : isPdf ? 'pdf' : 'csv';
+      const isStaged = outcome === 'staged CSV' || isUrl || isPdf;
       const content = isUrl
         ? 'Synthetic text source.\n'
-        : 'region,amount\nNorth,12\nSouth,18\n';
+        : isPdf
+          ? '%PDF-1.4\nSynthetic transfer bytes only.\n'
+          : 'region,amount\nNorth,12\nSouth,18\n';
       vi.stubEnv('SLACK_PUBLIC_URL_INPUT', isUrl ? '1' : '0');
-      vi.stubEnv('SLACK_CSV_INPUT', isUrl ? '0' : '1');
+      vi.stubEnv('SLACK_PDF_INPUT', isPdf ? '1' : '0');
+      vi.stubEnv(
+        'SLACK_CSV_INPUT',
+        kind === 'csv' || outcome === 'staged PDF with CSV enabled' ? '1' : '0',
+      );
       fetchPublicText.mockResolvedValue(Buffer.from(content));
       const download = vi
         .fn<typeof fetch>()
@@ -460,7 +470,12 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         isUrl
           ? { text: `<@UBOT1> Read <${slackUrl}|the source>.` }
           : {
-              files: [syntheticCsvFile(Buffer.byteLength(content))],
+              files: [
+                syntheticSlackFile(
+                  Buffer.byteLength(content),
+                  isPdf ? 'pdf' : 'csv',
+                ),
+              ],
               ...(isStaged ? { subtype: 'file_share' } : {}),
             },
       );
@@ -480,7 +495,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         expect(writeFiles).toHaveBeenCalledExactlyOnceWith(
           [
             {
-              path: `/workspace/inputs/${runId}/${runId}/${isUrl ? 'source.txt' : 'input.csv'}`,
+              path: `/workspace/inputs/${runId}/${runId}/${isUrl ? 'source.txt' : isPdf ? 'input.pdf' : 'input.csv'}`,
               content: Buffer.from(content),
               mode: 0o600,
             },
@@ -490,7 +505,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         if (isStaged) {
           expect(runCommand).toHaveBeenCalledTimes(1);
           expect(stagedBeforeLaunch).toBe(true);
-          expect(job?.input[isUrl ? 'publicUrl' : 'csv']).toBe(true);
+          expect(job?.input).toHaveProperty(kind, true);
           expect(postMessage).not.toHaveBeenCalled();
         } else {
           expect(runCommand).not.toHaveBeenCalled();
@@ -591,14 +606,14 @@ function runtimeEvent(options?: {
   };
 }
 
-function syntheticCsvFile(size: number) {
+function syntheticSlackFile(size: number, kind: 'csv' | 'pdf') {
   return {
     id: 'FTEST1',
-    name: 'test.csv',
+    name: `test.${kind}`,
     mode: 'hosted',
-    mimetype: 'text/csv',
+    mimetype: kind === 'pdf' ? 'application/pdf' : 'text/csv',
     size,
-    url_private: 'https://files.slack.com/files-pri/TTEST1-FTEST1/test.csv',
+    url_private: `https://files.slack.com/files-pri/TTEST1-FTEST1/test.${kind}`,
   };
 }
 

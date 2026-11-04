@@ -73,6 +73,7 @@ function initialize() {
     threadResume:
       worker.kind === 'sandbox' && process.env.SLACK_THREAD_RESUME === '1',
     csvInput: worker.kind === 'sandbox' && process.env.SLACK_CSV_INPUT === '1',
+    pdfInput: worker.kind === 'sandbox' && process.env.SLACK_PDF_INPUT === '1',
     csvOutput:
       worker.kind === 'sandbox' && process.env.SLACK_CSV_OUTPUT === '1',
     publicUrlInput:
@@ -160,10 +161,17 @@ function initialize() {
             const stageTimeout = Math.min(10_000, job.deadline - Date.now());
             if (stageTimeout <= 0) throw new Error('Worker deadline expired');
             const seed = job.session?.seedRunId ?? job.runId;
+            const input = job.input.publicUrl
+              ? 'public_url'
+              : job.input.pdf
+                ? 'pdf'
+                : 'csv';
+            const filename =
+              input === 'public_url' ? 'source.txt' : `input.${input}`;
             await session.writeFiles(
               [
                 {
-                  path: `/workspace/inputs/${seed}/${job.runId}/${job.input.publicUrl ? 'source.txt' : 'input.csv'}`,
+                  path: `/workspace/inputs/${seed}/${job.runId}/${filename}`,
                   content: stagedInput,
                   mode: 0o600,
                 },
@@ -173,7 +181,7 @@ function initialize() {
             console.info(
               JSON.stringify({
                 runId: job.runId,
-                phase: job.input.publicUrl ? 'public_url_staged' : 'csv_staged',
+                phase: `${input}_staged`,
                 bytes: stagedInput.length,
               }),
             );
