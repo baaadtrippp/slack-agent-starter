@@ -27,6 +27,10 @@ This slice excludes resumed turns with potentially newer native transcripts,
 uncertain Slack publication, unbound historical runs, automated lifecycle
 management, result manifest recovery, and Stop or Status controls.
 
+Keep the named Sandbox and its session history until affected threads have been
+reconciled. If the Sandbox has been deleted or the exact session record is
+missing, Hydra keeps ownership in place for operator inspection.
+
 ## Deterministic evidence
 
 With disposable Redis, signed synthetic Slack requests, and mocked Slack and
