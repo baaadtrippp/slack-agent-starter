@@ -398,6 +398,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
     'staged CSV',
     'staged URL',
     'staged PDF',
+    'staged PDF with CSV enabled',
     'write failed',
     'expired during staging',
   ] as const;
@@ -409,7 +410,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       const url = 'https://example.com/source.txt?a=1&b=2';
       const slackUrl = 'https://example.com/source.txt?a=1&amp;b=2';
       const isUrl = outcome === 'staged URL';
-      const isPdf = outcome === 'staged PDF';
+      const isPdf = outcome.startsWith('staged PDF');
       const kind = isUrl ? 'publicUrl' : isPdf ? 'pdf' : 'csv';
       const isStaged = outcome === 'staged CSV' || isUrl || isPdf;
       const content = isUrl
@@ -419,7 +420,10 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           : 'region,amount\nNorth,12\nSouth,18\n';
       vi.stubEnv('SLACK_PUBLIC_URL_INPUT', isUrl ? '1' : '0');
       vi.stubEnv('SLACK_PDF_INPUT', isPdf ? '1' : '0');
-      vi.stubEnv('SLACK_CSV_INPUT', kind === 'csv' ? '1' : '0');
+      vi.stubEnv(
+        'SLACK_CSV_INPUT',
+        kind === 'csv' || outcome === 'staged PDF with CSV enabled' ? '1' : '0',
+      );
       fetchPublicText.mockResolvedValue(Buffer.from(content));
       const download = vi
         .fn<typeof fetch>()

@@ -305,7 +305,11 @@ async function prompt(job, model, key, root) {
     if (job.input.pdf) {
       const budget = job.deadline - Date.now() - callbackReserve;
       if (budget <= 0) throw new Error('Worker deadline expired');
-      const text = extractPdfText(stagedPath, Math.min(3_000, budget));
+      const text = extractPdfText(
+        stagedPath,
+        Math.min(3_000, budget),
+        job.runId,
+      );
       await writeFile(inputPath, text, { mode: 0o600, flag: 'wx' });
     }
     if (job.session)
@@ -489,7 +493,7 @@ async function prompt(job, model, key, root) {
   }
 }
 
-function extractPdfText(path, timeout) {
+function extractPdfText(path, timeout, runId) {
   let text;
   try {
     text = execFileSync(
@@ -518,7 +522,16 @@ function extractPdfText(path, timeout) {
     );
   } catch (error) {
     if (error.code === 'ENOBUFS') throw oversizedPdfText;
-    if (error.code === 'ENOENT' || error.status === 127) throw error;
+    if (error.code === 'ENOENT' || error.status === 127) {
+      console.error(
+        JSON.stringify({
+          runId,
+          phase: 'pdf_parser_unavailable',
+          ...(error.code === 'ENOENT' ? { code: 'ENOENT' } : { status: 127 }),
+        }),
+      );
+      throw error;
+    }
     throw unreadablePdf;
   }
   if (!text.trim()) throw unreadablePdf;
