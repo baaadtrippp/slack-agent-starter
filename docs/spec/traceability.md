@@ -75,7 +75,13 @@ reopening the exact native session after Sandbox replacement (F08, AC05).
 
 The [Milestone 5 recovery tests](milestone-5.md#deterministic-evidence) add
 **deterministic** evidence for safe first-turn interruption, explicit retry, and
-rejection of late callbacks (F10, AC08–AC10).
+rejection of late callbacks (F10, AC08–AC10). The separate
+[provider probe](milestone-5.md#provider-integration-evidence) verified isolated
+Pi cancellation and a fresh Pi turn against a local model fixture, plus the
+exact stopped Sandbox session. The
+[live Slack recovery test](milestone-5.md#live-slack-recovery-evidence) verified
+the recovery reply and fresh mention after replacement with a synthetic worker
+result.
 
 ## Evidence rules
 

@@ -45,13 +45,36 @@ failed.
 ## Provider integration evidence
 
 A disposable, nonpersistent Vercel Sandbox ran the pinned ACP and Pi versions
-with a deterministic local streaming fixture. Two independent Pi sessions
-streamed concurrently. Cancelling session A disconnected its stream while
-session B was still active. B finished, then A accepted and completed a fresh
-turn. The operator stopped the VM after both runs finished. Vercel's named
-Sandbox, direct session, and session listing reads confirmed that the exact
-recorded VM session had stopped.
+against a local model endpoint that returned deterministic streaming responses.
+Two independent Pi sessions streamed concurrently. Cancelling session A
+disconnected its stream while session B was still active. B finished, then A
+accepted and completed a fresh turn. The operator stopped the VM after both runs
+finished. Vercel's named Sandbox, direct session, and session listing reads
+confirmed that the exact recorded VM session had stopped.
 
-The provider probe used an authenticated Vercel API connection and no Drive,
-Slack, or model credential. The gateway recovery flow was exercised separately
-with disposable Redis and mocked Slack and provider responses.
+An authenticated Vercel API connection managed the VM. The model fixture
+supplied every response locally. The gateway recovery flow was exercised
+separately with disposable Redis and mocked Slack and provider responses.
+
+## Live Slack recovery evidence
+
+In the approved test channel, a synthetic mention started a fixture that
+withheld its result. The operator stopped the worker and verified that Vercel
+reported the exact recorded VM session as stopped. After the run deadline, a
+second mention in that thread produced one recovery reply asking for a fresh
+mention. The fixture recorded no launch for the recovery message.
+
+The operator started a replacement VM session under the same Sandbox name. A
+fresh mention in the original Slack thread launched one worker command, received
+an accepted callback, and produced one expected fixture reply in that thread.
+The original run and the recovery message were not replayed. This test used a
+synthetic worker result. The Pi process check with the local model fixture is
+recorded separately above. Rejection of late callbacks is covered by the
+deterministic gateway and Redis tests.
+
+For about two minutes the existing Vercel alias served the staged recovery
+gateway. Slack kept its existing Request URL and app settings. The traffic check
+was limited to the three synthetic mentions in the approved test channel. After
+the fresh reply, the operator rolled back the alias and verified that it
+resolved to the original deployment ID. Both test sessions were stopped and the
+test Sandbox and snapshots were removed.
