@@ -1,5 +1,16 @@
 import { z } from 'zod';
 
+const workerSessionSchema = z
+  .object({
+    seedRunId: z.uuid(),
+    nativeId: z.uuid(),
+    adapterId: z.uuid(),
+    revision: z.number().int().positive(),
+  })
+  .strict();
+
+export type WorkerSession = z.infer<typeof workerSessionSchema>;
+
 const slackTimestamp = z.string().regex(/^\d{10}\.\d{6}$/);
 
 export const workerJobSchema = z
@@ -18,6 +29,7 @@ export const workerJobSchema = z
         messageTs: slackTimestamp,
       })
       .strict(),
+    session: workerSessionSchema.optional(),
     deadline: z.number().int().positive(),
     callbackUrl: z.url().startsWith('https://'),
     callbackToken: z.string().regex(/^[0-9a-f]{64}$/),
@@ -34,6 +46,7 @@ export const workerResultSchema = z
     eventId: z.uuid(),
     sequence: z.literal(1),
     type: z.enum(['completed', 'failed']),
+    session: workerSessionSchema.optional(),
     text: z.string().min(1).max(4_000),
   })
   .strict();

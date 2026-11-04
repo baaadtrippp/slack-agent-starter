@@ -4,21 +4,21 @@ This index maps the stable feature and acceptance IDs in the canonical
 [v1 specification](v1.md). Evidence links are added by tracer bullets; an empty
 evidence cell means the requirement has not been demonstrated.
 
-| Feature                   | Primary acceptance criteria | Status      | Evidence                                                                                                                  |
-| ------------------------- | --------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------- |
-| F01 Start work            | AC01, AC08                  | Partial     | **deterministic:** [gateway tests](../../tests/gateway.test.ts) (local Redis; Slack delivery mocked)                      |
-| F02 Continue a thread     | AC01, AC02, AC05            | Specified   | —                                                                                                                         |
-| F03 Know the context      | AC01, AC03                  | Specified   | —                                                                                                                         |
-| F04 Receive attachments   | AC06, AC12                  | Specified   | —                                                                                                                         |
-| F05 Read public URLs      | AC06, AC10                  | Specified   | —                                                                                                                         |
-| F06 Return useful work    | AC06, AC10, AC12            | Specified   | —                                                                                                                         |
-| F07 Show progress         | AC07, AC10                  | Specified   | —                                                                                                                         |
-| F08 Ask questions         | AC05                        | Specified   | —                                                                                                                         |
-| F09 Stop and inspect      | AC03, AC07, AC10            | Proposed    | —                                                                                                                         |
-| F10 Handle busy threads   | AC08                        | Partial     | **deterministic:** [gateway and store tests](../../tests/gateway.test.ts), [Redis store tests](../../tests/store.test.ts) |
-| F11 Recognize reactions   | AC07                        | Proposed    | —                                                                                                                         |
-| F12 Use actual tools      | AC06, AC09, AC12            | Specified   | —                                                                                                                         |
-| F13 Share agent knowledge | AC02, AC04                  | Policy open | —                                                                                                                         |
+| Feature                   | Primary acceptance criteria | Status      | Evidence                                                                                                                                                                                                                                                     |
+| ------------------------- | --------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| F01 Start work            | AC01, AC08                  | Partial     | **deterministic:** [gateway tests](../../tests/gateway.test.ts) (local Redis; Slack delivery mocked)                                                                                                                                                         |
+| F02 Continue a thread     | AC01, AC02, AC05            | Partial     | **deterministic:** [gateway tests](../../tests/gateway.test.ts). **provider integration:** [exact Sandbox replacement](milestone-3.md#sandbox-replacement-evidence). **live Slack:** [ordinary reply after replacement](milestone-3.md#live-slack-evidence). |
+| F03 Know the context      | AC01, AC03                  | Specified   | —                                                                                                                                                                                                                                                            |
+| F04 Receive attachments   | AC06, AC12                  | Specified   | —                                                                                                                                                                                                                                                            |
+| F05 Read public URLs      | AC06, AC10                  | Specified   | —                                                                                                                                                                                                                                                            |
+| F06 Return useful work    | AC06, AC10, AC12            | Specified   | —                                                                                                                                                                                                                                                            |
+| F07 Show progress         | AC07, AC10                  | Specified   | —                                                                                                                                                                                                                                                            |
+| F08 Ask questions         | AC05                        | Specified   | —                                                                                                                                                                                                                                                            |
+| F09 Stop and inspect      | AC03, AC07, AC10            | Proposed    | —                                                                                                                                                                                                                                                            |
+| F10 Handle busy threads   | AC08                        | Partial     | **deterministic:** [gateway and store tests](../../tests/gateway.test.ts), [Redis store tests](../../tests/store.test.ts)                                                                                                                                    |
+| F11 Recognize reactions   | AC07                        | Proposed    | —                                                                                                                                                                                                                                                            |
+| F12 Use actual tools      | AC06, AC09, AC12            | Specified   | —                                                                                                                                                                                                                                                            |
+| F13 Share agent knowledge | AC02, AC04                  | Policy open | —                                                                                                                                                                                                                                                            |
 
 AC11 covers the development path and sanitized fixtures. AC13 covers repository
 publication. Both apply across all tracer bullets.
@@ -64,8 +64,9 @@ workspace on the same Drive, using a synthetic model response.
 The [Milestone 2 Slack test](milestone-2.md#live-slack-evidence) adds **live
 Slack** evidence for a detached Sandbox/Pi/OpenRouter answer in the originating
 thread and a distinct worker failure reply (F01, F12, AC01, AC09, and AC10).
-Ordinary Slack thread continuation across Sandbox replacement and coordinated
-Sandbox lifecycle remain unverified.
+Coordinated Sandbox lifecycle remains unverified. The
+[Milestone 3 Slack test](milestone-3.md#live-slack-evidence) verified ordinary
+thread continuation after operator-managed Sandbox replacement (F02, AC02).
 
 ## Evidence rules
 

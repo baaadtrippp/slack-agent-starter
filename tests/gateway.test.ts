@@ -49,6 +49,20 @@ function envelope() {
   };
 }
 
+function threadReply(root: string) {
+  const body = envelope();
+  return {
+    ...body,
+    event: {
+      ...body.event,
+      type: 'message',
+      channel_type: 'channel',
+      thread_ts: root,
+      text: 'What did I ask you to remember?',
+    },
+  };
+}
+
 function signed(body: unknown, sentAt = initialTime, secret = signingSecret) {
   const text = JSON.stringify(body);
   const seconds = String(Math.floor(sentAt / 1_000));
@@ -66,7 +80,10 @@ function signed(body: unknown, sentAt = initialTime, secret = signingSecret) {
   });
 }
 
-function harness(sdkState: StateAdapter = createMockState()) {
+function harness(
+  sdkState: StateAdapter = createMockState(),
+  threadResume = false,
+) {
   const clock = { now: initialTime };
   const tasks: Array<() => Promise<void>> = [];
   const dispatch = vi
@@ -84,6 +101,7 @@ function harness(sdkState: StateAdapter = createMockState()) {
       workspaceId: 'TTEST1',
       channelIds: ['CTEST1'],
       origin: 'https://gateway.example',
+      threadResume,
     },
     state: sdkState,
     store,
@@ -371,6 +389,160 @@ describe.skipIf(!redisUrl)(
         state: 'worker_failed',
         result: { type: 'failed', text: WORKER_FAILURE_REPLY },
       });
+    });
+
+    it('activates only after a real session result and routes one ordinary turn with that exact reference', async () => {
+      const gateway = harness(createMockState(), true);
+      const mention = envelope();
+      const inactive = threadReply(mention.event.ts);
+      await gateway.events(signed(inactive));
+      await gateway.flush();
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+
+      // A delayed retry of an older reply must not become input after activation.
+      vi.mocked(SlackAdapter.prototype.postMessage).mockResolvedValueOnce({
+        id: envelope().event.ts,
+        threadId: `slack:CTEST1:${mention.event.ts}`,
+        raw: {},
+      });
+      await gateway.events(signed(mention));
+      await gateway.flush();
+      const seed = gateway.dispatch.mock.calls[0]![0];
+      expect(
+        (await gateway.callback(callback(result(seed), seed.callbackToken)))
+          .status,
+      ).toBe(409);
+      const session = {
+        seedRunId: seed.runId,
+        nativeId: randomUUID(),
+        adapterId: randomUUID(),
+        revision: 4,
+      };
+      expect(
+        (
+          await gateway.callback(
+            callback({ ...result(seed), session }, seed.callbackToken),
+          )
+        ).status,
+      ).toBe(202);
+      await gateway.flush();
+
+      await gateway.events(signed(inactive));
+      await gateway.flush();
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+
+      const next = threadReply(mention.event.ts);
+      const duplicate = {
+        ...next,
+        event_id: `Ev${randomUUID()}`,
+        event: {
+          ...next.event,
+          type: 'app_mention',
+          text: '<@UBOT1> ' + next.event.text,
+        },
+      };
+      await gateway.events(signed(next));
+      await gateway.events(signed(duplicate));
+      await gateway.flush();
+      expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
+      const followup = gateway.dispatch.mock.calls[1]![0];
+      expect(followup).toMatchObject({
+        conversationId: seed.conversationId,
+        session,
+        input: { text: next.event.text, threadTs: mention.event.ts },
+      });
+      expect(
+        (
+          await gateway.callback(
+            callback(result(followup), followup.callbackToken),
+          )
+        ).status,
+      ).toBe(409);
+      const updated = { ...session, revision: session.revision + 2 };
+      expect(
+        (
+          await gateway.callback(
+            callback({ ...result(followup), session }, followup.callbackToken),
+          )
+        ).status,
+      ).toBe(409);
+      const wrong = { ...updated, nativeId: randomUUID() };
+      expect(
+        (
+          await gateway.callback(
+            callback(
+              { ...result(followup), session: wrong },
+              followup.callbackToken,
+            ),
+          )
+        ).status,
+      ).toBe(409);
+      expect(
+        (
+          await gateway.callback(
+            callback(
+              { ...result(followup), session: updated },
+              followup.callbackToken,
+            ),
+          )
+        ).status,
+      ).toBe(202);
+      await gateway.flush();
+
+      await gateway.events(
+        signed({ ...duplicate, event_id: `Ev${randomUUID()}` }),
+      );
+      await gateway.flush();
+      expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(2);
+
+      const later = threadReply(mention.event.ts);
+      await gateway.events(signed(later));
+      await gateway.flush();
+      expect(gateway.dispatch.mock.calls[2]![0].session).toEqual(updated);
+
+      await gateway.events(signed(envelope()));
+      await gateway.flush();
+      expect(gateway.dispatch.mock.calls[3]![0].session).toBeUndefined();
+    });
+
+    it('rejects root, bot and external ordinary events and reports a busy thread while its first run is active', async () => {
+      const gateway = harness(createMockState(), true);
+      const mention = envelope();
+      await gateway.events(signed(mention));
+      await gateway.flush();
+      const ordinary = threadReply(mention.event.ts);
+      for (const ignored of [
+        {
+          ...ordinary,
+          event: { ...ordinary.event, thread_ts: ordinary.event.ts },
+        },
+        { ...ordinary, event: { ...ordinary.event, bot_id: 'BTEST1' } },
+        {
+          ...ordinary,
+          event: { ...ordinary.event, subtype: 'message_changed' },
+        },
+        {
+          ...ordinary,
+          event: { ...ordinary.event, subtype: 'thread_broadcast' },
+        },
+        { ...ordinary, event: { ...ordinary.event, subtype: 'file_share' } },
+        { ...ordinary, is_ext_shared_channel: true },
+        { ...ordinary, event: { ...ordinary.event, user_team: 'TOTHER' } },
+      ]) {
+        expect((await gateway.events(signed(ignored))).status).toBe(200);
+      }
+      expect(gateway.admit).toHaveBeenCalledTimes(1);
+      expect((await gateway.events(signed(ordinary))).status).toBe(200);
+      await gateway.flush();
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(
+        `slack:CTEST1:${mention.event.ts}`,
+        BUSY_REPLY,
+      );
     });
 
     it('rejects an expired callback and rejects unauthenticated worker admission', async () => {

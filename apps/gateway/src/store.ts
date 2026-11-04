@@ -1,4 +1,7 @@
-import type { WorkerResult } from '../../../packages/contracts/src/index.js';
+import type {
+  WorkerResult,
+  WorkerSession,
+} from '../../../packages/contracts/src/index.js';
 import type { RedisClientType } from 'redis';
 
 export type RunRecord = {
@@ -21,13 +24,17 @@ export type RunRecord = {
     | 'worker_failed'
     | 'publication_uncertain'
     | 'dispatch_failed';
+  session?: WorkerSession;
   result?: WorkerResult;
   messageId?: string;
 };
 
 export interface RunStore {
-  admit(candidate: RunRecord): Promise<{
-    outcome: 'accepted' | 'busy' | 'duplicate';
+  admit(
+    candidate: RunRecord,
+    continuationOnly?: boolean,
+  ): Promise<{
+    outcome: 'accepted' | 'busy' | 'duplicate' | 'inactive';
     run: RunRecord;
   }>;
   getRun(runId: string): Promise<RunRecord | null>;
@@ -55,6 +62,13 @@ end
 
 local candidate = cjson.decode(ARGV[2])
 local owner = redis.call('GET', KEYS[3])
+local saved = redis.call('GET', KEYS[4])
+local session = saved and cjson.decode(saved)
+if (session and candidate.messageTs <= session.activeSince) or
+   (ARGV[3] == '1' and not session and not owner) then
+  return {'inactive', ARGV[2]}
+end
+if session then candidate.session = session.reference end
 local outcome = 'accepted'
 if owner then
   candidate.kind = 'busy'
@@ -80,8 +94,12 @@ if run.runId ~= ARGV[1] or run.runId ~= result.runId or run.generation ~= result
   return 'conflict'
 end
 if run.deadline <= tonumber(ARGV[3]) then return 'expired' end
+local function sameSession(a, b)
+  if not a or not b then return not a and not b end
+  return a.seedRunId == b.seedRunId and a.nativeId == b.nativeId and a.adapterId == b.adapterId and a.revision == b.revision
+end
 if run.state == 'publishing' or run.state == 'completed' or run.state == 'worker_failed' or run.state == 'publication_uncertain' then
-  if run.result and run.result.eventId == result.eventId and run.result.runId == result.runId and run.result.generation == result.generation and run.result.sequence == result.sequence and run.result.type == result.type and run.result.text == result.text then
+  if run.result and run.result.eventId == result.eventId and run.result.runId == result.runId and run.result.generation == result.generation and run.result.sequence == result.sequence and run.result.type == result.type and run.result.text == result.text and sameSession(run.result.session, result.session) then
     return 'duplicate'
   end
   return 'conflict'
@@ -98,10 +116,22 @@ local encoded = redis.call('GET', KEYS[1])
 if not encoded then return 0 end
 local run = cjson.decode(encoded)
 if run.state ~= 'publishing' then return 0 end
+local owns = redis.call('GET', KEYS[2]) == run.runId
+if run.result.session and not owns then return 0 end
 run.state = run.result.type == 'failed' and 'worker_failed' or 'completed'
 run.messageId = ARGV[1]
 redis.call('SET', KEYS[1], cjson.encode(run))
-if redis.call('GET', KEYS[2]) == run.runId then redis.call('DEL', KEYS[2]) end
+if owns then
+  if run.result.type == 'completed' and run.result.session then
+    local saved = redis.call('GET', KEYS[3])
+    local activeSince = saved and cjson.decode(saved).activeSince or run.messageId
+    redis.call('SET', KEYS[3], cjson.encode({
+      reference = run.result.session,
+      activeSince = activeSince
+    }))
+  end
+  redis.call('DEL', KEYS[2])
+end
 return 1
 `;
 
@@ -190,8 +220,15 @@ export class RedisRunStore implements RunStore {
     return `${this.namespace}:owner:${workspaceId}:${channelId}:${threadTs}`;
   }
 
-  async admit(candidate: RunRecord): Promise<{
-    outcome: 'accepted' | 'busy' | 'duplicate';
+  private sessionKey(conversationId: string): string {
+    return `${this.namespace}:session:${conversationId}`;
+  }
+
+  async admit(
+    candidate: RunRecord,
+    continuationOnly = false,
+  ): Promise<{
+    outcome: 'accepted' | 'busy' | 'duplicate' | 'inactive';
     run: RunRecord;
   }> {
     const outcome = await this.execute((client) =>
@@ -208,8 +245,13 @@ export class RedisRunStore implements RunStore {
             candidate.channelId,
             candidate.threadTs,
           ),
+          this.sessionKey(candidate.conversationId),
         ],
-        arguments: [`${this.namespace}:run:`, JSON.stringify(candidate)],
+        arguments: [
+          `${this.namespace}:run:`,
+          JSON.stringify(candidate),
+          continuationOnly ? '1' : '0',
+        ],
       }),
     );
     if (!Array.isArray(outcome) || outcome.length !== 2) {
@@ -219,7 +261,10 @@ export class RedisRunStore implements RunStore {
     const status = outcome[0];
     const encoded = outcome[1];
     if (
-      (status !== 'accepted' && status !== 'busy' && status !== 'duplicate') ||
+      (status !== 'accepted' &&
+        status !== 'busy' &&
+        status !== 'duplicate' &&
+        status !== 'inactive') ||
       typeof encoded !== 'string'
     ) {
       throw new Error('Redis admission returned an invalid result');
@@ -261,6 +306,7 @@ export class RedisRunStore implements RunStore {
             keys: [
               this.runKey(run.runId),
               this.ownerKey(run.workspaceId, run.channelId, run.threadTs),
+              this.sessionKey(run.conversationId),
             ],
             arguments: [messageId],
           }),
