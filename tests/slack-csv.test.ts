@@ -142,3 +142,80 @@ describe('Slack PDF validation and download', () => {
     ).toMatch(/text-based PDF/);
   });
 });
+
+describe('Slack PNG validation and download', () => {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+    'base64',
+  );
+  const file = {
+    name: 'fixture.png',
+    mode: 'hosted',
+    size: png.length,
+    mimetype: 'image/png',
+    url_private: 'https://files.slack.com/files-pri/TTEST1-FTEST1/fixture.png',
+  };
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('requires one small Slack-hosted PNG and returns its exact bytes', async () => {
+    const request = vi.fn().mockResolvedValue(new Response(png));
+    vi.stubGlobal('fetch', request);
+    for (const files of [
+      [file, file],
+      [{ ...file, mode: 'external' }],
+      [{ ...file, mode: 'snippet' }],
+      [{ ...file, is_external: true }],
+      [{ ...file, mimetype: 'image/jpeg' }],
+      [
+        {
+          ...file,
+          url_private: 'https://files.slack.com.example/files-pri/fixture.png',
+        },
+      ],
+    ])
+      expect(await downloadSlackFile(files, 'synthetic-token', 'png')).toMatch(
+        /one Slack-hosted PNG/,
+      );
+    expect(
+      await downloadSlackFile(
+        [{ ...file, size: 16 * 1024 + 1 }],
+        'synthetic-token',
+        'png',
+      ),
+    ).toMatch(/exceeds the 16 KiB limit/);
+    expect(request).not.toHaveBeenCalled();
+    expect(await downloadSlackFile([file], 'synthetic-token', 'png')).toEqual(
+      png,
+    );
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      new URL(file.url_private),
+      expect.objectContaining({
+        headers: { authorization: 'Bearer synthetic-token' },
+        redirect: 'error',
+      }),
+    );
+  });
+
+  it('rejects invalid, incomplete, and oversized image headers', async () => {
+    const wide = Buffer.from(png);
+    wide.writeUInt32BE(1_025, 16);
+    const tall = Buffer.from(png);
+    tall.writeUInt32BE(1_025, 20);
+    for (const bytes of [
+      Buffer.alloc(png.length),
+      png.subarray(0, -12),
+      wide,
+      tall,
+    ]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(bytes)));
+      expect(
+        await downloadSlackFile(
+          [{ ...file, size: bytes.length }],
+          'synthetic-token',
+          'png',
+        ),
+      ).toMatch(/one Slack-hosted PNG/);
+    }
+  });
+});
