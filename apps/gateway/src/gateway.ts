@@ -22,7 +22,7 @@ import type {
   WorkerResult,
 } from '../../../packages/contracts/src/index.js';
 import { fetchPublicText } from './public-url.js';
-import { downloadSlackCsv } from './slack-csv.js';
+import { downloadSlackFile } from './slack-file.js';
 import type { RunRecord, RunStore, SandboxTarget } from './store.js';
 
 export type GatewayConfig = {
@@ -33,6 +33,7 @@ export type GatewayConfig = {
   origin: string;
   threadResume?: boolean;
   csvInput?: boolean;
+  pdfInput?: boolean;
   csvOutput?: boolean;
   publicUrlInput?: boolean;
 };
@@ -62,6 +63,10 @@ export const WORKER_UNAVAILABLE_REPLY =
 
 const CSV_STAGING_FAILURE_REPLY =
   'The CSV could not be staged. Mention me again with the file to retry.';
+const PDF_STAGING_FAILURE_REPLY =
+  'The PDF could not be staged. Mention me again with the file to retry.';
+const PDF_UNREADABLE_REPLY =
+  'I could not extract readable text from this PDF. Mention me again with a small text-based PDF.';
 const URL_STAGING_FAILURE_REPLY =
   'The public URL text could not be staged. Mention me again with the link to retry.';
 
@@ -304,8 +309,9 @@ export function createGateway({
     const rawEvent = input.raw;
     const attachedFiles = rawEvent?.files;
     const hasFiles = Array.isArray(attachedFiles) && attachedFiles.length > 0;
+    const fileInputEnabled = config.csvInput || config.pdfInput;
     const fileShare =
-      config.csvInput &&
+      fileInputEnabled &&
       mention &&
       rawEvent?.subtype === 'file_share' &&
       hasFiles;
@@ -326,7 +332,7 @@ export function createGateway({
       rawEvent.bot_id ||
       rawEvent.bot_profile ||
       (rawEvent.subtype !== undefined && !fileShare) ||
-      (!mention && config.csvInput && hasFiles) ||
+      (!mention && fileInputEnabled && hasFiles) ||
       (rawEvent.user_team !== undefined &&
         rawEvent.user_team !== config.workspaceId) ||
       (rawEvent.team !== undefined && rawEvent.team !== config.workspaceId) ||
@@ -437,11 +443,22 @@ export function createGateway({
           return;
         }
 
+        const fileKind =
+          config.pdfInput &&
+          (!config.csvInput ||
+            (hasFiles && attachedFiles[0]?.mimetype === 'application/pdf'))
+            ? 'pdf'
+            : 'csv';
+        const inputKind = publicUrl
+          ? 'publicUrl'
+          : fileInputEnabled && hasFiles
+            ? fileKind
+            : undefined;
         let stagedInput: Buffer | undefined;
-        if (publicUrl || (config.csvInput && hasFiles)) {
+        if (inputKind) {
           const source = publicUrl
             ? await fetchPublicText(publicUrl)
-            : await downloadSlackCsv(attachedFiles, config.botToken);
+            : await downloadSlackFile(attachedFiles, config.botToken, fileKind);
           if (typeof source === 'string') {
             await publishNotice(run, 'failed', source);
             return;
@@ -460,11 +477,7 @@ export function createGateway({
             channelId: run.channelId,
             threadTs: run.threadTs,
             messageTs: run.messageTs,
-            ...(stagedInput
-              ? publicUrl
-                ? { publicUrl: true }
-                : { csv: true }
-              : {}),
+            ...(inputKind ? { [inputKind]: true } : {}),
           },
           ...(run.session ? { session: run.session } : {}),
           ...(config.csvOutput && !stagedInput ? { csvOutput: true } : {}),
@@ -481,7 +494,9 @@ export function createGateway({
             : dispatchOutcome === 'input-staging-failed'
               ? publicUrl
                 ? URL_STAGING_FAILURE_REPLY
-                : CSV_STAGING_FAILURE_REPLY
+                : fileKind === 'pdf'
+                  ? PDF_STAGING_FAILURE_REPLY
+                  : CSV_STAGING_FAILURE_REPLY
               : undefined;
         if (notice && !(await publishNotice(run, 'failed', notice)))
           console.error(
@@ -581,7 +596,12 @@ export function createGateway({
     if (result.type === 'failed') {
       if (result.session || result.artifact)
         return new Response(null, { status: 400 });
-      result.text = WORKER_FAILURE_REPLY;
+      result.text =
+        result.inputError === 'pdf_unreadable'
+          ? PDF_UNREADABLE_REPLY
+          : WORKER_FAILURE_REPLY;
+    } else if (result.inputError) {
+      return new Response(null, { status: 400 });
     }
     const run = await authenticate(request, result.runId, result.generation);
     if (run instanceof Response) return run;
