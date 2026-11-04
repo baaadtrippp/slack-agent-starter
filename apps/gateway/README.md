@@ -51,3 +51,29 @@ Keep the stopped Sandbox's session record for proof. Verify the Drive is
 detached before preparing a single replacement with the same writable mount.
 Enrollment and stop fencing apply to an exact session. Enroll each fresh
 replacement before sending work to it.
+
+## Automatic idle test mode
+
+Set `SANDBOX_MANAGED_DRIVE` and `SANDBOX_MANAGED_SEED` together with
+`SANDBOX_WORKER_NAME` to enable the automatic test mode. Prepare the named
+nonpersistent worker from that exact clean startup seed, configure its
+provider-side model firewall, and mount the configured Drive read-write at
+`/workspace`. The seed contains the pinned worker packages and entry point.
+Capture it before attaching a Drive or running work. Keep credentials and
+workspace data out of the seed.
+
+Enroll the initial exact session before routing requests, with all targeting
+gateway deployments upgraded and earlier work drained. The gateway stops after
+the last verified result and normal exit. A later request can resume from the
+pinned startup seed after fresh reads confirm the old session stopped and the
+Drive detached. If a resume reply is uncertain, a later request can verify the
+new session already created by that intent. The gateway leaves the intent fenced
+if it cannot verify a replacement. If no new session exists, inspect the exact
+named Sandbox and Drive. Once no resume is in flight and the old session is
+confirmed stopped and detached, an operator can resume the same configured
+Sandbox. Keep the intent in Redis so the gateway checks and adopts the new
+session on the next request.
+
+This mode uses immediate idle stop for the tracer. Production idle timing is an
+open operating-limit decision. A request blocked before launch receives the same
+explicit retry notice as the operator-controlled flow.

@@ -97,6 +97,14 @@ known prelaunch refusal. The
 integration** evidence for exact-session stop, a fenced dispatch, and writable
 Drive handoff to a replacement (AC03).
 
+The [Milestone 8 tests](milestone-8.md#deterministic-evidence) add
+**deterministic** evidence for one replacement intent and exact managed
+dispatch. The
+[automatic lifecycle probe](milestone-8.md#provider-integration-evidence) adds
+**provider integration** evidence for idle stop, reconciliation after a lost
+resume response, and preservation of the writable Drive across a clean
+replacement (AC02, AC03).
+
 ## Evidence rules
 
 For each slice, link evidence and label it as one of:

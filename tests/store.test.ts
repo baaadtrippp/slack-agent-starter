@@ -7,6 +7,7 @@ import type {
 } from '../packages/contracts/src/index.js';
 import {
   RedisRunStore,
+  type ManagedRuntime,
   type RunRecord,
   type SandboxTarget,
 } from '../apps/gateway/src/store.js';
@@ -108,6 +109,152 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     expect(await store.recordDispatchTarget(makeJob(busy), targets[0]!)).toBe(
       'conflict',
     );
+  });
+
+  it('atomically advances one managed runtime candidate and accepts exact replays', async () => {
+    const sandboxName = `synthetic-managed-${randomUUID()}`;
+    const candidates: ManagedRuntime[] = [
+      {
+        phase: 'starting',
+        sessionId: randomUUID(),
+        driveId: randomUUID(),
+        operationId: randomUUID(),
+      },
+      {
+        phase: 'starting',
+        sessionId: randomUUID(),
+        driveId: randomUUID(),
+        operationId: randomUUID(),
+      },
+    ];
+    expect(await store.getManagedRuntime(sandboxName)).toBeNull();
+
+    const outcomes = await Promise.all(
+      candidates.map((candidate) =>
+        store.compareManagedRuntime(sandboxName, null, candidate),
+      ),
+    );
+    expect([...outcomes].sort()).toEqual([false, true]);
+    const winner = candidates[outcomes.indexOf(true)]!;
+    const loser = candidates[outcomes.indexOf(false)]!;
+    expect(await store.getManagedRuntime(sandboxName)).toEqual(winner);
+    expect(await store.compareManagedRuntime(sandboxName, null, winner)).toBe(
+      true,
+    );
+    expect(await store.compareManagedRuntime(sandboxName, null, loser)).toBe(
+      false,
+    );
+
+    const ready: ManagedRuntime = {
+      phase: 'ready',
+      sessionId: winner.sessionId,
+      driveId: winner.driveId,
+    };
+    expect(await store.compareManagedRuntime(sandboxName, winner, ready)).toBe(
+      true,
+    );
+    expect(
+      await store.compareManagedRuntime(sandboxName, winner, {
+        ...ready,
+        sessionId: randomUUID(),
+      }),
+    ).toBe(false);
+    expect(await store.compareManagedRuntime(sandboxName, null, ready)).toBe(
+      true,
+    );
+    expect(await store.getManagedRuntime(sandboxName)).toEqual(ready);
+    expect(
+      await state.getClient().pTTL(managedRuntimeKey(namespace, sandboxName)),
+    ).toBe(-1);
+  });
+
+  it('requires the exact ready managed session and an open idle gate', async () => {
+    const unavailable = makeTarget('managed-missing');
+    const unavailableRun = makeRun();
+    await store.admit(unavailableRun);
+    expect(
+      await store.recordDispatchTarget(
+        makeJob(unavailableRun),
+        unavailable,
+        true,
+      ),
+    ).toBe('unavailable');
+
+    const starting = makeTarget('managed-starting');
+    const startingRun = makeRun();
+    await store.admit(startingRun);
+    await store.compareManagedRuntime(starting.sandboxName, null, {
+      phase: 'starting',
+      sessionId: starting.sessionId,
+      driveId: randomUUID(),
+      operationId: randomUUID(),
+    });
+    expect(await store.enrollIdleSession(starting)).toBe(true);
+    expect(
+      await store.recordDispatchTarget(makeJob(startingRun), starting, true),
+    ).toBe('unavailable');
+
+    const stale = makeTarget('managed-stale');
+    const staleRun = makeRun();
+    await store.admit(staleRun);
+    await store.compareManagedRuntime(stale.sandboxName, null, {
+      phase: 'ready',
+      sessionId: randomUUID(),
+      driveId: randomUUID(),
+    });
+    expect(await store.enrollIdleSession(stale)).toBe(true);
+    expect(
+      await store.recordDispatchTarget(makeJob(staleRun), stale, true),
+    ).toBe('unavailable');
+
+    const closed = makeTarget('managed-closed');
+    const closedRun = makeRun();
+    await store.admit(closedRun);
+    await store.compareManagedRuntime(closed.sandboxName, null, {
+      phase: 'ready',
+      sessionId: closed.sessionId,
+      driveId: randomUUID(),
+    });
+    expect(await store.isIdleSessionOpen(closed)).toBe(false);
+    expect(
+      await store.recordDispatchTarget(makeJob(closedRun), closed, true),
+    ).toBe('unavailable');
+
+    const ready = makeTarget('managed-ready');
+    const readyRun = makeRun();
+    await store.admit(readyRun);
+    await store.compareManagedRuntime(ready.sandboxName, null, {
+      phase: 'ready',
+      sessionId: ready.sessionId,
+      driveId: randomUUID(),
+    });
+    expect(await store.enrollIdleSession(ready)).toBe(true);
+    expect(await store.isIdleSessionOpen(ready)).toBe(true);
+    expect(
+      await store.recordDispatchTarget(makeJob(readyRun), ready, true),
+    ).toBe('recorded');
+
+    const stopping = makeTarget('managed-stopping');
+    const stoppingRun = makeRun();
+    await store.admit(stoppingRun);
+    await store.compareManagedRuntime(stopping.sandboxName, null, {
+      phase: 'ready',
+      sessionId: stopping.sessionId,
+      driveId: randomUUID(),
+    });
+    expect(await store.enrollIdleSession(stopping)).toBe(true);
+    expect(await store.claimIdleStop(stopping, randomUUID())).toBe('claimed');
+    expect(await store.isIdleSessionOpen(stopping)).toBe(false);
+    expect(
+      await store.recordDispatchTarget(makeJob(stoppingRun), stopping, true),
+    ).toBe('stopping');
+
+    const unmanaged = makeTarget('unmanaged');
+    const unmanagedRun = makeRun();
+    await store.admit(unmanagedRun);
+    expect(
+      await store.recordDispatchTarget(makeJob(unmanagedRun), unmanaged),
+    ).toBe('recorded');
   });
 
   it('serializes dispatch and idle stop in either race order without reopening', async () => {
@@ -540,4 +687,8 @@ function makeTarget(label: string): SandboxTarget {
 
 function idleGateKey(namespace: string, target: SandboxTarget): string {
   return `${namespace}:idle:${target.sandboxName}:${target.sessionId}:gate`;
+}
+
+function managedRuntimeKey(namespace: string, sandboxName: string): string {
+  return `${namespace}:runtime:${sandboxName}:managed`;
 }

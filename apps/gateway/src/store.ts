@@ -10,6 +10,19 @@ export type SandboxTarget = {
   sessionId: string;
 };
 
+export type ManagedRuntime =
+  | {
+      phase: 'ready';
+      sessionId: string;
+      driveId: string;
+    }
+  | {
+      phase: 'starting';
+      sessionId: string;
+      driveId: string;
+      operationId: string;
+    };
+
 export type RunRecord = {
   runId: string;
   conversationId: string;
@@ -59,7 +72,8 @@ export interface RunStore {
   recordDispatchTarget(
     job: WorkerJob,
     target: SandboxTarget,
-  ): Promise<'recorded' | 'conflict' | 'stopping'>;
+    managed?: boolean,
+  ): Promise<'recorded' | 'conflict' | 'stopping' | 'unavailable'>;
   interruptRun(run: RunRecord, now: number): Promise<boolean>;
 }
 
@@ -183,10 +197,39 @@ if run.kind ~= 'work' or run.state ~= 'accepted' or run.execution then return 'c
 if redis.call('GET', KEYS[2]) ~= run.runId then return 'conflict' end
 local gate = redis.call('GET', KEYS[3])
 if gate and gate ~= 'open' then return 'stopping' end
-run.execution = cjson.decode(ARGV[3])
+local target = cjson.decode(ARGV[3])
+if ARGV[4] == '1' then
+  if not gate then return 'unavailable' end
+  local managedEncoded = redis.call('GET', KEYS[5])
+  if not managedEncoded then return 'unavailable' end
+  local managed = cjson.decode(managedEncoded)
+  if managed.phase ~= 'ready' or managed.sessionId ~= target.sessionId then
+    return 'unavailable'
+  end
+end
+run.execution = target
 redis.call('SET', KEYS[1], cjson.encode(run))
 redis.call('SADD', KEYS[4], run.runId)
 return 'recorded'
+`;
+
+const COMPARE_MANAGED_RUNTIME_SCRIPT = `
+local currentEncoded = redis.call('GET', KEYS[1])
+local current = currentEncoded and cjson.decode(currentEncoded)
+local previous = ARGV[1] ~= '' and cjson.decode(ARGV[1])
+local next = cjson.decode(ARGV[2])
+local function same(a, b)
+  if not a or not b then return not a and not b end
+  if a.phase ~= b.phase or a.sessionId ~= b.sessionId or a.driveId ~= b.driveId then
+    return false
+  end
+  if a.phase == 'starting' then return a.operationId == b.operationId end
+  return true
+end
+if same(current, next) then return 1 end
+if not same(current, previous) then return 0 end
+redis.call('SET', KEYS[1], ARGV[2])
+return 1
 `;
 
 const RELEASE_DISPATCH_TARGET_SCRIPT = `
@@ -313,6 +356,10 @@ export class RedisRunStore implements RunStore {
 
   private sessionKey(conversationId: string): string {
     return `${this.namespace}:session:${conversationId}`;
+  }
+
+  private managedRuntimeKey(sandboxName: string): string {
+    return `${this.namespace}:runtime:${sandboxName}:managed`;
   }
 
   private idleGateKey(target: SandboxTarget): string {
@@ -460,7 +507,8 @@ export class RedisRunStore implements RunStore {
   async recordDispatchTarget(
     job: WorkerJob,
     target: SandboxTarget,
-  ): Promise<'recorded' | 'conflict' | 'stopping'> {
+    managed = false,
+  ): Promise<'recorded' | 'conflict' | 'stopping' | 'unavailable'> {
     return (await this.execute((client) =>
       client.eval(RECORD_DISPATCH_TARGET_SCRIPT, {
         keys: [
@@ -472,10 +520,55 @@ export class RedisRunStore implements RunStore {
           ),
           this.idleGateKey(target),
           this.activeDispatchKey(target),
+          this.managedRuntimeKey(target.sandboxName),
         ],
-        arguments: [job.runId, String(job.generation), JSON.stringify(target)],
+        arguments: [
+          job.runId,
+          String(job.generation),
+          JSON.stringify(target),
+          managed ? '1' : '0',
+        ],
       }),
-    )) as 'recorded' | 'conflict' | 'stopping';
+    )) as 'recorded' | 'conflict' | 'stopping' | 'unavailable';
+  }
+
+  async getManagedRuntime(sandboxName: string): Promise<ManagedRuntime | null> {
+    const encoded = await this.execute((client) =>
+      client.get(this.managedRuntimeKey(sandboxName)),
+    );
+    if (encoded === null) return null;
+    if (typeof encoded !== 'string')
+      throw new Error(
+        'Redis managed runtime lookup returned an invalid result',
+      );
+    return JSON.parse(encoded) as ManagedRuntime;
+  }
+
+  async compareManagedRuntime(
+    sandboxName: string,
+    previous: ManagedRuntime | null,
+    next: ManagedRuntime,
+  ): Promise<boolean> {
+    return (
+      Number(
+        await this.execute((client) =>
+          client.eval(COMPARE_MANAGED_RUNTIME_SCRIPT, {
+            keys: [this.managedRuntimeKey(sandboxName)],
+            arguments: [
+              previous ? JSON.stringify(previous) : '',
+              JSON.stringify(next),
+            ],
+          }),
+        ),
+      ) === 1
+    );
+  }
+
+  async isIdleSessionOpen(target: SandboxTarget): Promise<boolean> {
+    return (
+      (await this.execute((client) => client.get(this.idleGateKey(target)))) ===
+      'open'
+    );
   }
 
   async releaseDispatchTarget(
