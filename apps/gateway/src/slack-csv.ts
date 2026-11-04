@@ -47,7 +47,10 @@ export async function downloadSlackCsv(files: unknown, token: string) {
     try {
       if (
         !response.ok ||
-        response.headers.get('content-type')?.includes('text/html')
+        response.headers
+          .get('content-type')
+          ?.toLowerCase()
+          .includes('text/html')
       )
         return inaccessible;
       const bytes = Buffer.alloc(file.size);

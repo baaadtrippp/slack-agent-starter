@@ -34,10 +34,11 @@ acceptance are subsequent work.
 
 Signed webhook fixtures and disposable Redis verified that the gateway stages
 the exact bytes before worker launch and passes a file reference in the job. A
-simulated staging failure left no active Sandbox reservation, started no worker,
-and published a safe retry notice. Download tests exercised the Slack host
-check, type and size limits, access failure, size mismatch, and UTF-8
-validation. Slack delivery and Drive writes were simulated.
+simulated write failure and a deadline expiring during a successful write both
+left no active Sandbox reservation, started no worker, and published a retry
+notice. Download tests exercised the Slack host check, type and size limits,
+access failure, size mismatch, and UTF-8 validation. Slack delivery and Drive
+writes were simulated.
 
 A local probe through the pinned acpx, pi-acp, and Pi versions offered only the
 CSV tool to a model double. Pi invoked the tool and passed the exact synthetic

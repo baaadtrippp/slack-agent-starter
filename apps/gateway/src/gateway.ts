@@ -281,6 +281,7 @@ export function createGateway({
       rawEvent.bot_id ||
       rawEvent.bot_profile ||
       (rawEvent.subtype !== undefined && !fileShare) ||
+      (!mention && config.csvInput && hasFiles) ||
       (rawEvent.user_team !== undefined &&
         rawEvent.user_team !== config.workspaceId) ||
       (rawEvent.team !== undefined && rawEvent.team !== config.workspaceId) ||

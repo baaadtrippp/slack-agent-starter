@@ -184,7 +184,11 @@ function initialize() {
         }
         const timeoutMs = job.deadline - Date.now();
         if (timeoutMs <= 0) {
-          await releaseReservation();
+          await releaseReservation(Boolean(csv));
+          if (csv) {
+            await stopIfIdle();
+            return 'csv-staging-failed';
+          }
           throw new Error('Worker deadline expired');
         }
         const command = await session.runCommand({

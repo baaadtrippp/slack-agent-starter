@@ -389,7 +389,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
     },
   );
 
-  it.each(['staged', 'write failed'] as const)(
+  it.each(['staged', 'write failed', 'expired during staging'] as const)(
     'handles a %s CSV before Sandbox worker launch',
     async (outcome) => {
       configureRuntime('synthetic-worker');
@@ -408,6 +408,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       let staged = false;
       const writeFiles = vi.fn().mockImplementation(async () => {
         if (outcome === 'write failed') throw new Error('Synthetic fault');
+        if (outcome === 'expired during staging')
+          vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
         staged = true;
       });
       let job: WorkerJob | undefined;

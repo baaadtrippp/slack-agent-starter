@@ -56,11 +56,14 @@ describe('Slack CSV validation and download', () => {
     const request = vi
       .fn()
       .mockResolvedValueOnce(new Response('denied', { status: 403 }))
+      .mockResolvedValueOnce(
+        new Response(csv, { headers: { 'content-type': 'Text/HTML' } }),
+      )
       .mockResolvedValueOnce(new Response(Buffer.concat([csv, csv])))
       .mockResolvedValueOnce(new Response(csv.subarray(1)))
       .mockResolvedValueOnce(new Response(Buffer.alloc(csv.length, 0xff)));
     vi.stubGlobal('fetch', request);
-    for (let response = 0; response < 3; response += 1)
+    for (let response = 0; response < 4; response += 1)
       expect(await downloadSlackCsv([file], 'synthetic-token')).toMatch(
         /could not read/,
       );
