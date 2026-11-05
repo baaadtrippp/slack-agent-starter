@@ -45,9 +45,9 @@ IPv6 URL as plain text rather than autolinking it. The adapter's link list then
 omitted the URL and the gateway attempted ordinary dispatch. Two regression
 tests reproduced this before the fix: a bare IPv6 loopback URL, and a linked
 public URL combined with a bare IPv6 URL. Both now pass. The gateway combines
-explicit bracketed IPv6 HTTP(S) URL text with adapter links, unescapes and
-deduplicates them, then applies the existing single-source and downloader checks
-before dispatch. The focused gateway suite passed before and after the
+explicit bracketed numeric IPv6 HTTP(S) URL text with adapter links, unescapes
+and deduplicates them, then applies the existing single-source and downloader
+checks before dispatch. The focused gateway suite passed before and after the
 correction.
 
 ## IPv6 Sandbox probe
@@ -88,12 +88,19 @@ An initial IPv6 URL attempt received the worker-unavailable notice because the
 bare URL was not recognized. That outcome is the regression described above; it
 is not a successful private-network refusal.
 
-A fresh mention with a bare IPv6 loopback URL, after the gateway correction,
-received exactly one private-network notice in its original thread. Its run
-record had no worker execution target or native session and no remaining thread
-owner. The recorded publication ID matched the observed Slack reply. This checks
-gateway validation, not Sandbox egress.
+A fresh mention with a bare IPv6 loopback URL and an uppercase HTTPS scheme,
+against the final narrowed gateway correction, received exactly one
+private-network notice in its original thread. Its run record had no worker
+execution target or native session and no remaining thread owner. The recorded
+publication ID matched the observed Slack reply. This checks gateway validation,
+not Sandbox egress.
 
 The inaccessible-file outcome remains deterministic evidence from a controlled
 HTTP 403, not a live Slack access-denial claim. AC06 remains partial; broader
 attachment types and AC12 scenarios are separate work.
+
+Later reads still found one notice per tested input. The captured gateway
+routing was restored. All temporary test and evidence deployments and the
+isolated network probe were deleted and independently verified absent. No worker
+Sandbox, Drive, seed, or model turn was needed for these gateway refusals. The
+final local repository check passed all 133 tests using disposable Redis 8.4.0.
