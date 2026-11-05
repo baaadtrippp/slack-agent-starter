@@ -437,8 +437,36 @@ export function createGateway({
             );
           return;
         }
-        const links = config.publicUrlInput ? (message?.links ?? []) : [];
-        const publicUrl = links[0] && unescapeSlackText(links[0].url);
+        const urlText =
+          config.publicUrlInput && mention
+            ? input.text.replace(/```[\s\S]*?```|`[^`\n]*`/g, ' ')
+            : '';
+        const explicitIpv6Links = Array.from(
+          urlText.matchAll(
+            /<(https?:\/\/(?:[^\s<>|/]+@)?\[[\da-f:.]+\][^\s<>|]*)(?:\|[^>]*)?>/gi,
+          ),
+          ([, url]) => unescapeSlackText(url!),
+        );
+        const links = config.publicUrlInput
+          ? [
+              ...new Set([
+                ...(message?.links ?? []).map((link) =>
+                  unescapeSlackText(link.url),
+                ),
+                ...explicitIpv6Links,
+                ...(
+                  urlText
+                    .replace(/<[^>]*>/g, ' ')
+                    .match(
+                      /https?:\/\/(?:[^\s<>|/]+@)?\[[\da-f:.]+\][^\s<>|]*/gi,
+                    ) ?? []
+                ).map((url) =>
+                  unescapeSlackText(url).replace(/[.,;:!?)"']+$/g, ''),
+                ),
+              ]),
+            ]
+          : [];
+        const publicUrl = links[0];
         if (links.length > 1 || (publicUrl && hasFiles)) {
           await publishNotice(
             run,

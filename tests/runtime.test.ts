@@ -397,6 +397,10 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
   const stagingOutcomes = [
     'staged CSV',
     'staged URL',
+    'staged bare IPv6 URL',
+    'staged explicit IPv6 URL with period',
+    'staged uppercase explicit IPv6 URL with period',
+    'staged bare IPv6 URL with comma-shaped query data',
     'staged PDF',
     'staged PNG with all file types enabled',
     'staged PDF with CSV enabled',
@@ -408,9 +412,31 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
     'handles %s before Sandbox worker launch',
     async (outcome) => {
       configureRuntime('synthetic-worker');
-      const url = 'https://example.com/source.txt?a=1&b=2';
-      const slackUrl = 'https://example.com/source.txt?a=1&amp;b=2';
-      const isUrl = outcome === 'staged URL';
+      const bareIpv6 = outcome === 'staged bare IPv6 URL';
+      const explicitIpv6 = outcome === 'staged explicit IPv6 URL with period';
+      const uppercaseExplicitIpv6 =
+        outcome === 'staged uppercase explicit IPv6 URL with period';
+      const commaQueryIpv6 =
+        outcome === 'staged bare IPv6 URL with comma-shaped query data';
+      const url = bareIpv6
+        ? 'https://[2001:4860:4860::8888]/source.txt'
+        : commaQueryIpv6
+          ? 'https://[2001:4860:4860::8888]/source.txt?next=alpha,https://[2606:4700:4700::1111]/other.txt'
+          : uppercaseExplicitIpv6
+            ? 'HTTPS://[2001:4860:4860::8888]/source.txt.'
+            : explicitIpv6
+              ? 'https://[2001:4860:4860::8888]/source.txt.'
+              : 'https://example.com/source.txt?a=1&b=2';
+      const slackUrl =
+        explicitIpv6 || uppercaseExplicitIpv6
+          ? url
+          : 'https://example.com/source.txt?a=1&amp;b=2';
+      const isUrl =
+        outcome === 'staged URL' ||
+        bareIpv6 ||
+        commaQueryIpv6 ||
+        explicitIpv6 ||
+        uppercaseExplicitIpv6;
       const isPdf = outcome.startsWith('staged PDF');
       const isPng = outcome.startsWith('staged PNG');
       const kind = isUrl ? 'publicUrl' : isPng ? 'png' : isPdf ? 'pdf' : 'csv';
@@ -478,7 +504,15 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         }));
       const event = runtimeEvent(
         isUrl
-          ? { text: `<@UBOT1> Read <${slackUrl}|the source>.` }
+          ? {
+              text: bareIpv6
+                ? '<@UBOT1> Read https://[2001:4860:4860::8888]/source.txt.'
+                : commaQueryIpv6
+                  ? `<@UBOT1> Read ${url}`
+                  : explicitIpv6 || uppercaseExplicitIpv6
+                    ? `<@UBOT1> Read <${slackUrl}>.`
+                    : `<@UBOT1> Read <${slackUrl}|the source>.`,
+            }
           : {
               files: [
                 syntheticSlackFile(
