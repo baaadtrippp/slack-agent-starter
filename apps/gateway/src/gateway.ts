@@ -437,8 +437,17 @@ export function createGateway({
             );
           return;
         }
-        const links = config.publicUrlInput ? (message?.links ?? []) : [];
-        const publicUrl = links[0] && unescapeSlackText(links[0].url);
+        const links = config.publicUrlInput
+          ? [
+              ...new Set(
+                [
+                  ...(message?.links ?? []).map((link) => link.url),
+                  ...(input.text.match(/https?:\/\/[^\s<>|]+/g) ?? []),
+                ].map(unescapeSlackText),
+              ),
+            ]
+          : [];
+        const publicUrl = links[0];
         if (links.length > 1 || (publicUrl && hasFiles)) {
           await publishNotice(
             run,

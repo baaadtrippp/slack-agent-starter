@@ -92,6 +92,8 @@ function harness(
   isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>,
   inputConfig: {
     csvInput?: boolean;
+    pdfInput?: boolean;
+    pngInput?: boolean;
     publicUrlInput?: boolean;
     csvOutput?: boolean;
   } = {},
@@ -102,10 +104,8 @@ function harness(
   const dispatch = vi
     .fn<(job: WorkerJob) => Promise<void | 'worker-unavailable'>>()
     .mockResolvedValue();
-  const store = new RedisRunStore(
-    redis.getClient(),
-    `${namespace}:${randomUUID()}`,
-  );
+  const storeNamespace = `${namespace}:${randomUUID()}`;
+  const store = new RedisRunStore(redis.getClient(), storeNamespace);
   const admit = vi.spyOn(store, 'admit');
   const gateway = createGateway({
     config: {
@@ -131,7 +131,22 @@ function harness(
   async function run() {
     return (await admit.mock.results[0]?.value)?.run;
   }
-  return { ...gateway, store, admit, dispatch, tasks, clock, flush, run };
+  async function owner(threadTs: string) {
+    return redis
+      .getClient()
+      .get(`${storeNamespace}:owner:TTEST1:CTEST1:${threadTs}`);
+  }
+  return {
+    ...gateway,
+    store,
+    admit,
+    dispatch,
+    tasks,
+    clock,
+    flush,
+    run,
+    owner,
+  };
 }
 
 function result(job: WorkerJob): WorkerResult {
@@ -173,7 +188,10 @@ describe.skipIf(!redisUrl)(
       vi.spyOn(console, 'info').mockImplementation(() => {});
       vi.spyOn(console, 'error').mockImplementation(() => {});
     });
-    afterEach(() => vi.useRealTimers());
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
     afterAll(async () => {
       const client = redis.getClient();
       for await (const keys of client.scanIterator({ MATCH: `${namespace}:*` }))
@@ -726,14 +744,118 @@ describe.skipIf(!redisUrl)(
       );
     });
 
-    it('posts a private URL refusal to the originating thread without dispatch', async () => {
+    it.each([
+      {
+        outcome: 'oversized attachment',
+        file: {
+          name: 'oversized.png',
+          mode: 'hosted',
+          size: 16 * 1024 + 1,
+          mimetype: 'image/png',
+          url_private:
+            'https://files.slack.com/files-pri/TTEST1-FTEST1/oversized.png',
+        },
+        notice:
+          'The PNG exceeds the 16 KiB limit for this test. Attach a smaller file.',
+        requests: 0,
+      },
+      {
+        outcome: 'unsupported attachment',
+        file: {
+          name: 'unsupported.zip',
+          mode: 'hosted',
+          size: 24,
+          mimetype: 'application/zip',
+          url_private:
+            'https://files.slack.com/files-pri/TTEST1-FTEST1/unsupported.zip',
+        },
+        notice: 'Attach one Slack-hosted CSV file encoded as UTF-8.',
+        requests: 0,
+      },
+      {
+        outcome: 'inaccessible attachment',
+        file: {
+          name: 'inaccessible.pdf',
+          mode: 'hosted',
+          size: 24,
+          mimetype: 'application/pdf',
+          url_private:
+            'https://files.slack.com/files-pri/TTEST1-FTEST1/inaccessible.pdf',
+        },
+        notice:
+          'I could not read the Slack file. Check that it is shared here and mention me again with the PDF.',
+        requests: 1,
+      },
+      {
+        outcome: 'private-network URL',
+        notice: 'That URL points to a private or restricted network address.',
+        requests: 0,
+      },
+    ])(
+      'posts one same-thread notice for $outcome without dispatch',
+      async ({ file, notice, requests }) => {
+        const request = vi
+          .fn<typeof fetch>()
+          .mockResolvedValue(new Response('denied', { status: 403 }));
+        vi.stubGlobal('fetch', request);
+        const gateway = harness(createMockState(), false, undefined, {
+          csvInput: true,
+          pdfInput: true,
+          pngInput: true,
+          publicUrlInput: true,
+        });
+        const base = envelope();
+        const mention = file
+          ? {
+              ...base,
+              event: {
+                ...base.event,
+                subtype: 'file_share',
+                files: [file],
+              },
+            }
+          : {
+              ...base,
+              event: {
+                ...base.event,
+                text: '<@UBOT1> Read <https://127.0.0.1/source.txt>.',
+              },
+            };
+
+        expect((await gateway.events(signed(mention))).status).toBe(200);
+        expect(request).not.toHaveBeenCalled();
+        expect(gateway.dispatch).not.toHaveBeenCalled();
+        expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
+
+        await gateway.flush();
+
+        expect(request).toHaveBeenCalledTimes(requests);
+        expect(gateway.dispatch).not.toHaveBeenCalled();
+        expect(
+          SlackAdapter.prototype.postMessage,
+        ).toHaveBeenCalledExactlyOnceWith(
+          `slack:CTEST1:${mention.event.ts}`,
+          notice,
+        );
+        const run = await gateway.run();
+        expect(await gateway.store.getRun(run!.runId)).toMatchObject({
+          state: 'worker_failed',
+        });
+        expect(await gateway.owner(mention.event.ts)).toBeNull();
+      },
+    );
+
+    it('rejects a bare private IPv6 URL before dispatch', async () => {
       const gateway = harness(createMockState(), false, undefined, {
         publicUrlInput: true,
       });
       const mention = envelope();
-      mention.event.text = '<@UBOT1> Read <https://127.0.0.1/source.txt>.';
+      mention.event.text = '<@UBOT1> Read https://[::1]/source.txt.';
 
       expect((await gateway.events(signed(mention))).status).toBe(200);
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
+
       await gateway.flush();
 
       expect(gateway.dispatch).not.toHaveBeenCalled();
@@ -742,6 +864,32 @@ describe.skipIf(!redisUrl)(
       ).toHaveBeenCalledExactlyOnceWith(
         `slack:CTEST1:${mention.event.ts}`,
         'That URL points to a private or restricted network address.',
+      );
+    });
+
+    it('rejects a linked URL combined with a bare IPv6 URL before download or dispatch', async () => {
+      const request = vi.fn<typeof fetch>();
+      vi.stubGlobal('fetch', request);
+      const gateway = harness(createMockState(), false, undefined, {
+        publicUrlInput: true,
+      });
+      const mention = envelope();
+      mention.event.text =
+        '<@UBOT1> Read <https://example.invalid/source.txt> and https://[::1]/source.txt.';
+
+      expect((await gateway.events(signed(mention))).status).toBe(200);
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
+
+      await gateway.flush();
+
+      expect(request).not.toHaveBeenCalled();
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(
+        `slack:CTEST1:${mention.event.ts}`,
+        'Mention me with one public HTTPS link on its own for this test.',
       );
     });
 
