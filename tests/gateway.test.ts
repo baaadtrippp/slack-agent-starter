@@ -17,6 +17,7 @@ import {
   createGateway,
   BUSY_REPLY,
   RECOVERED_REPLY,
+  STARTING_STATUS,
   WORKER_UNAVAILABLE_REPLY,
 } from '../apps/gateway/src/gateway.js';
 import { RedisRunStore } from '../apps/gateway/src/store.js';
@@ -98,6 +99,7 @@ function harness(
     csvOutput?: boolean;
   } = {},
   collectCsv?: (runId: string, target: SandboxTarget) => Promise<Buffer>,
+  progressUi = false,
 ) {
   const clock = { now: initialTime };
   const tasks: Array<() => Promise<void>> = [];
@@ -106,6 +108,8 @@ function harness(
     .mockResolvedValue();
   const storeNamespace = `${namespace}:${randomUUID()}`;
   const store = new RedisRunStore(redis.getClient(), storeNamespace);
+  if (!progressUi)
+    vi.spyOn(store, 'claimStatusCreation').mockResolvedValue(false);
   const admit = vi.spyOn(store, 'admit');
   const gateway = createGateway({
     config: {
@@ -161,6 +165,17 @@ function result(job: WorkerJob): WorkerResult {
   };
 }
 
+function progress(job: WorkerJob, eventId = randomUUID()) {
+  return {
+    version: 1 as const,
+    runId: job.runId,
+    generation: job.generation,
+    eventId,
+    sequence: 1 as const,
+    type: 'working' as const,
+  };
+}
+
 function callback(body: unknown, token: string) {
   return new Request('https://gateway.example/api/worker/callback', {
     method: 'POST',
@@ -181,6 +196,12 @@ describe.skipIf(!redisUrl)(
     beforeEach(() => {
       vi.spyOn(SlackAdapter.prototype, 'initialize').mockResolvedValue();
       vi.spyOn(SlackAdapter.prototype, 'postMessage').mockResolvedValue({
+        id: '1800000001.000001',
+        threadId: 'slack:CTEST1:1800000000.000001',
+        raw: {},
+      });
+      vi.spyOn(SlackAdapter.prototype, 'addReaction').mockResolvedValue();
+      vi.spyOn(SlackAdapter.prototype, 'editMessage').mockResolvedValue({
         id: '1800000001.000001',
         threadId: 'slack:CTEST1:1800000000.000001',
         raw: {},
@@ -285,6 +306,178 @@ describe.skipIf(!redisUrl)(
       );
       expect(JSON.stringify(run)).not.toContain(
         gateway.dispatch.mock.calls[0]?.[0].callbackToken,
+      );
+    });
+
+    it('acknowledges an accepted mention after the HTTP response with one eyes reaction and one status', async () => {
+      const gateway = harness(
+        createMockState(),
+        false,
+        undefined,
+        {},
+        undefined,
+        true,
+      );
+      const body = envelope();
+      const response = await gateway.events(signed(body));
+
+      expect(response.status).toBe(200);
+      expect(SlackAdapter.prototype.initialize).not.toHaveBeenCalled();
+      expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
+      expect(SlackAdapter.prototype.addReaction).not.toHaveBeenCalled();
+
+      await gateway.flush();
+
+      const run = await gateway.run();
+      const threadId = `slack:CTEST1:${body.event.ts}`;
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(threadId, STARTING_STATUS);
+      expect(
+        SlackAdapter.prototype.addReaction,
+      ).toHaveBeenCalledExactlyOnceWith(
+        threadId,
+        body.event.ts,
+        expect.objectContaining({ name: 'eyes' }),
+      );
+      expect(await gateway.store.getRun(run!.runId)).toMatchObject({
+        statusClaimed: true,
+        statusMessageId: '1800000001.000001',
+      });
+
+      await gateway.events(signed(body));
+      await gateway.flush();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
+      expect(SlackAdapter.prototype.addReaction).toHaveBeenCalledTimes(1);
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+    });
+
+    it('dispatches while Slack is slow and reconciles completion after the status ID is saved', async () => {
+      const gateway = harness(
+        createMockState(),
+        false,
+        undefined,
+        {},
+        undefined,
+        true,
+      );
+      const statusStarted = Promise.withResolvers<void>();
+      const statusPost = Promise.withResolvers<{
+        id: string;
+        threadId: string;
+        raw: object;
+      }>();
+      const dispatched = Promise.withResolvers<WorkerJob>();
+      gateway.dispatch.mockImplementation(async (job) => {
+        dispatched.resolve(job);
+      });
+      vi.mocked(SlackAdapter.prototype.postMessage).mockImplementation(
+        async (threadId, message) => {
+          if (message === STARTING_STATUS) {
+            statusStarted.resolve();
+            return statusPost.promise;
+          }
+          return { id: '1800000001.000002', threadId, raw: {} };
+        },
+      );
+
+      const body = envelope();
+      expect((await gateway.events(signed(body))).status).toBe(200);
+      let backgroundFinished = false;
+      const background = gateway.tasks.shift()!().finally(() => {
+        backgroundFinished = true;
+      });
+      const job = await dispatched.promise;
+      await statusStarted.promise;
+      expect(backgroundFinished).toBe(false);
+
+      expect(
+        (await gateway.callback(callback(result(job), job.callbackToken)))
+          .status,
+      ).toBe(202);
+      await gateway.tasks.shift()!();
+      expect(await gateway.store.getRun(job.runId)).toMatchObject({
+        state: 'completed',
+        messageId: '1800000001.000002',
+      });
+      expect(await gateway.store.getRun(job.runId)).not.toHaveProperty(
+        'statusMessageId',
+      );
+
+      statusPost.resolve({
+        id: '1800000001.000001',
+        threadId: `slack:CTEST1:${body.event.ts}`,
+        raw: {},
+      });
+      await background;
+
+      expect(await gateway.store.getRun(job.runId)).toMatchObject({
+        state: 'completed',
+        statusMessageId: '1800000001.000001',
+      });
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(2);
+      expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
+        `slack:CTEST1:${body.event.ts}`,
+        '1800000001.000001',
+        'Completed. The result is in this thread.',
+      );
+    });
+
+    it('does not acknowledge refused, bot, or busy input as another accepted run', async () => {
+      const gateway = harness(
+        createMockState(),
+        true,
+        undefined,
+        {},
+        undefined,
+        true,
+      );
+      const accepted = envelope();
+      await gateway.events(signed(accepted));
+      await gateway.flush();
+
+      const bot = envelope();
+      (bot.event as typeof bot.event & { bot_id?: string }).bot_id =
+        'BSYNTHETIC';
+      await gateway.events(signed(bot));
+      await gateway.events(signed(threadReply(accepted.event.ts)));
+      await gateway.flush();
+
+      expect(SlackAdapter.prototype.addReaction).toHaveBeenCalledTimes(1);
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(2);
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
+        `slack:CTEST1:${accepted.event.ts}`,
+        BUSY_REPLY,
+      );
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+    });
+
+    it('publishes a refusal without creating an acknowledgement status or reaction', async () => {
+      const gateway = harness(
+        createMockState(),
+        false,
+        undefined,
+        { publicUrlInput: true },
+        undefined,
+        true,
+      );
+      const body = envelope();
+      body.event.text = '<@UBOT1> Read <https://127.0.0.1/private.txt>.';
+
+      expect((await gateway.events(signed(body))).status).toBe(200);
+      await gateway.flush();
+
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(SlackAdapter.prototype.addReaction).not.toHaveBeenCalled();
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(
+        `slack:CTEST1:${body.event.ts}`,
+        'That URL points to a private or restricted network address.',
+      );
+      const run = await gateway.run();
+      expect(await gateway.store.getRun(run!.runId)).not.toHaveProperty(
+        'statusClaimed',
       );
     });
 
@@ -393,6 +586,358 @@ describe.skipIf(!redisUrl)(
         state: 'completed',
         messageId: '1800000001.000001',
       });
+    });
+
+    it('accepts authenticated content-free progress once and rejects malformed or terminal-late progress', async () => {
+      const gateway = harness(
+        createMockState(),
+        false,
+        undefined,
+        {},
+        undefined,
+        true,
+      );
+      const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
+      gateway.dispatch.mockImplementation(async (job) => {
+        expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+          'recorded',
+        );
+      });
+      await gateway.events(signed(envelope()));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      const update = progress(job);
+
+      expect(
+        (
+          await gateway.callback(
+            callback(
+              { ...update, text: 'private tool detail' },
+              job.callbackToken,
+            ),
+          )
+        ).status,
+      ).toBe(400);
+      expect(
+        (
+          await gateway.callback(
+            callback({ ...update, generation: 2 }, job.callbackToken),
+          )
+        ).status,
+      ).toBe(409);
+      expect(
+        (await gateway.callback(callback(update, 'f'.repeat(64)))).status,
+      ).toBe(401);
+      expect(
+        (await gateway.callback(callback(update, job.callbackToken))).status,
+      ).toBe(204);
+      await gateway.flush();
+      expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
+        expect.stringMatching(/^slack:CTEST1:/),
+        '1800000001.000001',
+        'Working…',
+      );
+
+      expect(
+        (await gateway.callback(callback(update, job.callbackToken))).status,
+      ).toBe(204);
+      await gateway.flush();
+      expect(SlackAdapter.prototype.editMessage).toHaveBeenCalledTimes(3);
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
+      expect(await gateway.store.getRun(job.runId)).toMatchObject({
+        statusMessageId: '1800000001.000001',
+        progress: { eventId: update.eventId },
+      });
+
+      const completed = { ...result(job), sequence: 2 as const };
+      expect(
+        (await gateway.callback(callback(completed, job.callbackToken))).status,
+      ).toBe(202);
+      await gateway.flush();
+      expect(
+        (await gateway.callback(callback(progress(job), job.callbackToken)))
+          .status,
+      ).toBe(409);
+      expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
+        expect.stringMatching(/^slack:CTEST1:/),
+        '1800000001.000001',
+        'Completed. The result is in this thread.',
+      );
+    });
+
+    it('repairs a working edit when completion lands during the Slack call', async () => {
+      const gateway = harness(
+        createMockState(),
+        false,
+        undefined,
+        {},
+        undefined,
+        true,
+      );
+      const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
+      gateway.dispatch.mockImplementation(async (job) => {
+        await gateway.store.recordDispatchTarget(job, target);
+      });
+      await gateway.events(signed(envelope()));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      const workingEdit = Promise.withResolvers<void>();
+      const workingStarted = Promise.withResolvers<void>();
+      vi.mocked(SlackAdapter.prototype.editMessage).mockImplementationOnce(
+        async (threadId, messageId) => {
+          workingStarted.resolve();
+          await workingEdit.promise;
+          return { id: messageId, threadId, raw: {} };
+        },
+      );
+
+      expect(
+        (await gateway.callback(callback(progress(job), job.callbackToken)))
+          .status,
+      ).toBe(204);
+      const renderWorking = gateway.tasks.shift()!();
+      await workingStarted.promise;
+
+      const completed = { ...result(job), sequence: 2 as const };
+      expect(
+        (await gateway.callback(callback(completed, job.callbackToken))).status,
+      ).toBe(202);
+      await gateway.tasks.shift()!();
+      workingEdit.resolve();
+      await renderWorking;
+
+      expect(SlackAdapter.prototype.editMessage).toHaveBeenNthCalledWith(
+        2,
+        expect.stringMatching(/^slack:CTEST1:/),
+        '1800000001.000001',
+        'Working…',
+      );
+      expect(SlackAdapter.prototype.editMessage).toHaveBeenNthCalledWith(
+        3,
+        expect.stringMatching(/^slack:CTEST1:/),
+        '1800000001.000001',
+        'Completed. The result is in this thread.',
+      );
+    });
+
+    it('retries a transient status edit against the same persisted message', async () => {
+      const gateway = harness(
+        createMockState(),
+        false,
+        undefined,
+        {},
+        undefined,
+        true,
+      );
+      const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
+      gateway.dispatch.mockImplementation(async (job) => {
+        await gateway.store.recordDispatchTarget(job, target);
+      });
+      await gateway.events(signed(envelope()));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      const edit = vi.mocked(SlackAdapter.prototype.editMessage);
+      edit.mockClear();
+      edit.mockRejectedValueOnce(new Error('Synthetic Slack timeout'));
+
+      expect(
+        (await gateway.callback(callback(progress(job), job.callbackToken)))
+          .status,
+      ).toBe(204);
+      await gateway.flush();
+
+      expect(edit).toHaveBeenCalledTimes(2);
+      expect(edit).toHaveBeenNthCalledWith(
+        1,
+        expect.stringMatching(/^slack:CTEST1:/),
+        '1800000001.000001',
+        'Working…',
+      );
+      expect(edit).toHaveBeenNthCalledWith(
+        2,
+        expect.stringMatching(/^slack:CTEST1:/),
+        '1800000001.000001',
+        'Working…',
+      );
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('creates a fresh single status when an ordinary reply resumes the saved session', async () => {
+      const gateway = harness(
+        createMockState(),
+        true,
+        undefined,
+        {},
+        undefined,
+        true,
+      );
+      const mention = envelope();
+      vi.mocked(SlackAdapter.prototype.postMessage).mockImplementation(
+        async (threadId) => ({
+          id: mention.event.ts,
+          threadId,
+          raw: {},
+        }),
+      );
+      await gateway.events(signed(mention));
+      await gateway.flush();
+      const seed = gateway.dispatch.mock.calls[0]![0];
+      const session = {
+        seedRunId: seed.runId,
+        nativeId: randomUUID(),
+        adapterId: randomUUID(),
+        revision: 4,
+      };
+      await gateway.callback(
+        callback({ ...result(seed), session }, seed.callbackToken),
+      );
+      await gateway.flush();
+
+      const reply = threadReply(mention.event.ts);
+      await gateway.events(signed(reply));
+      await gateway.flush();
+
+      expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+      expect(gateway.dispatch.mock.calls[1]![0].session).toEqual(session);
+      expect(SlackAdapter.prototype.addReaction).toHaveBeenCalledTimes(2);
+      expect(SlackAdapter.prototype.addReaction).toHaveBeenLastCalledWith(
+        `slack:CTEST1:${mention.event.ts}`,
+        reply.event.ts,
+        expect.objectContaining({ name: 'eyes' }),
+      );
+      const startingCalls = vi
+        .mocked(SlackAdapter.prototype.postMessage)
+        .mock.calls.filter(([, message]) => message === STARTING_STATUS);
+      expect(startingCalls).toHaveLength(2);
+    });
+
+    it.each([
+      [
+        'startup',
+        'Starting: worker startup is unconfirmed. The outcome is uncertain; ask the operator to inspect this run.',
+      ],
+      ['worker', 'Failed. See the reply in this thread for details.'],
+      [
+        'publication',
+        'Failed to confirm result publication. Ask the operator to inspect this run before retrying.',
+      ],
+    ] as const)(
+      'keeps the status truthful after a %s failure',
+      async (outcome, status) => {
+        const gateway = harness(
+          createMockState(),
+          false,
+          undefined,
+          {},
+          undefined,
+          true,
+        );
+        if (outcome === 'startup')
+          gateway.dispatch.mockRejectedValueOnce(
+            new Error('Synthetic dispatch response loss'),
+          );
+        const body = envelope();
+        await gateway.events(signed(body));
+        await gateway.flush();
+        const job = gateway.dispatch.mock.calls[0]![0];
+
+        if (outcome === 'worker') {
+          const failure = { ...result(job), type: 'failed' as const };
+          expect(
+            (await gateway.callback(callback(failure, job.callbackToken)))
+              .status,
+          ).toBe(202);
+          await gateway.flush();
+        }
+        if (outcome === 'publication') {
+          vi.mocked(SlackAdapter.prototype.postMessage).mockRejectedValueOnce(
+            new Error('Synthetic publication response loss'),
+          );
+          expect(
+            (await gateway.callback(callback(result(job), job.callbackToken)))
+              .status,
+          ).toBe(202);
+          await gateway.flush();
+        }
+
+        expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
+          `slack:CTEST1:${body.event.ts}`,
+          '1800000001.000001',
+          status,
+        );
+      },
+    );
+
+    it('reports an attachment failure without discarding the completed text result', async () => {
+      const csv = Buffer.from('label,value\nsynthetic,1\n');
+      const collectCsv = vi.fn().mockResolvedValue(csv);
+      const gateway = harness(
+        createMockState(),
+        false,
+        undefined,
+        { csvOutput: true },
+        collectCsv,
+        true,
+      );
+      const body = envelope();
+      await gateway.events(signed(body));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
+      expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+        'recorded',
+      );
+      const output: WorkerResult = {
+        ...result(job),
+        artifact: { sha256: createHash('sha256').update(csv).digest('hex') },
+        session: {
+          seedRunId: job.runId,
+          nativeId: randomUUID(),
+          adapterId: randomUUID(),
+          revision: 1,
+        },
+      };
+      const post = vi.mocked(SlackAdapter.prototype.postMessage);
+      post.mockResolvedValueOnce({
+        id: '1800000001.000002',
+        threadId: `slack:CTEST1:${body.event.ts}`,
+        raw: {},
+      });
+      const uploadStarted = Promise.withResolvers<void>();
+      const releaseUpload = Promise.withResolvers<void>();
+      post.mockImplementationOnce(async () => {
+        uploadStarted.resolve();
+        await releaseUpload.promise;
+        throw new Error('Synthetic upload failure');
+      });
+
+      expect(
+        (await gateway.callback(callback(output, job.callbackToken))).status,
+      ).toBe(202);
+      const publishing = gateway.flush();
+      await uploadStarted.promise;
+      try {
+        expect(await gateway.owner(body.event.ts)).toBeNull();
+        expect(await gateway.store.getRun(job.runId)).toMatchObject({
+          state: 'completed',
+          result: { session: output.session },
+          messageId: '1800000001.000002',
+        });
+      } finally {
+        releaseUpload.resolve();
+        await publishing;
+      }
+
+      expect(await gateway.store.getRun(job.runId)).toMatchObject({
+        state: 'completed',
+        artifactPublication: 'failed',
+        messageId: '1800000001.000002',
+      });
+      expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
+        `slack:CTEST1:${body.event.ts}`,
+        '1800000001.000001',
+        'Completed. The text result is in this thread; the attachment could not be confirmed.',
+      );
     });
 
     it.each([
@@ -1032,7 +1577,8 @@ describe.skipIf(!redisUrl)(
       expect(
         (await gateway.callback(callback(output, job.callbackToken))).status,
       ).toBe(204);
-      expect(gateway.tasks).toHaveLength(0);
+      expect(gateway.tasks).toHaveLength(1);
+      await gateway.flush();
       expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
     });
 
@@ -1292,7 +1838,7 @@ describe.skipIf(!redisUrl)(
       expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
     });
 
-    it('retains the Slack message ID when its publication-state write fails', async () => {
+    it('records uncertainty when the publication-state write fails', async () => {
       const gateway = harness();
       await gateway.events(signed(envelope()));
       await gateway.flush();
@@ -1303,7 +1849,9 @@ describe.skipIf(!redisUrl)(
       await gateway.callback(callback(result(job), job.callbackToken));
       await gateway.flush();
       expect(console.error).toHaveBeenCalledWith(
-        expect.stringContaining('"messageId":"1800000001.000001"'),
+        expect.stringContaining(
+          '"phase":"publication_uncertain","messageId":"1800000001.000001"',
+        ),
       );
       expect(await gateway.store.getRun(job.runId)).toMatchObject({
         state: 'publication_uncertain',

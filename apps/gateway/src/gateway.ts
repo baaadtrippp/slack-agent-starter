@@ -10,11 +10,12 @@ import {
   parseSlackWebhookBody,
   verifySlackSignature,
 } from '@chat-adapter/slack/webhook';
-import { Chat, ConsoleLogger } from 'chat';
+import { Chat, ConsoleLogger, emoji } from 'chat';
 import type { StateAdapter } from 'chat';
 import { z } from 'zod';
 import {
   WORKER_FAILURE_REPLY,
+  workerCallbackSchema,
   workerResultSchema,
 } from '../../../packages/contracts/src/index.js';
 import type {
@@ -54,7 +55,34 @@ type GatewayOptions = {
 };
 
 export const BUSY_REPLY =
-  'This thread had an unfinished run when your message arrived. Your message was not submitted. During this test, start a new mention outside this thread and ask the operator to inspect it.';
+  'This thread has an unfinished run. Your message was not submitted. Please resend it after the run finishes. If it remains unfinished, ask the operator to inspect it.';
+
+export const STARTING_STATUS = 'Starting…';
+
+function statusText(run: RunRecord) {
+  switch (run.state) {
+    case 'publishing':
+      return 'Finishing: publishing the result…';
+    case 'completed':
+      if (run.result?.artifact && !run.artifactPublication)
+        return 'Finishing: the text result is posted; attaching the file…';
+      return run.artifactPublication === 'failed'
+        ? 'Completed. The text result is in this thread; the attachment could not be confirmed.'
+        : 'Completed. The result is in this thread.';
+    case 'worker_failed':
+      return 'Failed. See the reply in this thread for details.';
+    case 'publication_uncertain':
+      return 'Failed to confirm result publication. Ask the operator to inspect this run before retrying.';
+    case 'dispatch_failed':
+      return run.progress
+        ? 'Working…'
+        : 'Starting: worker startup is unconfirmed. The outcome is uncertain; ask the operator to inspect this run.';
+    case 'interrupted':
+      return 'Failed: the worker environment stopped without a confirmed result. Mention me again to try a fresh run.';
+    default:
+      return run.progress ? 'Working…' : STARTING_STATUS;
+  }
+}
 
 export const RECOVERED_REPLY =
   'The environment assigned to the previous run has stopped. Hydra could not confirm a result. This message was not submitted. Mention me again in this thread to try a fresh run.';
@@ -157,9 +185,101 @@ export function createGateway({
     }
   }
 
+  function threadIdFor(run: RunRecord) {
+    return slack.encodeThreadId({
+      channel: run.channelId,
+      threadTs: run.threadTs,
+    });
+  }
+
+  async function acknowledge(run: RunRecord) {
+    try {
+      if (!(await store.claimStatusCreation(run.runId))) return;
+      await initializeBot();
+      const threadId = threadIdFor(run);
+      // A lost post response is deliberately not retried: it may have created
+      // the message. Never create a second status to resolve that uncertainty.
+      await Promise.all([
+        (async () => {
+          const message = await bot.thread(threadId).post(STARTING_STATUS);
+          if (
+            !/^\d{10}\.\d{6}$/.test(message.id) ||
+            !(await store.recordStatusMessage(run.runId, message.id))
+          )
+            throw new Error('Status reference was not recorded');
+          await renderStatus(run.runId);
+        })(),
+        slack.addReaction(threadId, run.messageTs, emoji.eyes).catch(() => {
+          console.error(
+            JSON.stringify({ runId: run.runId, phase: 'reaction_unconfirmed' }),
+          );
+        }),
+      ]);
+    } catch {
+      console.error(
+        JSON.stringify({
+          runId: run.runId,
+          phase: 'status_creation_uncertain',
+        }),
+      );
+    }
+  }
+
+  async function renderStatus(runId: string) {
+    const token = randomUUID();
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const initial = await store.getRun(runId);
+          if (!initial?.statusMessageId) return;
+          await initializeBot();
+          if (!(await store.claimStatusEdit(runId, token))) return;
+          for (;;) {
+            const current = await store.getRun(runId);
+            if (!current?.statusMessageId) return;
+            for (let edit = 0; edit < 2; edit += 1) {
+              try {
+                await slack.editMessage(
+                  threadIdFor(current),
+                  current.statusMessageId,
+                  statusText(current),
+                );
+                break;
+              } catch {
+                if (edit === 1)
+                  console.error(
+                    JSON.stringify({ runId, phase: 'status_edit_unconfirmed' }),
+                  );
+              }
+            }
+            // Drain changes that arrived during the external call before an
+            // atomic version check releases the token-owned lease.
+            if (
+              (await store.finishStatusEdit(
+                runId,
+                token,
+                current.statusVersion ?? 0,
+              )) !== 'changed'
+            )
+              return;
+          }
+        } catch {
+          if (attempt === 1)
+            console.error(
+              JSON.stringify({ runId, phase: 'status_update_unavailable' }),
+            );
+        }
+      }
+    } finally {
+      // Safe after success too: a different renderer's token cannot be released.
+      await store.finishStatusEdit(runId, token).catch(() => {});
+    }
+  }
+
   async function publish(run: RunRecord, result: WorkerResult, csv?: Buffer) {
     let messageId: string | undefined;
     let threadId: string;
+    let artifactPublication: 'uploaded' | 'failed' | undefined;
     try {
       await initializeBot();
       threadId = slack.encodeThreadId({
@@ -190,43 +310,61 @@ export function createGateway({
           stateRecorded,
         }),
       );
+      await renderStatus(run.runId);
       return;
     }
 
-    if (!result.artifact) return;
-    const thread = bot.thread(threadId);
-    try {
-      if (!csv) throw new Error('Generated CSV was unavailable');
-      const upload = await slack.postMessage(threadId, {
-        markdown: '',
-        files: [{ data: csv, filename: 'result.csv', mimeType: 'text/csv' }],
-      });
-      const receipt = z.object({
-        uploadedFileIds: z.tuple([z.string().min(1)]),
-      });
-      if (!receipt.safeParse(upload.raw).success)
-        throw new Error('Slack did not confirm the upload');
-      console.info(
-        JSON.stringify({
-          runId: run.runId,
-          phase: 'csv_uploaded',
-          bytes: csv.length,
-        }),
-      );
-    } catch {
-      console.error(
-        JSON.stringify({
-          runId: run.runId,
-          phase: 'csv_attachment_unconfirmed',
-          category: csv ? 'slack_upload' : 'artifact_unavailable',
-        }),
-      );
-      await thread
-        .post(
-          'I could not confirm the CSV attachment. The text result is above.',
-        )
-        .catch(() => {});
+    if (result.artifact) {
+      const thread = bot.thread(threadId);
+      try {
+        if (!csv) throw new Error('Generated CSV was unavailable');
+        const upload = await slack.postMessage(threadId, {
+          markdown: '',
+          files: [{ data: csv, filename: 'result.csv', mimeType: 'text/csv' }],
+        });
+        const receipt = z.object({
+          uploadedFileIds: z.tuple([z.string().min(1)]),
+        });
+        if (!receipt.safeParse(upload.raw).success)
+          throw new Error('Slack did not confirm the upload');
+        artifactPublication = 'uploaded';
+        console.info(
+          JSON.stringify({
+            runId: run.runId,
+            phase: 'csv_uploaded',
+            bytes: csv.length,
+          }),
+        );
+      } catch {
+        artifactPublication = 'failed';
+        console.error(
+          JSON.stringify({
+            runId: run.runId,
+            phase: 'csv_attachment_unconfirmed',
+            category: csv ? 'slack_upload' : 'artifact_unavailable',
+          }),
+        );
+        await thread
+          .post(
+            'I could not confirm the CSV attachment. The text result is above.',
+          )
+          .catch(() => {});
+      }
     }
+    if (artifactPublication) {
+      const recorded = await store
+        .recordArtifactPublication(run.runId, artifactPublication)
+        .catch(() => false);
+      if (!recorded)
+        console.error(
+          JSON.stringify({
+            runId: run.runId,
+            phase: 'artifact_publication_state_uncertain',
+            messageId,
+          }),
+        );
+    }
+    await renderStatus(run.runId);
   }
 
   async function publishNotice(
@@ -273,9 +411,11 @@ export function createGateway({
       if (!(await isSandboxStopped(previous.execution))) return false;
     }
     // The first write may have committed even if Redis did not acknowledge it.
-    return store
+    const recovered = await store
       .interruptRun(previous, now())
       .catch(() => store.interruptRun(previous, now()));
+    if (recovered) await renderStatus(previous.runId);
+    return recovered;
   }
 
   async function events(request: Request): Promise<Response> {
@@ -411,6 +551,7 @@ export function createGateway({
 
     const run = admission.run;
     schedule(async () => {
+      let acknowledgement: Promise<void> | undefined;
       try {
         if (run.kind === 'busy') {
           const recovered = await recoverInterruptedRun(run).catch(() => {
@@ -503,6 +644,7 @@ export function createGateway({
           }
           stagedInput = source;
         }
+        acknowledgement = acknowledge(run);
         const job: WorkerJob = {
           version: 1,
           runId: run.runId,
@@ -550,6 +692,9 @@ export function createGateway({
             stateRecorded,
           }),
         );
+        await renderStatus(run.runId);
+      } finally {
+        await acknowledgement;
       }
     });
     return new Response(null, { status: 200 });
@@ -621,12 +766,21 @@ export function createGateway({
       return new Response(null, { status: 413 });
     let parsed;
     try {
-      parsed = workerResultSchema.safeParse(JSON.parse(body));
+      parsed = workerCallbackSchema.safeParse(JSON.parse(body));
     } catch {
       return new Response(null, { status: 400 });
     }
     if (!parsed.success) return new Response(null, { status: 400 });
     const result = parsed.data;
+    if (result.type === 'working') {
+      const run = await authenticate(request, result.runId, result.generation);
+      if (run instanceof Response) return run;
+      const claim = await store.claimProgress(result, now());
+      if (claim === 'expired') return new Response(null, { status: 410 });
+      if (claim === 'conflict') return new Response(null, { status: 409 });
+      schedule(() => renderStatus(run.runId));
+      return new Response(null, { status: 204 });
+    }
     if (result.type === 'failed') {
       if (result.session || result.artifact)
         return new Response(null, { status: 400 });
@@ -699,7 +853,10 @@ export function createGateway({
       );
       return new Response(null, { status: 503 });
     }
-    if (claim === 'duplicate') return new Response(null, { status: 204 });
+    if (claim === 'duplicate') {
+      schedule(() => renderStatus(run.runId));
+      return new Response(null, { status: 204 });
+    }
     if (claim === 'expired') return new Response(null, { status: 410 });
     if (claim === 'retry') return new Response(null, { status: 503 });
     if (claim !== 'claimed') return new Response(null, { status: 409 });

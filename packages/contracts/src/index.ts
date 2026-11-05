@@ -53,7 +53,7 @@ export const workerResultSchema = z
     runId: z.uuid(),
     generation: z.number().int().positive(),
     eventId: z.uuid(),
-    sequence: z.literal(1),
+    sequence: z.union([z.literal(1), z.literal(2)]),
     type: z.enum(['completed', 'failed']),
     inputError: z.enum(['pdf_unreadable', 'pdf_text_too_large']).optional(),
     artifact: z
@@ -66,6 +66,25 @@ export const workerResultSchema = z
   .strict();
 
 export type WorkerResult = z.infer<typeof workerResultSchema>;
+
+// A single content-free signal: the worker has started a real Pi turn.
+export const workerProgressSchema = z
+  .object({
+    version: z.literal(1),
+    runId: z.uuid(),
+    generation: z.number().int().positive(),
+    eventId: z.uuid(),
+    sequence: z.literal(1),
+    type: z.literal('working'),
+  })
+  .strict();
+
+export type WorkerProgress = z.infer<typeof workerProgressSchema>;
+
+export const workerCallbackSchema = z.union([
+  workerResultSchema,
+  workerProgressSchema,
+]);
 
 export const CANNED_REPLY =
   'Gateway round trip complete. The agent runtime is not connected yet.';

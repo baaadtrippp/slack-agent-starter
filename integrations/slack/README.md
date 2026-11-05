@@ -24,6 +24,21 @@ enabling the [generated CSV check](../../docs/spec/milestone-10.md).
 `proposed-controls-and-feedback.yaml` contains the separate, still-proposed
 Stop/Status and feedback overlay. It is not used in milestone 1.
 
+`f07-progress.yaml` is the complete minimal manifest for progress with the
+existing public-channel continuation and file paths. It adds `reactions:write`
+for the acknowledgement and uses `chat:write` for status creation and edits.
+`channels:history` and `message.channels` enable ordinary thread replies; the
+gateway still filters to configured channels. No reaction-read subscription,
+private-channel access, interactivity, or assistant scope is required.
+
+To update an existing app, keep its current name, bot display name, and event
+URL in the placeholders. In Slack app management, open that app's **App
+Manifest**, replace it with the completed file, validate, and save. If Slack
+requests installation for the added scopes, use **Install to Workspace** for
+this same app. Verify the installed token has `reactions:write`; saving a
+manifest alone does not grant it. Keep the app invited only to the selected test
+channel. A failed acknowledgement reaction never prevents the status or answer.
+
 ## Create an app shell
 
 In [Slack app management](https://api.slack.com/apps), create a blank app in the
