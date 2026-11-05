@@ -36,3 +36,20 @@ The exact pinned acpx, pi-acp, and Pi packages also ran a local model-double
 probe with the fixture. The native user record retained one PNG, and the model
 request carried an image with the exact same bytes. The request advertised zero
 tools.
+
+## Live Slack evidence
+
+One mention in the authorized test channel included a synthetic 640 × 360 PNG.
+The installed bot token had `files:read`. The gateway downloaded and staged
+15,178 bytes in the reserved Sandbox, matching the original fixture byte for
+byte.
+
+The real Pi worker's native user record retained one `image/png` attachment with
+the same bytes. The prompt contained the question. The reference and values
+appeared only in the image. Hydra posted one answer in the originating thread.
+The reference, the three labeled values, and the total of 91 matched an
+independent reading of the fixture. The gateway's publication ID matched that
+reply. A later thread read still showed one answer.
+
+The previous gateway routing was restored, and the temporary deployment, worker,
+Drive, and startup seed were removed. This verifies the PNG case of AC06.
