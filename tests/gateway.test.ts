@@ -585,7 +585,9 @@ describe.skipIf(!redisUrl)(
     );
 
     it('activates only after a real session result and routes one ordinary turn with that exact reference', async () => {
-      const gateway = harness(createMockState(), true);
+      const gateway = harness(createMockState(), true, undefined, {
+        publicUrlInput: true,
+      });
       const mention = envelope();
       const inactive = threadReply(mention.event.ts);
       await gateway.events(signed(inactive));
@@ -625,6 +627,7 @@ describe.skipIf(!redisUrl)(
       expect(gateway.dispatch).toHaveBeenCalledTimes(1);
 
       const next = threadReply(mention.event.ts);
+      next.event.text = 'Continue with https://[::1]/source.txt.';
       const duplicate = {
         ...next,
         event_id: `Ev${randomUUID()}`,
@@ -645,6 +648,7 @@ describe.skipIf(!redisUrl)(
         session,
         input: { text: next.event.text, threadTs: mention.event.ts },
       });
+      expect(followup.input).not.toHaveProperty('publicUrl');
       expect(
         (
           await gateway.callback(

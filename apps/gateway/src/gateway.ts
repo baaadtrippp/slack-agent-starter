@@ -437,9 +437,10 @@ export function createGateway({
             );
           return;
         }
-        const urlText = config.publicUrlInput
-          ? input.text.replace(/```[\s\S]*?```|`[^`\n]*`/g, ' ')
-          : '';
+        const urlText =
+          config.publicUrlInput && mention
+            ? input.text.replace(/```[\s\S]*?```|`[^`\n]*`/g, ' ')
+            : '';
         const explicitIpv6Links = Array.from(
           urlText.matchAll(
             /<(https?:\/\/(?:[^\s<>|/]+@)?\[[\da-f:.]+\][^\s<>|]*)(?:\|[^>]*)?>/gi,

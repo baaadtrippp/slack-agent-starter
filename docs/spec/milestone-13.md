@@ -64,6 +64,11 @@ controlled fetch boundary. Credential-bearing bare IPv6 candidates reach the
 existing credentials refusal without dispatch. These checks do not claim
 provider network enforcement.
 
+The URL supplements remain mention-only. A signed ordinary reply in an activated
+thread retained its existing native-session mapping and ordinary continuation
+input without a public URL flag. This check used the deterministic worker
+boundary.
+
 ## IPv6 Sandbox probe
 
 A separate real, nonpersistent Sandbox in `fra1`, using Sandbox SDK 3.9.1,
