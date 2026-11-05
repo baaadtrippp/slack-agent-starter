@@ -845,30 +845,51 @@ describe.skipIf(!redisUrl)(
       },
     );
 
-    it.each(['https://', 'HTTPS://'])(
-      'rejects a bare private IPv6 URL before dispatch: %s',
-      async (scheme) => {
-        const gateway = harness(createMockState(), false, undefined, {
-          publicUrlInput: true,
-        });
-        const mention = envelope();
-        mention.event.text = `<@UBOT1> Read ${scheme}[::1]/source.txt.`;
+    it.each([
+      'https://[::1]/source.txt.',
+      'HTTPS://[::1]/source.txt.',
+      'https://[::1]',
+    ])('rejects a bare private IPv6 URL before dispatch: %s', async (url) => {
+      const gateway = harness(createMockState(), false, undefined, {
+        publicUrlInput: true,
+      });
+      const mention = envelope();
+      mention.event.text = `<@UBOT1> Read ${url}`;
 
-        expect((await gateway.events(signed(mention))).status).toBe(200);
-        expect(gateway.dispatch).not.toHaveBeenCalled();
-        expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
+      expect((await gateway.events(signed(mention))).status).toBe(200);
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
 
-        await gateway.flush();
+      await gateway.flush();
 
-        expect(gateway.dispatch).not.toHaveBeenCalled();
-        expect(
-          SlackAdapter.prototype.postMessage,
-        ).toHaveBeenCalledExactlyOnceWith(
-          `slack:CTEST1:${mention.event.ts}`,
-          'That URL points to a private or restricted network address.',
-        );
-      },
-    );
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(
+        `slack:CTEST1:${mention.event.ts}`,
+        'That URL points to a private or restricted network address.',
+      );
+    });
+
+    it('leaves a bare public URL in a code example as ordinary task text', async () => {
+      const gateway = harness(createMockState(), false, undefined, {
+        publicUrlInput: true,
+      });
+      const mention = envelope();
+      mention.event.text =
+        '<@UBOT1> Explain this code: `const source = "https://example.invalid/source.txt";`';
+
+      expect((await gateway.events(signed(mention))).status).toBe(200);
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+
+      await gateway.flush();
+
+      expect(gateway.dispatch).toHaveBeenCalledOnce();
+      expect(gateway.dispatch.mock.calls[0]![0].input).not.toHaveProperty(
+        'publicUrl',
+      );
+      expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
+    });
 
     it('rejects a linked URL combined with a bare IPv6 URL before download or dispatch', async () => {
       const request = vi.fn<typeof fetch>();

@@ -9,8 +9,8 @@ remain tracer limits under O05.
 
 1. Inspect the existing admission, downloader, and worker dispatch paths. Keep
    working rejection behavior unchanged; add only missing checks or necessary
-   fixes. Recognize explicit HTTP(S) URL text even when Slack does not autolink
-   an IPv6 literal, then apply the same downloader validation before dispatch.
+   fixes. Recognize explicit IPv6 HTTP(S) URL text when Slack does not autolink
+   the literal, then apply the same downloader validation before dispatch.
 2. Exercise an oversized supported attachment, an unsupported attachment, a
    controlled inaccessible Slack download, and a private-network URL. Verify
    acknowledgement before deferred work, one specific same-thread notice,
@@ -45,9 +45,10 @@ IPv6 URL as plain text rather than autolinking it. The adapter's link list then
 omitted the URL and the gateway attempted ordinary dispatch. Two regression
 tests reproduced this before the fix: a bare IPv6 loopback URL, and a linked
 public URL combined with a bare IPv6 URL. Both now pass. The gateway combines
-explicit HTTP(S) URL text with adapter links, unescapes and deduplicates them,
-then applies the existing single-source and downloader checks before dispatch.
-The focused gateway suite passed all 52 tests.
+explicit bracketed IPv6 HTTP(S) URL text with adapter links, unescapes and
+deduplicates them, then applies the existing single-source and downloader checks
+before dispatch. The focused gateway suite passed before and after the
+correction.
 
 ## IPv6 Sandbox probe
 
@@ -86,3 +87,13 @@ Pi worker was provisioned for this refusal window.
 An initial IPv6 URL attempt received the worker-unavailable notice because the
 bare URL was not recognized. That outcome is the regression described above; it
 is not a successful private-network refusal.
+
+A fresh mention with a bare IPv6 loopback URL, after the gateway correction,
+received exactly one private-network notice in its original thread. Its run
+record had no worker execution target or native session and no remaining thread
+owner. The recorded publication ID matched the observed Slack reply. This checks
+gateway validation, not Sandbox egress.
+
+The inaccessible-file outcome remains deterministic evidence from a controlled
+HTTP 403, not a live Slack access-denial claim. AC06 remains partial; broader
+attachment types and AC12 scenarios are separate work.
