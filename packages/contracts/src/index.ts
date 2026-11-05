@@ -29,12 +29,13 @@ export const workerJobSchema = z
         messageTs: slackTimestamp,
         csv: z.literal(true).optional(),
         pdf: z.literal(true).optional(),
+        png: z.literal(true).optional(),
         publicUrl: z.literal(true).optional(),
       })
       .strict()
       .refine(
-        ({ csv, pdf, publicUrl }) =>
-          [csv, pdf, publicUrl].filter(Boolean).length <= 1,
+        ({ csv, pdf, png, publicUrl }) =>
+          [csv, pdf, png, publicUrl].filter(Boolean).length <= 1,
       ),
     session: workerSessionSchema.optional(),
     csvOutput: z.literal(true).optional(),

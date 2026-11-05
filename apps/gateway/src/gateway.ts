@@ -34,6 +34,7 @@ export type GatewayConfig = {
   threadResume?: boolean;
   csvInput?: boolean;
   pdfInput?: boolean;
+  pngInput?: boolean;
   csvOutput?: boolean;
   publicUrlInput?: boolean;
 };
@@ -61,16 +62,17 @@ export const RECOVERED_REPLY =
 export const WORKER_UNAVAILABLE_REPLY =
   'The worker is unavailable. Your message was not submitted. Mention me again when the worker is ready.';
 
-const CSV_STAGING_FAILURE_REPLY =
-  'The CSV could not be staged. Mention me again with the file to retry.';
-const PDF_STAGING_FAILURE_REPLY =
-  'The PDF could not be staged. Mention me again with the file to retry.';
+const INPUT_STAGING_FAILURE_REPLY = {
+  csv: 'The CSV could not be staged. Mention me again with the file to retry.',
+  pdf: 'The PDF could not be staged. Mention me again with the file to retry.',
+  png: 'The PNG could not be staged. Mention me again with the file to retry.',
+  publicUrl:
+    'The public URL text could not be staged. Mention me again with the link to retry.',
+};
 const PDF_UNREADABLE_REPLY =
   'I could not extract readable text from this PDF. Mention me again with a small text-based PDF.';
 const PDF_TEXT_TOO_LARGE_REPLY =
   'The PDF contains more than 16 KiB of text for this test. Mention me again with a shorter PDF.';
-const URL_STAGING_FAILURE_REPLY =
-  'The public URL text could not be staged. Mention me again with the link to retry.';
 
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_EVENT_BYTES = 256 * 1024;
@@ -311,7 +313,8 @@ export function createGateway({
     const rawEvent = input.raw;
     const attachedFiles = rawEvent?.files;
     const hasFiles = Array.isArray(attachedFiles) && attachedFiles.length > 0;
-    const fileInputEnabled = config.csvInput || config.pdfInput;
+    const fileInputEnabled =
+      config.csvInput || config.pdfInput || config.pngInput;
     const fileShare =
       fileInputEnabled &&
       mention &&
@@ -445,12 +448,17 @@ export function createGateway({
           return;
         }
 
+        const mimeType = hasFiles ? attachedFiles[0]?.mimetype : undefined;
         const fileKind =
-          config.pdfInput &&
-          (!config.csvInput ||
-            (hasFiles && attachedFiles[0]?.mimetype === 'application/pdf'))
-            ? 'pdf'
-            : 'csv';
+          config.pngInput && mimeType === 'image/png'
+            ? 'png'
+            : config.pdfInput && mimeType === 'application/pdf'
+              ? 'pdf'
+              : config.csvInput
+                ? 'csv'
+                : config.pdfInput
+                  ? 'pdf'
+                  : 'png';
         const inputKind = publicUrl
           ? 'publicUrl'
           : fileInputEnabled && hasFiles
@@ -493,12 +501,8 @@ export function createGateway({
         const notice =
           dispatchOutcome === 'worker-unavailable'
             ? WORKER_UNAVAILABLE_REPLY
-            : dispatchOutcome === 'input-staging-failed'
-              ? publicUrl
-                ? URL_STAGING_FAILURE_REPLY
-                : fileKind === 'pdf'
-                  ? PDF_STAGING_FAILURE_REPLY
-                  : CSV_STAGING_FAILURE_REPLY
+            : dispatchOutcome === 'input-staging-failed' && inputKind
+              ? INPUT_STAGING_FAILURE_REPLY[inputKind]
               : undefined;
         if (notice && !(await publishNotice(run, 'failed', notice)))
           console.error(

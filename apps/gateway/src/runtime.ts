@@ -74,6 +74,7 @@ function initialize() {
       worker.kind === 'sandbox' && process.env.SLACK_THREAD_RESUME === '1',
     csvInput: worker.kind === 'sandbox' && process.env.SLACK_CSV_INPUT === '1',
     pdfInput: worker.kind === 'sandbox' && process.env.SLACK_PDF_INPUT === '1',
+    pngInput: worker.kind === 'sandbox' && process.env.SLACK_PNG_INPUT === '1',
     csvOutput:
       worker.kind === 'sandbox' && process.env.SLACK_CSV_OUTPUT === '1',
     publicUrlInput:
@@ -165,7 +166,9 @@ function initialize() {
               ? 'public_url'
               : job.input.pdf
                 ? 'pdf'
-                : 'csv';
+                : job.input.png
+                  ? 'png'
+                  : 'csv';
             const filename =
               input === 'public_url' ? 'source.txt' : `input.${input}`;
             await session.writeFiles(
