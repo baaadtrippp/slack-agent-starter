@@ -50,4 +50,22 @@ describe('Sandbox worker progress', () => {
 
     expect(reportWorking).not.toHaveBeenCalled();
   });
+
+  it('reports working once when a tool call is the first live event', async () => {
+    const reportWorking = vi.fn<() => void>();
+    await consumeTurn(
+      controlledTurn([
+        {
+          type: 'tool_call',
+          text: 'private tool title',
+          rawInput: { secret: 'private tool input' },
+        },
+        { type: 'text_delta', text: 'private model output' },
+      ]),
+      reportWorking,
+    );
+
+    expect(reportWorking).toHaveBeenCalledTimes(1);
+    expect(reportWorking).toHaveBeenCalledWith();
+  });
 });

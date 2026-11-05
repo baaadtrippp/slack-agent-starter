@@ -64,11 +64,9 @@ function statusText(run: RunRecord) {
     case 'publishing':
       return 'Finishing: publishing the result…';
     case 'completed':
-      if (run.result?.artifact && !run.artifactPublication)
-        return 'Finishing: the text result is posted; attaching the file…';
-      return run.artifactPublication === 'failed'
-        ? 'Completed. The text result is in this thread; the attachment could not be confirmed.'
-        : 'Completed. The result is in this thread.';
+      if (run.result?.artifact && run.artifactPublication !== 'uploaded')
+        return 'Completed. The text result is in this thread. Attachment delivery is unconfirmed.';
+      return 'Completed. The result is in this thread.';
     case 'worker_failed':
       return 'Failed. See the reply in this thread for details.';
     case 'publication_uncertain':
@@ -161,18 +159,26 @@ export function createGateway({
       timeout: 10_000,
     },
   });
-  const bot = new Chat({
-    userName: 'agent',
-    adapters: { slack },
-    state,
-    logger: 'silent',
-  });
+  const createBot = () =>
+    new Chat({
+      userName: 'agent',
+      adapters: { slack },
+      state,
+      logger: 'silent',
+    });
+  let bot = createBot();
 
   async function initializeBot() {
+    const current = bot;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        bot.initialize(),
+        current.initialize().catch((error: unknown) => {
+          // The SDK can cache a rejected adapter initialization. Replace that
+          // Chat instance without disconnecting the shared Redis connection.
+          if (bot === current) bot = createBot();
+          throw error;
+        }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error('Chat initialization timed out')),
@@ -194,12 +200,12 @@ export function createGateway({
 
   async function acknowledge(run: RunRecord) {
     try {
+      await initializeBot().catch(() => initializeBot());
       if (!(await store.claimStatusCreation(run.runId))) return;
-      await initializeBot();
       const threadId = threadIdFor(run);
       // A lost post response is deliberately not retried: it may have created
       // the message. Never create a second status to resolve that uncertainty.
-      await Promise.all([
+      const [status] = await Promise.allSettled([
         (async () => {
           const message = await bot.thread(threadId).post(STARTING_STATUS);
           if (
@@ -215,6 +221,7 @@ export function createGateway({
           );
         }),
       ]);
+      if (status.status === 'rejected') throw status.reason;
     } catch {
       console.error(
         JSON.stringify({
@@ -279,13 +286,11 @@ export function createGateway({
   async function publish(run: RunRecord, result: WorkerResult, csv?: Buffer) {
     let messageId: string | undefined;
     let threadId: string;
-    let artifactPublication: 'uploaded' | 'failed' | undefined;
+    let publishingStatus: Promise<void> | undefined;
     try {
       await initializeBot();
-      threadId = slack.encodeThreadId({
-        channel: run.channelId,
-        threadTs: run.threadTs,
-      });
+      publishingStatus = renderStatus(run.runId);
+      threadId = threadIdFor(run);
       const message = await bot.thread(threadId).post(result.text);
       if (
         !message.id ||
@@ -310,12 +315,15 @@ export function createGateway({
           stateRecorded,
         }),
       );
+      await publishingStatus;
       await renderStatus(run.runId);
       return;
     }
 
     if (result.artifact) {
+      const attachmentStatus = renderStatus(run.runId);
       const thread = bot.thread(threadId);
+      let artifactPublication: 'uploaded' | 'failed';
       try {
         if (!csv) throw new Error('Generated CSV was unavailable');
         const upload = await slack.postMessage(threadId, {
@@ -350,8 +358,6 @@ export function createGateway({
           )
           .catch(() => {});
       }
-    }
-    if (artifactPublication) {
       const recorded = await store
         .recordArtifactPublication(run.runId, artifactPublication)
         .catch(() => false);
@@ -363,7 +369,9 @@ export function createGateway({
             messageId,
           }),
         );
+      await attachmentStatus;
     }
+    await publishingStatus;
     await renderStatus(run.runId);
   }
 
@@ -533,6 +541,8 @@ export function createGateway({
     if (admission.outcome === 'inactive')
       return new Response(null, { status: 200 });
     if (admission.outcome === 'duplicate') {
+      if (admission.run.statusMessageId)
+        schedule(() => renderStatus(admission.run.runId));
       if (
         admission.run.deadline <= now() &&
         admission.run.state !== 'completed' &&
