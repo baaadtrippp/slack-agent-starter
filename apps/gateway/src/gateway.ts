@@ -442,7 +442,7 @@ export function createGateway({
               ...new Set(
                 [
                   ...(message?.links ?? []).map((link) => link.url),
-                  ...(input.text.match(/https?:\/\/[^\s<>|]+/g) ?? []),
+                  ...(input.text.match(/https?:\/\/[^\s<>|]+/gi) ?? []),
                 ].map(unescapeSlackText),
               ),
             ]
