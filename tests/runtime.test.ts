@@ -142,7 +142,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
   }, 10_000);
 
   it('completes publication when Slack initialization and posting each take longer than one second', async () => {
-    configureRuntime();
+    await configureRuntime(undefined, false);
     const { SlackAdapter } = await import('@chat-adapter/slack');
     const initialize = vi
       .spyOn(SlackAdapter.prototype, 'initialize')
@@ -155,6 +155,12 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         return { id: '1800000001.000001', threadId, raw: {} };
       },
     );
+    vi.spyOn(SlackAdapter.prototype, 'addReaction').mockResolvedValue();
+    vi.spyOn(SlackAdapter.prototype, 'editMessage').mockResolvedValue({
+      id: '1800000001.000001',
+      threadId: 'slack:CTEST1:1800000000.000001',
+      raw: {},
+    });
     let job: WorkerJob | undefined;
     vi.stubGlobal(
       'fetch',
@@ -175,7 +181,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       expect(response.status).toBe(200);
       await drainBackground();
       expect(job).toBeDefined();
-      expect(initialize).not.toHaveBeenCalled();
+      expect(initialize).toHaveBeenCalledTimes(1);
       const callback = await handle(
         new Request('https://gateway.example/api/worker/callback', {
           method: 'POST',
@@ -225,7 +231,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
   it.each(sandboxDispatchConditions)(
     'uses the exact %s Sandbox session safely',
     async (condition) => {
-      configureRuntime('synthetic-worker');
+      await configureRuntime('synthetic-worker');
       const observer = createRedisState({
         url: redisUrl!,
         keyPrefix: `runtime-sandbox-observer:${randomUUID()}`,
@@ -310,17 +316,6 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           RedisRunStore.prototype,
           'recordDispatchTarget',
         ).mockResolvedValue('conflict');
-      if (condition === 'stopped' || condition === 'stopping') {
-        const { SlackAdapter } = await import('@chat-adapter/slack');
-        vi.spyOn(SlackAdapter.prototype, 'initialize').mockResolvedValue();
-        vi.spyOn(SlackAdapter.prototype, 'postMessage').mockImplementation(
-          async (threadId) => ({
-            id: '1800000001.000001',
-            threadId,
-            raw: {},
-          }),
-        );
-      }
       const event = runtimeEvent();
       let runId: string | undefined;
       try {
@@ -411,7 +406,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
   it.each(stagingOutcomes)(
     'handles %s before Sandbox worker launch',
     async (outcome) => {
-      configureRuntime('synthetic-worker');
+      await configureRuntime('synthetic-worker');
       const bareIpv6 = outcome === 'staged bare IPv6 URL';
       const explicitIpv6 = outcome === 'staged explicit IPv6 URL with period';
       const uppercaseExplicitIpv6 =
@@ -550,7 +545,10 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           expect(runCommand).toHaveBeenCalledTimes(1);
           expect(stagedBeforeLaunch).toBe(true);
           expect(job?.input).toHaveProperty(kind, true);
-          expect(postMessage).not.toHaveBeenCalled();
+          expect(postMessage).toHaveBeenCalledExactlyOnceWith(
+            `slack:CTEST1:${event.ts}`,
+            'Starting…',
+          );
         } else {
           expect(runCommand).not.toHaveBeenCalled();
           expect(await store.claimIdleStop(target, randomUUID())).toBe(
@@ -559,7 +557,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           expect(await store.getRun(runId!)).toMatchObject({
             state: 'worker_failed',
           });
-          expect(postMessage).toHaveBeenCalledExactlyOnceWith(
+          expect(postMessage).toHaveBeenLastCalledWith(
             `slack:CTEST1:${event.ts}`,
             'The CSV could not be staged. Mention me again with the file to retry.',
           );
@@ -589,7 +587,7 @@ async function retryUntil<T>(action: () => Promise<T | null>): Promise<T> {
   throw new Error('Runtime did not recover before the test deadline');
 }
 
-function configureRuntime(sandboxName?: string) {
+async function configureRuntime(sandboxName?: string, mockSlack = true) {
   background.splice(0);
   sandboxGet.mockReset();
   driveGet.mockReset();
@@ -605,6 +603,23 @@ function configureRuntime(sandboxName?: string) {
   vi.stubEnv('SLACK_WORKSPACE_ID', 'TTEST1');
   vi.stubEnv('REDIS_URL', redisUrl!);
   vi.resetModules();
+  if (mockSlack) {
+    const { SlackAdapter } = await import('@chat-adapter/slack');
+    vi.spyOn(SlackAdapter.prototype, 'initialize').mockResolvedValue();
+    vi.spyOn(SlackAdapter.prototype, 'postMessage').mockImplementation(
+      async (threadId) => ({
+        id: '1800000001.000001',
+        threadId,
+        raw: {},
+      }),
+    );
+    vi.spyOn(SlackAdapter.prototype, 'addReaction').mockResolvedValue();
+    vi.spyOn(SlackAdapter.prototype, 'editMessage').mockResolvedValue({
+      id: '1800000001.000001',
+      threadId: 'slack:CTEST1:1800000000.000001',
+      raw: {},
+    });
+  }
 }
 
 function runtimeEvent(options?: {

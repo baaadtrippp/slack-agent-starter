@@ -1,9 +1,11 @@
 import type {
   WorkerJob,
+  WorkerProgress,
   WorkerResult,
   WorkerSession,
 } from '../../../packages/contracts/src/index.js';
 import type { RedisClientType } from 'redis';
+import { randomUUID } from 'node:crypto';
 
 export type SandboxTarget = {
   sandboxName: string;
@@ -49,6 +51,12 @@ export type RunRecord = {
   execution?: SandboxTarget;
   blockedBy?: string;
   messageId?: string;
+  progress?: WorkerProgress;
+  statusClaimed?: boolean;
+  statusClaimToken?: string;
+  statusMessageId?: string;
+  statusVersion?: number;
+  artifactPublication?: 'uploaded' | 'failed';
 };
 
 export interface RunStore {
@@ -60,6 +68,18 @@ export interface RunStore {
     run: RunRecord;
   }>;
   getRun(runId: string): Promise<RunRecord | null>;
+  claimProgress(
+    progress: WorkerProgress,
+    now: number,
+  ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired'>;
+  claimStatusCreation(runId: string): Promise<boolean>;
+  recordStatusMessage(runId: string, messageId: string): Promise<boolean>;
+  claimStatusEdit(runId: string, token: string): Promise<boolean>;
+  finishStatusEdit(
+    runId: string,
+    token: string,
+    version?: number,
+  ): Promise<'done' | 'changed' | 'lost'>;
   reserveCsvCollection(runId: string, lease: string): Promise<boolean>;
   claimPublication(
     runId: string,
@@ -69,6 +89,10 @@ export interface RunStore {
   ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry'>;
   claimUnsubmitted(run: RunRecord, result: WorkerResult): Promise<boolean>;
   completePublication(run: RunRecord, messageId: string): Promise<boolean>;
+  recordArtifactPublication(
+    runId: string,
+    outcome: 'uploaded' | 'failed',
+  ): Promise<boolean>;
   failPublication(runId: string): Promise<boolean>;
   failDispatch(runId: string): Promise<boolean>;
   recordDispatchTarget(
@@ -147,6 +171,7 @@ if run.state ~= 'accepted' and run.state ~= 'dispatch_failed' then return 'confl
 if ARGV[4] and redis.call('GET', KEYS[2]) ~= ARGV[4] then return 'retry' end
 run.result = result
 run.state = 'publishing'
+run.statusVersion = (run.statusVersion or 0) + 1
 redis.call('SET', KEYS[1], cjson.encode(run))
 return 'claimed'
 `;
@@ -160,6 +185,7 @@ local owns = redis.call('GET', KEYS[2]) == run.runId
 if run.result.session and not owns then return 0 end
 run.state = run.result.type == 'failed' and 'worker_failed' or 'completed'
 run.messageId = ARGV[1]
+run.statusVersion = (run.statusVersion or 0) + 1
 redis.call('SET', KEYS[1], cjson.encode(run))
 if owns then
   if run.result.type == 'completed' and run.result.session then
@@ -181,6 +207,7 @@ if not encoded then return 0 end
 local run = cjson.decode(encoded)
 if run.state ~= 'publishing' then return 0 end
 run.state = 'publication_uncertain'
+run.statusVersion = (run.statusVersion or 0) + 1
 redis.call('SET', KEYS[1], cjson.encode(run))
 return 1
 `;
@@ -191,6 +218,7 @@ if not encoded then return 0 end
 local run = cjson.decode(encoded)
 if run.state ~= 'accepted' then return 0 end
 run.state = 'dispatch_failed'
+run.statusVersion = (run.statusVersion or 0) + 1
 redis.call('SET', KEYS[1], cjson.encode(run))
 return 1
 `;
@@ -293,9 +321,62 @@ if current.kind ~= 'work' or
    (current.state ~= 'accepted' and current.state ~= 'dispatch_failed') or
    current.session or current.result or current.deadline > tonumber(ARGV[2]) then return 0 end
 current.state = 'interrupted'
+current.statusVersion = (current.statusVersion or 0) + 1
 redis.call('SET', KEYS[1], cjson.encode(current))
 redis.call('DEL', KEYS[2])
 return 1
+`;
+
+const PROGRESS_SCRIPT = `
+local encoded = redis.call('GET', KEYS[1])
+if not encoded then return 'conflict' end
+local run = cjson.decode(encoded)
+local progress = cjson.decode(ARGV[1])
+if run.runId ~= progress.runId or run.generation ~= progress.generation or run.kind ~= 'work' then return 'conflict' end
+if run.deadline <= tonumber(ARGV[2]) then return 'expired' end
+if run.result or (run.state ~= 'accepted' and run.state ~= 'dispatch_failed') or
+   not run.execution or redis.call('GET', KEYS[2]) ~= run.runId then return 'conflict' end
+if run.progress then
+  return run.progress.eventId == progress.eventId and run.progress.sequence == progress.sequence and 'duplicate' or 'conflict'
+end
+run.progress = progress
+run.statusVersion = (run.statusVersion or 0) + 1
+redis.call('SET', KEYS[1], cjson.encode(run))
+return 'claimed'
+`;
+
+const STATUS_SCRIPT = `
+local encoded = redis.call('GET', KEYS[1])
+if not encoded then return 0 end
+local run = cjson.decode(encoded)
+if run.kind ~= 'work' then return 0 end
+if ARGV[1] == 'claim' then
+  if run.statusClaimed then
+    return run.statusClaimToken == ARGV[2] and not run.statusMessageId and 1 or 0
+  end
+  run.statusClaimed = true
+  run.statusClaimToken = ARGV[2]
+  run.statusVersion = (run.statusVersion or 0) + 1
+else
+  if not run.statusClaimed then return 0 end
+  if run.statusMessageId then return run.statusMessageId == ARGV[2] and 1 or 0 end
+  run.statusMessageId = ARGV[2]
+end
+redis.call('SET', KEYS[1], cjson.encode(run))
+return 1
+`;
+
+// A renderer drains changes while it owns the lease. The atomic version check
+// prevents a terminal update racing an in-flight Slack edit from being lost.
+const FINISH_STATUS_EDIT_SCRIPT = `
+if redis.call('GET', KEYS[2]) ~= ARGV[1] then return 'lost' end
+local encoded = redis.call('GET', KEYS[1])
+if ARGV[2] ~= '' and encoded and (cjson.decode(encoded).statusVersion or 0) ~= tonumber(ARGV[2]) then
+  redis.call('PEXPIRE', KEYS[2], 60000)
+  return 'changed'
+end
+redis.call('DEL', KEYS[2])
+return 'done'
 `;
 
 export class RedisRunStore implements RunStore {
@@ -443,6 +524,77 @@ export class RedisRunStore implements RunStore {
     return `${this.runKey(runId)}:csv-collection`;
   }
 
+  async claimProgress(progress: WorkerProgress, now: number) {
+    const run = await this.getRun(progress.runId);
+    if (!run) return 'conflict' as const;
+    return (await this.execute((client) =>
+      client.eval(PROGRESS_SCRIPT, {
+        keys: [
+          this.runKey(run.runId),
+          this.ownerKey(run.workspaceId, run.channelId, run.threadTs),
+        ],
+        arguments: [JSON.stringify(progress), String(now)],
+      }),
+    )) as 'claimed' | 'duplicate' | 'conflict' | 'expired';
+  }
+
+  async claimStatusCreation(runId: string): Promise<boolean> {
+    const token = randomUUID();
+    const claim = () =>
+      this.execute((client) =>
+        client.eval(STATUS_SCRIPT, {
+          keys: [this.runKey(runId)],
+          arguments: ['claim', token],
+        }),
+      );
+    return Number(await claim().catch(claim)) === 1;
+  }
+
+  async recordStatusMessage(
+    runId: string,
+    messageId: string,
+  ): Promise<boolean> {
+    const record = () =>
+      this.execute((client) =>
+        client.eval(STATUS_SCRIPT, {
+          keys: [this.runKey(runId)],
+          arguments: ['record', messageId],
+        }),
+      );
+    return Number(await record().catch(record)) === 1;
+  }
+
+  private statusEditKey(runId: string) {
+    return `${this.runKey(runId)}:status-edit`;
+  }
+
+  async claimStatusEdit(runId: string, token: string): Promise<boolean> {
+    const claim = () =>
+      this.execute((client) =>
+        client.eval(
+          `
+      local current = redis.call('GET', KEYS[1])
+      if current and current ~= ARGV[1] then return 0 end
+      redis.call('SET', KEYS[1], ARGV[1], 'PX', 60000)
+      return 1
+    `,
+          { keys: [this.statusEditKey(runId)], arguments: [token] },
+        ),
+      );
+    return Number(await claim().catch(claim)) === 1;
+  }
+
+  async finishStatusEdit(runId: string, token: string, version?: number) {
+    const finish = () =>
+      this.execute((client) =>
+        client.eval(FINISH_STATUS_EDIT_SCRIPT, {
+          keys: [this.runKey(runId), this.statusEditKey(runId)],
+          arguments: [token, version === undefined ? '' : String(version)],
+        }),
+      );
+    return (await finish().catch(finish)) as 'done' | 'changed' | 'lost';
+  }
+
   async reserveCsvCollection(runId: string, lease: string): Promise<boolean> {
     return (
       (await this.execute((client) =>
@@ -508,6 +660,30 @@ export class RedisRunStore implements RunStore {
         ),
       ) === 1
     );
+  }
+
+  async recordArtifactPublication(
+    runId: string,
+    outcome: 'uploaded' | 'failed',
+  ): Promise<boolean> {
+    const record = () =>
+      this.execute((client) =>
+        client.eval(
+          `
+      local encoded = redis.call('GET', KEYS[1])
+      if not encoded then return 0 end
+      local run = cjson.decode(encoded)
+      if run.state ~= 'completed' or not run.result or not run.result.artifact then return 0 end
+      if run.artifactPublication then return run.artifactPublication == ARGV[1] and 1 or 0 end
+      run.artifactPublication = ARGV[1]
+      run.statusVersion = (run.statusVersion or 0) + 1
+      redis.call('SET', KEYS[1], cjson.encode(run))
+      return 1
+    `,
+          { keys: [this.runKey(runId)], arguments: [outcome] },
+        ),
+      );
+    return Number(await record().catch(record)) === 1;
   }
 
   async failPublication(runId: string): Promise<boolean> {

@@ -11,13 +11,9 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import {
-  createAcpRuntime,
-  createAgentRegistry,
-  createRuntimeStore,
-} from 'acpx/runtime';
+import { fileURLToPath } from 'node:url';
 
 const failureText =
   'The agent could not finish this run. You can retry by mentioning it again.';
@@ -73,15 +69,20 @@ export default function (pi) {
 }
 `;
 
-try {
-  const { HYDRA_JOB, HYDRA_MODEL, OPENROUTER_API_KEY } = process.env;
-  delete process.env.HYDRA_JOB;
-  delete process.env.HYDRA_MODEL;
-  delete process.env.OPENROUTER_API_KEY;
-  await run(JSON.parse(HYDRA_JOB ?? 'null'), HYDRA_MODEL, OPENROUTER_API_KEY);
-} catch {
-  console.error('Sandbox worker could not complete its callback');
-  process.exitCode = 1;
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  try {
+    const { HYDRA_JOB, HYDRA_MODEL, OPENROUTER_API_KEY } = process.env;
+    delete process.env.HYDRA_JOB;
+    delete process.env.HYDRA_MODEL;
+    delete process.env.OPENROUTER_API_KEY;
+    await run(JSON.parse(HYDRA_JOB ?? 'null'), HYDRA_MODEL, OPENROUTER_API_KEY);
+  } catch {
+    console.error('Sandbox worker could not complete its callback');
+    process.exitCode = 1;
+  }
 }
 
 async function run(job, model, key) {
@@ -151,9 +152,31 @@ async function run(job, model, key) {
     runId: job.runId,
     generation: job.generation,
     eventId: randomUUID(),
-    sequence: 1,
+    sequence: 2,
     type: 'failed',
     text: failureText,
+  };
+  let progressDelivery;
+  const reportWorking = () => {
+    if (progressDelivery) return;
+    const progress = {
+      version: 1,
+      runId: job.runId,
+      generation: job.generation,
+      eventId: randomUUID(),
+      sequence: 1,
+      type: 'working',
+    };
+    progressDelivery = deliver(
+      callback,
+      headers,
+      progress,
+      Math.min(job.deadline, Date.now() + 2_500),
+    ).catch(() => {
+      console.error(
+        JSON.stringify({ runId: job.runId, phase: 'progress_unavailable' }),
+      );
+    });
   };
   try {
     await mkdir(dirname(root), { recursive: true, mode: 0o700 });
@@ -171,7 +194,7 @@ async function run(job, model, key) {
       return deliver(callback, headers, prior, job.deadline);
     }
     try {
-      const completed = await prompt(job, model, key, root);
+      const completed = await prompt(job, model, key, root, reportWorking);
       result.text = completed.text;
       result.session = completed.session;
       if (completed.artifact) result.artifact = completed.artifact;
@@ -212,7 +235,11 @@ async function run(job, model, key) {
     delete result.artifact;
   }
 
-  await deliver(callback, headers, result, job.deadline);
+  try {
+    await deliver(callback, headers, result, job.deadline);
+  } finally {
+    await progressDelivery;
+  }
 }
 
 async function deliver(callback, headers, result, deadline) {
@@ -254,7 +281,9 @@ async function deliver(callback, headers, result, deadline) {
   throw new Error('Callback was not accepted');
 }
 
-async function prompt(job, model, key, root) {
+async function prompt(job, model, key, root, reportWorking) {
+  const { createAcpRuntime, createAgentRegistry, createRuntimeStore } =
+    await import('acpx/runtime');
   const seedRunId = job.session?.seedRunId ?? job.runId;
   const sessionRoot = job.session ? join('/workspace/runs', seedRunId) : root;
   const scratch = join('/tmp/hydra-worker-state', seedRunId);
@@ -434,11 +463,8 @@ async function prompt(job, model, key, root) {
         signal,
         timeoutMs,
       });
-      for await (const event of turn.events) {
-        if (event.type === 'error') break;
-      }
-      if ((await turn.result).status !== 'completed')
-        throw new Error('Pi turn failed');
+      const outcome = await consumeTurn(turn, reportWorking);
+      if (outcome.status !== 'completed') throw new Error('Pi turn failed');
     } finally {
       try {
         await runtime.shutdown();
@@ -544,6 +570,21 @@ async function prompt(job, model, key, root) {
         throw uncertainRun;
       });
   }
+}
+
+export async function consumeTurn(turn, reportWorking) {
+  let reported = false;
+  for await (const event of turn.events) {
+    if (
+      !reported &&
+      (event.type === 'text_delta' || event.type === 'tool_call')
+    ) {
+      reported = true;
+      reportWorking();
+    }
+    if (event.type === 'error') break;
+  }
+  return turn.result;
 }
 
 function extractPdfText(path, timeout, runId) {
