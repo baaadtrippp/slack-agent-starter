@@ -437,15 +437,25 @@ export function createGateway({
             );
           return;
         }
+        const urlText = config.publicUrlInput
+          ? input.text.replace(/```[\s\S]*?```|`[^`\n]*`/g, ' ')
+          : '';
+        const explicitIpv6Links = Array.from(
+          urlText.matchAll(
+            /<(https?:\/\/(?:[^\s<>|/]+@)?\[[\da-f:.]+\][^\s<>|]*)(?:\|[^>]*)?>/gi,
+          ),
+          ([, url]) => unescapeSlackText(url!),
+        );
         const links = config.publicUrlInput
           ? [
               ...new Set([
                 ...(message?.links ?? []).map((link) =>
                   unescapeSlackText(link.url),
                 ),
+                ...explicitIpv6Links,
                 ...(
-                  input.text
-                    .replace(/```[\s\S]*?```|`[^`\n]*`|<[^>]*>/g, ' ')
+                  urlText
+                    .replace(/<[^>]*>/g, ' ')
                     .match(
                       /https?:\/\/(?:[^\s<>|/]+@)?\[[\da-f:.]+\][^\s<>|]*/gi,
                     ) ?? []

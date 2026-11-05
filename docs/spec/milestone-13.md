@@ -13,8 +13,10 @@ remain tracer limits under O05.
    the literal, then apply the same downloader validation before dispatch. Scan
    ordinary text only: ignore code and explicit Slack link markup in the
    fallback, remove sentence punctuation from bare candidates, and preserve
-   explicit Slack link destinations exactly. Recognize credential-bearing IPv6
-   candidates too so the existing URL validator can refuse credentials.
+   explicit Slack link destinations exactly. Recover explicit numeric IPv6 link
+   markup case-insensitively when the adapter omits it. Recognize
+   credential-bearing IPv6 candidates too so the existing URL validator can
+   refuse credentials.
 2. Exercise an oversized supported attachment, an unsupported attachment, a
    controlled inaccessible Slack download, and a private-network URL. Verify
    acknowledgement before deferred work, one specific same-thread notice,
@@ -54,13 +56,13 @@ and deduplicates them, then applies the existing single-source and downloader
 checks before dispatch. The focused gateway suite passed before and after the
 correction.
 
-Further deterministic checks keep inline and fenced code examples as ordinary
-work. Bare IPv6 candidates lose terminal sentence punctuation before validation;
-explicit Slack links preserve their exact destination, including a legitimate
-final period. Gateway selection tests check those exact URLs with a controlled
-fetch boundary. Credential-bearing bare IPv6 candidates reach the existing
-credentials refusal without dispatch. These checks do not claim provider network
-enforcement.
+Further deterministic checks keep inline and fenced examples out of fallback
+scanning. Bare IPv6 candidates lose terminal sentence punctuation before
+validation; explicit Slack links preserve their exact destination, including a
+legitimate final period. Gateway selection tests check those exact URLs with a
+controlled fetch boundary. Credential-bearing bare IPv6 candidates reach the
+existing credentials refusal without dispatch. These checks do not claim
+provider network enforcement.
 
 ## IPv6 Sandbox probe
 
@@ -101,11 +103,10 @@ bare URL was not recognized. That outcome is the regression described above; it
 is not a successful private-network refusal.
 
 A fresh mention with a bare IPv6 loopback URL and an uppercase HTTPS scheme,
-against the final narrowed gateway correction, received exactly one
-private-network notice in its original thread. Its run record had no worker
-execution target or native session and no remaining thread owner. The recorded
-publication ID matched the observed Slack reply. This checks gateway validation,
-not Sandbox egress.
+against gateway revision `5ed42af`, received exactly one private-network notice
+in its original thread. Its run record had no worker execution target or native
+session and no remaining thread owner. The recorded publication ID matched the
+observed Slack reply. This checks gateway validation, not Sandbox egress.
 
 The inaccessible-file outcome remains deterministic evidence from a controlled
 HTTP 403, not a live Slack access-denial claim. AC06 remains partial; broader
@@ -115,4 +116,4 @@ Later reads still found one notice per tested input. The captured gateway
 routing was restored. All temporary test and evidence deployments and the
 isolated network probe were deleted and independently verified absent. No worker
 Sandbox, Drive, seed, or model turn was needed for these gateway refusals. The
-final local repository check passed all 138 tests using disposable Redis 8.4.0.
+final local repository check passed all 144 tests using disposable Redis 8.4.0.

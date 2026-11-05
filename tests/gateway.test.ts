@@ -871,6 +871,34 @@ describe.skipIf(!redisUrl)(
       );
     });
 
+    it.each([
+      '<HTTPS://[::1]/source.txt>',
+      '<HTTPS://[::1]/source.txt|source>',
+    ])(
+      'rejects an uppercase explicit private IPv6 URL before dispatch: %s',
+      async (url) => {
+        const gateway = harness(createMockState(), false, undefined, {
+          publicUrlInput: true,
+        });
+        const mention = envelope();
+        mention.event.text = `<@UBOT1> Read ${url}`;
+
+        expect((await gateway.events(signed(mention))).status).toBe(200);
+        expect(gateway.dispatch).not.toHaveBeenCalled();
+        expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
+
+        await gateway.flush();
+
+        expect(gateway.dispatch).not.toHaveBeenCalled();
+        expect(
+          SlackAdapter.prototype.postMessage,
+        ).toHaveBeenCalledExactlyOnceWith(
+          `slack:CTEST1:${mention.event.ts}`,
+          'That URL points to a private or restricted network address.',
+        );
+      },
+    );
+
     it('rejects credentials in a bare bracketed IPv6 URL before dispatch', async () => {
       const gateway = harness(createMockState(), false, undefined, {
         publicUrlInput: true,
@@ -905,6 +933,14 @@ describe.skipIf(!redisUrl)(
       [
         'bracketed IPv6 URL in fenced code',
         '<@UBOT1> Explain this code:\n```\nconst source = "https://[::1]/source.txt";\n```',
+      ],
+      [
+        'explicit bracketed IPv6 URL in inline code',
+        '<@UBOT1> Explain this value: `<HTTPS://[::1]/source.txt>`',
+      ],
+      [
+        'explicit bracketed IPv6 URL in fenced code',
+        '<@UBOT1> Explain this code:\n```\nconst source = "<HTTPS://[::1]/source.txt>";\n```',
       ],
     ])('leaves a %s as ordinary task text', async (_case, text) => {
       const gateway = harness(createMockState(), false, undefined, {
