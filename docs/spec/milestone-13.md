@@ -10,7 +10,11 @@ remain tracer limits under O05.
 1. Inspect the existing admission, downloader, and worker dispatch paths. Keep
    working rejection behavior unchanged; add only missing checks or necessary
    fixes. Recognize explicit IPv6 HTTP(S) URL text when Slack does not autolink
-   the literal, then apply the same downloader validation before dispatch.
+   the literal, then apply the same downloader validation before dispatch. Scan
+   ordinary text only: ignore code and explicit Slack link markup in the
+   fallback, remove sentence punctuation from bare candidates, and preserve
+   explicit Slack link destinations exactly. Recognize credential-bearing IPv6
+   candidates too so the existing URL validator can refuse credentials.
 2. Exercise an oversized supported attachment, an unsupported attachment, a
    controlled inaccessible Slack download, and a private-network URL. Verify
    acknowledgement before deferred work, one specific same-thread notice,
@@ -49,6 +53,14 @@ explicit bracketed numeric IPv6 HTTP(S) URL text with adapter links, unescapes
 and deduplicates them, then applies the existing single-source and downloader
 checks before dispatch. The focused gateway suite passed before and after the
 correction.
+
+Further deterministic checks keep inline and fenced code examples as ordinary
+work. Bare IPv6 candidates lose terminal sentence punctuation before validation;
+explicit Slack links preserve their exact destination, including a legitimate
+final period. Gateway selection tests check those exact URLs with a controlled
+fetch boundary. Credential-bearing bare IPv6 candidates reach the existing
+credentials refusal without dispatch. These checks do not claim provider network
+enforcement.
 
 ## IPv6 Sandbox probe
 
@@ -103,4 +115,4 @@ Later reads still found one notice per tested input. The captured gateway
 routing was restored. All temporary test and evidence deployments and the
 isolated network probe were deleted and independently verified absent. No worker
 Sandbox, Drive, seed, or model turn was needed for these gateway refusals. The
-final local repository check passed all 133 tests using disposable Redis 8.4.0.
+final local repository check passed all 138 tests using disposable Redis 8.4.0.

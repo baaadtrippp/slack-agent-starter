@@ -871,13 +871,47 @@ describe.skipIf(!redisUrl)(
       );
     });
 
-    it('leaves a bare public URL in a code example as ordinary task text', async () => {
+    it('rejects credentials in a bare bracketed IPv6 URL before dispatch', async () => {
       const gateway = harness(createMockState(), false, undefined, {
         publicUrlInput: true,
       });
       const mention = envelope();
-      mention.event.text =
-        '<@UBOT1> Explain this code: `const source = "https://example.invalid/source.txt";`';
+      mention.event.text = '<@UBOT1> Read https://user:pass@[::1]/source.txt';
+
+      expect((await gateway.events(signed(mention))).status).toBe(200);
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
+
+      await gateway.flush();
+
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(
+        `slack:CTEST1:${mention.event.ts}`,
+        'Send a direct public HTTPS link without credentials or a custom port.',
+      );
+    });
+
+    it.each([
+      [
+        'bare public URL',
+        '<@UBOT1> Explain this code: `const source = "https://example.invalid/source.txt";`',
+      ],
+      [
+        'bracketed IPv6 URL in inline code',
+        '<@UBOT1> Explain this value: `https://[::1]/source.txt`',
+      ],
+      [
+        'bracketed IPv6 URL in fenced code',
+        '<@UBOT1> Explain this code:\n```\nconst source = "https://[::1]/source.txt";\n```',
+      ],
+    ])('leaves a %s as ordinary task text', async (_case, text) => {
+      const gateway = harness(createMockState(), false, undefined, {
+        publicUrlInput: true,
+      });
+      const mention = envelope();
+      mention.event.text = text;
 
       expect((await gateway.events(signed(mention))).status).toBe(200);
       expect(gateway.dispatch).not.toHaveBeenCalled();

@@ -439,14 +439,20 @@ export function createGateway({
         }
         const links = config.publicUrlInput
           ? [
-              ...new Set(
-                [
-                  ...(message?.links ?? []).map((link) => link.url),
-                  ...(input.text.match(
-                    /https?:\/\/\[[\da-f:.]+\][^\s<>|]*/gi,
-                  ) ?? []),
-                ].map(unescapeSlackText),
-              ),
+              ...new Set([
+                ...(message?.links ?? []).map((link) =>
+                  unescapeSlackText(link.url),
+                ),
+                ...(
+                  input.text
+                    .replace(/```[\s\S]*?```|`[^`\n]*`|<[^>]*>/g, ' ')
+                    .match(
+                      /https?:\/\/(?:[^\s<>|/]+@)?\[[\da-f:.]+\][^\s<>|]*/gi,
+                    ) ?? []
+                ).map((url) =>
+                  unescapeSlackText(url).replace(/[.,;:!?)"']+$/g, ''),
+                ),
+              ]),
             ]
           : [];
         const publicUrl = links[0];
