@@ -79,6 +79,11 @@ describe.skipIf(process.platform !== 'linux')('Sandbox result reader', () => {
   it('does not search another run or accept traversal', () => {
     expect(collect().status).toBe(1);
     expect(collect('../' + otherRun).status).toBe(1);
+
+    // The reader prefixes the supplied format with "result.".
+    const traversalDirectory = join(results, 'result...');
+    mkdirSync(traversalDirectory);
+    writeFileSync(join(traversalDirectory, 'result.csv'), csv);
     expect(collect(runId, '../result.csv').status).toBe(1);
   });
 

@@ -627,6 +627,7 @@ async function prompt(job, model, key, root, reportWorking) {
   }
 }
 
+/** Removes only this turn's rejected staged inputs from its run directory. */
 export async function removeRejectedCurrentInputs(
   seedRunId,
   runId,
@@ -658,6 +659,10 @@ export async function removeRejectedCurrentInputs(
   }
 }
 
+/**
+ * Creates the catalog for a saved revision exclusively.
+ * On failure, cleans up only a partial catalog created by this call.
+ */
 export async function writeRevisionCatalog(revisions, revision, sources) {
   const path = join(revisions, String(revision) + '.json');
   let file;
@@ -746,6 +751,10 @@ async function readBoundedFile(base, directories, filename, limit) {
   }
 }
 
+/**
+ * Loads and validates the catalog for the exact saved session revision.
+ * A session that expects retained sources requires a nonempty catalog.
+ */
 export async function loadRetainedInputs(
   sessionRoot,
   revision,
@@ -781,6 +790,10 @@ export async function loadRetainedInputs(
   return sources;
 }
 
+/**
+ * Verifies staged source checksums and builds Pi's scoped input catalog.
+ * Only images from the current turn are also sent as native attachments.
+ */
 export async function prepareSources(
   sources,
   seedRunId,
