@@ -23,7 +23,10 @@ import {
 import { RedisRunStore } from '../apps/gateway/src/store.js';
 import type { SandboxTarget } from '../apps/gateway/src/store.js';
 import { createFakeWorker } from '../apps/worker/src/fake-worker.js';
-import { WORKER_FAILURE_REPLY } from '../packages/contracts/src/index.js';
+import {
+  WORKER_FAILURE_REPLY,
+  workerJobSchema,
+} from '../packages/contracts/src/index.js';
 import type {
   WorkerJob,
   WorkerResult,
@@ -36,6 +39,11 @@ const redis = createRedisState({
   keyPrefix: namespace,
 });
 const signingSecret = 'synthetic-signing-secret';
+const historyFetch = vi.fn<typeof fetch>();
+
+function historyMessage(ts: string, text = 'Synthetic root.') {
+  return { type: 'message', ts, user: 'UTEST1', text };
+}
 const initialTime = 1_800_000_000_000;
 let timestamp = 0;
 
@@ -194,6 +202,13 @@ describe.skipIf(!redisUrl)(
       await redis.connect();
     });
     beforeEach(() => {
+      historyFetch.mockReset().mockImplementation(async (url, options) => {
+        if (String(url) !== 'https://slack.com/api/conversations.replies')
+          throw new Error('Unexpected network request');
+        const root = new URLSearchParams(String(options?.body)).get('ts')!;
+        return Response.json({ ok: true, messages: [historyMessage(root)] });
+      });
+      vi.stubGlobal('fetch', historyFetch);
       vi.spyOn(SlackAdapter.prototype, 'initialize').mockResolvedValue();
       vi.spyOn(SlackAdapter.prototype, 'postMessage').mockResolvedValue({
         id: '1800000001.000001',
@@ -274,6 +289,7 @@ describe.skipIf(!redisUrl)(
       const gateway = harness();
       const body: Record<string, unknown> = envelope();
       const event = body.event as Record<string, unknown>;
+      event.thread_ts = '1799999999.000001';
       if (kind === 'workspace') body.team_id = 'TOTHER';
       if (kind === 'channel') event.channel = 'COTHER';
       if (kind === 'shared') body.is_ext_shared_channel = true;
@@ -566,24 +582,310 @@ describe.skipIf(!redisUrl)(
       );
     });
 
-    it('keeps existing-thread mentions on their root and logical retries on one run', async () => {
-      const gateway = harness();
+    it('imports one permitted page of earlier messages after acknowledgement and deduplication', async () => {
+      const gateway = harness(
+        createMockState(),
+        true,
+        undefined,
+        {},
+        undefined,
+        true,
+      );
+      const root = '1799999999.000001';
+      const earlier = '1799999999.000002';
+      const fixture = envelope();
       const body = {
-        ...envelope(),
-        event: { ...envelope().event, thread_ts: '1799999999.000001' },
+        ...fixture,
+        event: { ...fixture.event, thread_ts: root },
       };
+      historyFetch.mockResolvedValueOnce(
+        Response.json({
+          ok: true,
+          response_metadata: { next_cursor: 'unused' },
+          messages: [
+            {
+              ...historyMessage(body.event.ts, 'Trigger duplicate.'),
+              thread_ts: root,
+            },
+            {
+              ...historyMessage(
+                earlier,
+                'Earlier <https://example.test/signed|file> xoxb-synthetic-placeholder.',
+              ),
+              thread_ts: root,
+              user: 'UTEST2',
+              files: [
+                {
+                  id: 'FTEST1',
+                  mimetype: 'text/plain',
+                  size: 42,
+                  url_private_download:
+                    'https://example.test/download?signature=hidden',
+                },
+              ],
+            },
+            {
+              ...historyMessage('1800000001.000001', 'Later.'),
+              thread_ts: root,
+            },
+            {
+              ...historyMessage('1799999999.000003', 'Different root.'),
+              thread_ts: '1799999999.000000',
+            },
+            {
+              ...historyMessage('1799999999.000004', 'Different channel.'),
+              thread_ts: root,
+              channel: 'COTHER',
+            },
+            {
+              ...historyMessage('1799999999.000005', 'External participant.'),
+              thread_ts: root,
+              user_team: 'TOTHER',
+            },
+            historyMessage(root),
+          ],
+        }),
+      );
       const responses = await Promise.all([
         gateway.events(signed(body)),
         gateway.events(signed(body)),
       ]);
       expect(responses.map((r) => r.status)).toEqual([200, 200]);
       await gateway.events(signed({ ...body, event_id: 'EvDIFFERENT' }));
+      expect(historyFetch).not.toHaveBeenCalled();
+      expect(await gateway.owner(root)).toBe((await gateway.run())!.runId);
       await gateway.flush();
-      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
-      expect(gateway.dispatch.mock.calls[0]?.[0].input.threadTs).toBe(
-        '1799999999.000001',
+
+      expect(historyFetch).toHaveBeenCalledTimes(1);
+      const [url, request] = historyFetch.mock.calls[0]!;
+      expect(String(url)).toBe('https://slack.com/api/conversations.replies');
+      expect(
+        Object.fromEntries(new URLSearchParams(String(request?.body))),
+      ).toEqual({
+        channel: 'CTEST1',
+        ts: root,
+        latest: body.event.ts,
+        inclusive: 'false',
+        limit: '20',
+      });
+      expect(new Headers(request?.headers).get('authorization')).toBe(
+        'Bearer synthetic-bot-token',
       );
+      expect(request?.redirect).toBe('error');
+      expect(request?.signal).toBeInstanceOf(AbortSignal);
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+      const seed = gateway.dispatch.mock.calls[0]![0];
+      expect(seed.input).toEqual({
+        workspaceId: 'TTEST1',
+        channelId: 'CTEST1',
+        threadTs: root,
+        messageTs: body.event.ts,
+        senderId: 'UTEST1',
+        text: body.event.text,
+        threadContext: {
+          truncated: true,
+          messages: [
+            { messageTs: root, senderId: 'UTEST1', text: 'Synthetic root.' },
+            {
+              messageTs: earlier,
+              senderId: 'UTEST2',
+              text: 'Earlier [link omitted] [Slack token omitted].',
+              attachments: [{ id: 'FTEST1', mimeType: 'text/plain', size: 42 }],
+            },
+          ],
+        },
+      });
+      expect(
+        JSON.stringify(await gateway.store.getRun(seed.runId)),
+      ).not.toContain('Synthetic root.');
+      expect(SlackAdapter.prototype.addReaction).toHaveBeenCalledTimes(1);
+
+      const busy = threadReply(root);
+      await gateway.events(signed(busy));
+      await gateway.flush();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
+        `slack:CTEST1:${root}`,
+        BUSY_REPLY,
+      );
+
+      const published = envelope().event.ts;
+      vi.mocked(SlackAdapter.prototype.postMessage).mockResolvedValueOnce({
+        id: published,
+        threadId: `slack:CTEST1:${root}`,
+        raw: {},
+      });
+      const session = {
+        seedRunId: seed.runId,
+        nativeId: randomUUID(),
+        adapterId: randomUUID(),
+        revision: 4,
+      };
+      expect(
+        (
+          await gateway.callback(
+            callback({ ...result(seed), session }, seed.callbackToken),
+          )
+        ).status,
+      ).toBe(202);
+      await gateway.flush();
+
+      const next = threadReply(root);
+      await gateway.events(signed(next));
+      await gateway.flush();
+      const followup = gateway.dispatch.mock.calls[1]![0];
+      expect(followup).toMatchObject({
+        conversationId: seed.conversationId,
+        session,
+        input: { text: next.event.text },
+      });
+      expect(followup.input).not.toHaveProperty('threadContext');
+
+      await gateway.events(signed(envelope()));
+      await gateway.flush();
+      const independent = gateway.dispatch.mock.calls[2]![0];
+      expect(independent.session).toBeUndefined();
+      expect(independent.input).not.toHaveProperty('threadContext');
+      expect(independent.conversationId).not.toBe(seed.conversationId);
+      expect(historyFetch).toHaveBeenCalledTimes(1);
     });
+
+    it('keeps safe attachment metadata for a file-only root and the distinct request', async () => {
+      const root = '1799999999.000001';
+      historyFetch.mockResolvedValueOnce(
+        Response.json({
+          ok: true,
+          messages: [
+            {
+              type: 'message',
+              ts: root,
+              user: 'UTEST1',
+              subtype: 'file_share',
+              files: Array.from({ length: 6 }, (_, i) => ({
+                id: `FHISTORY${i}`,
+                mimetype: 'invalid optional media type',
+                url_private: 'https://example.test/signed-history',
+              })),
+            },
+          ],
+        }),
+      );
+      const mention = envelope();
+      const gateway = harness();
+      await gateway.events(
+        signed({
+          ...mention,
+          event: {
+            ...mention.event,
+            thread_ts: root,
+            files: [
+              {
+                id: 'FREQUEST1',
+                mimetype: 'text/plain',
+                size: 0,
+                url_private_download: 'https://example.test/signed-request',
+              },
+            ],
+          },
+        }),
+      );
+      await gateway.flush();
+
+      const job = workerJobSchema.parse(gateway.dispatch.mock.calls[0]![0]);
+      expect(job.input.attachments).toEqual([
+        { id: 'FREQUEST1', mimeType: 'text/plain', size: 0 },
+      ]);
+      expect(job.input.threadContext).toEqual({
+        truncated: true,
+        messages: [
+          {
+            messageTs: root,
+            senderId: 'UTEST1',
+            text: '',
+            attachments: Array.from({ length: 5 }, (_, i) => ({
+              id: `FHISTORY${i}`,
+            })),
+          },
+        ],
+      });
+      expect(historyFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['missing_scope', 'rate limit', 'transport', 'empty'])(
+      'reports unavailable history (%s) once and releases the thread for a fresh mention',
+      async (reason) => {
+        if (reason === 'transport')
+          historyFetch.mockRejectedValueOnce(new Error('synthetic timeout'));
+        else
+          historyFetch.mockResolvedValueOnce(
+            reason === 'empty'
+              ? Response.json({ ok: true, messages: [] })
+              : Response.json(
+                  { ok: false, error: reason },
+                  { status: reason === 'rate limit' ? 429 : 200 },
+                ),
+          );
+        const root = '1799999999.000001';
+        const first = envelope();
+        const body = { ...first, event: { ...first.event, thread_ts: root } };
+        const gateway = harness();
+        expect((await gateway.events(signed(body))).status).toBe(200);
+        await gateway.flush();
+        expect(gateway.dispatch).not.toHaveBeenCalled();
+        expect(SlackAdapter.prototype.addReaction).not.toHaveBeenCalled();
+        expect(
+          SlackAdapter.prototype.postMessage,
+        ).toHaveBeenCalledExactlyOnceWith(
+          `slack:CTEST1:${root}`,
+          'I could not read the earlier messages in this thread. Your request was not submitted. Mention me again in this thread to retry.',
+        );
+        expect(await gateway.owner(root)).toBeNull();
+        expect((await gateway.events(signed(body))).status).toBe(200);
+        await gateway.flush();
+        expect(historyFetch).toHaveBeenCalledTimes(1);
+
+        const retry = envelope();
+        await gateway.events(
+          signed({ ...retry, event: { ...retry.event, thread_ts: root } }),
+        );
+        await gateway.flush();
+        expect(historyFetch).toHaveBeenCalledTimes(2);
+        expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(['count', 'bytes'])(
+      'cuts history at the %s limit',
+      async (limit) => {
+        const root = '1799999999.000001';
+        const messages = Array.from({ length: 21 }, (_, i) => ({
+          ...historyMessage(
+            `1799999999.${String(i + 1).padStart(6, '0')}`,
+            limit === 'bytes' ? 'あ'.repeat(1_000) : 'Short message.',
+          ),
+          thread_ts: root,
+        }));
+        historyFetch.mockResolvedValueOnce(
+          Response.json({ ok: true, messages: messages.reverse() }),
+        );
+        const mention = envelope();
+        const gateway = harness();
+        await gateway.events(
+          signed({ ...mention, event: { ...mention.event, thread_ts: root } }),
+        );
+        await gateway.flush();
+        const context = gateway.dispatch.mock.calls[0]![0].input.threadContext!;
+        expect(context.truncated).toBe(true);
+        expect(context.messages[0]?.messageTs).toBe(root);
+        expect(context.messages).toHaveLength(limit === 'bytes' ? 7 : 20);
+        expect(Buffer.byteLength(JSON.stringify(context))).toBeLessThanOrEqual(
+          16_384,
+        );
+        for (const message of context.messages) {
+          expect(Buffer.byteLength(message.text)).toBeLessThanOrEqual(2048);
+          expect(message.text).not.toContain('�');
+        }
+      },
+    );
 
     it('returns a retryable error if durable admission fails', async () => {
       const gateway = harness();
@@ -1499,12 +1801,14 @@ describe.skipIf(!redisUrl)(
           pngInput: true,
           publicUrlInput: true,
         });
+        const root = '1799999999.000001';
         const base = envelope();
         const mention = file
           ? {
               ...base,
               event: {
                 ...base.event,
+                thread_ts: root,
                 subtype: 'file_share',
                 files: [file],
               },
@@ -1513,6 +1817,7 @@ describe.skipIf(!redisUrl)(
               ...base,
               event: {
                 ...base.event,
+                thread_ts: root,
                 text: '<@UBOT1> Read <https://127.0.0.1/source.txt>.',
               },
             };
@@ -1528,15 +1833,12 @@ describe.skipIf(!redisUrl)(
         expect(gateway.dispatch).not.toHaveBeenCalled();
         expect(
           SlackAdapter.prototype.postMessage,
-        ).toHaveBeenCalledExactlyOnceWith(
-          `slack:CTEST1:${mention.event.ts}`,
-          notice,
-        );
+        ).toHaveBeenCalledExactlyOnceWith(`slack:CTEST1:${root}`, notice);
         const run = await gateway.run();
         expect(await gateway.store.getRun(run!.runId)).toMatchObject({
           state: 'worker_failed',
         });
-        expect(await gateway.owner(mention.event.ts)).toBeNull();
+        expect(await gateway.owner(root)).toBeNull();
       },
     );
 

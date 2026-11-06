@@ -11,7 +11,56 @@ const workerSessionSchema = z
 
 export type WorkerSession = z.infer<typeof workerSessionSchema>;
 
-const slackTimestamp = z.string().regex(/^\d{10}\.\d{6}$/);
+export const slackTimestamp = z.string().regex(/^\d{10}\.\d{6}$/);
+export const slackContextSender = z.string().regex(/^[UWB][A-Z0-9]{1,31}$/);
+
+export const MAX_SLACK_ATTACHMENT_METADATA = 5;
+export const MAX_THREAD_CONTEXT_MESSAGES = 20;
+export const MAX_THREAD_MESSAGE_BYTES = 2 * 1024;
+export const MAX_THREAD_CONTEXT_BYTES = 16 * 1024;
+
+export const slackAttachmentSchema = z
+  .object({
+    id: z.string().regex(/^F[A-Z0-9]{1,31}$/),
+    mimeType: z
+      .string()
+      .regex(
+        /^[A-Za-z0-9][A-Za-z0-9.+_-]{0,62}\/[A-Za-z0-9][A-Za-z0-9.+_-]{0,62}$/,
+      )
+      .optional(),
+    size: z.int().nonnegative().optional(),
+  })
+  .strict();
+
+const slackAttachments = z
+  .array(slackAttachmentSchema)
+  .max(MAX_SLACK_ATTACHMENT_METADATA);
+const slackThreadContextSchema = z
+  .object({
+    messages: z
+      .array(
+        z
+          .object({
+            messageTs: slackTimestamp,
+            senderId: slackContextSender,
+            text: z
+              .string()
+              .refine(
+                (text) => Buffer.byteLength(text) <= MAX_THREAD_MESSAGE_BYTES,
+              ),
+            attachments: slackAttachments.optional(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(MAX_THREAD_CONTEXT_MESSAGES),
+    truncated: z.boolean(),
+  })
+  .strict()
+  .refine(
+    (context) =>
+      Buffer.byteLength(JSON.stringify(context)) <= MAX_THREAD_CONTEXT_BYTES,
+  );
 
 export const workerJobSchema = z
   .object({
@@ -27,6 +76,8 @@ export const workerJobSchema = z
         channelId: z.string().min(1),
         threadTs: slackTimestamp,
         messageTs: slackTimestamp,
+        attachments: slackAttachments.optional(),
+        threadContext: slackThreadContextSchema.optional(),
         csv: z.literal(true).optional(),
         pdf: z.literal(true).optional(),
         png: z.literal(true).optional(),
@@ -43,7 +94,20 @@ export const workerJobSchema = z
     callbackUrl: z.url().startsWith('https://'),
     callbackToken: z.string().regex(/^[0-9a-f]{64}$/),
   })
-  .strict();
+  .strict()
+  .refine(({ input, session }) => {
+    const messages = input.threadContext?.messages;
+    return (
+      !messages ||
+      (!session &&
+        messages.every(
+          ({ messageTs }, index) =>
+            messageTs >= input.threadTs &&
+            messageTs < input.messageTs &&
+            (index === 0 || messageTs > messages[index - 1]!.messageTs),
+        ))
+    );
+  });
 
 export type WorkerJob = z.infer<typeof workerJobSchema>;
 

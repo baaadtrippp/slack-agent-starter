@@ -24,6 +24,10 @@ import type {
 } from '../../../packages/contracts/src/index.js';
 import { fetchPublicText } from './public-url.js';
 import { downloadSlackFile } from './slack-file.js';
+import {
+  loadThreadContext,
+  slackAttachmentMetadata,
+} from './slack-thread-context.js';
 import type { RunRecord, RunStore, SandboxTarget } from './store.js';
 
 export type GatewayConfig = {
@@ -95,6 +99,8 @@ const INPUT_STAGING_FAILURE_REPLY = {
   publicUrl:
     'The public URL text could not be staged. Mention me again with the link to retry.',
 };
+const THREAD_CONTEXT_UNAVAILABLE_REPLY =
+  'I could not read the earlier messages in this thread. Your request was not submitted. Mention me again in this thread to retry.';
 const PDF_UNREADABLE_REPLY =
   'I could not extract readable text from this PDF. Mention me again with a small text-based PDF.';
 const PDF_TEXT_TOO_LARGE_REPLY =
@@ -479,6 +485,7 @@ export function createGateway({
       !input.eventId ||
       !/^\d{10}\.\d{6}$/.test(input.ts) ||
       !/^\d{10}\.\d{6}$/.test(input.threadTs) ||
+      input.threadTs > input.ts ||
       !input.text ||
       input.text.length > 12_000 ||
       !rawEvent ||
@@ -654,6 +661,37 @@ export function createGateway({
           }
           stagedInput = source;
         }
+
+        let threadContext: WorkerJob['input']['threadContext'];
+        if (mention && !run.session && run.threadTs !== run.messageTs) {
+          threadContext = await loadThreadContext(run, config.botToken).catch(
+            () => undefined,
+          );
+          if (!threadContext) {
+            console.error(
+              JSON.stringify({
+                runId: run.runId,
+                phase: 'thread_context_unavailable',
+              }),
+            );
+            await publishNotice(
+              run,
+              'failed',
+              THREAD_CONTEXT_UNAVAILABLE_REPLY,
+            );
+            return;
+          }
+          console.info(
+            JSON.stringify({
+              runId: run.runId,
+              phase: 'thread_context_loaded',
+              messageCount: threadContext.messages.length,
+              truncated: threadContext.truncated,
+            }),
+          );
+        }
+
+        const attachments = slackAttachmentMetadata(attachedFiles);
         acknowledgement = acknowledge(run);
         const job: WorkerJob = {
           version: 1,
@@ -667,6 +705,8 @@ export function createGateway({
             channelId: run.channelId,
             threadTs: run.threadTs,
             messageTs: run.messageTs,
+            ...(threadContext ? { threadContext } : {}),
+            ...(attachments ? { attachments } : {}),
             ...(inputKind ? { [inputKind]: true } : {}),
           },
           ...(run.session ? { session: run.session } : {}),
