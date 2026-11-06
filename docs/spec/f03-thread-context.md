@@ -10,13 +10,13 @@
    and deduplication covered by AC03 and AC08. Use the selected internal public
    channel and the existing bot installation. The limits here apply to this test
    slice. O05 production limits remain open.
-3. After atomic admission and outside Slack HTTP acknowledgement, read one page
-   of up to 20 messages from the admitted root using the mention timestamp as an
-   exclusive upper bound. Keep the earliest permitted messages in order,
-   including the root when available. Limit individual message text to 2 KiB and
-   the serialized context to 16 KiB. Indicate when the window was cut. On a
-   failed read, release the unsubmitted run and tell the user to mention the
-   agent again in the same thread.
+3. After atomic admission and current input validation, read one page outside
+   the Slack HTTP acknowledgement. Request up to 20 messages from the admitted
+   root using the mention timestamp as an exclusive upper bound. Keep the
+   earliest permitted messages in order, including the root when available.
+   Limit individual message text to 2 KiB and the serialized context to 16 KiB.
+   Indicate when the window was cut. On a failed read, release the unsubmitted
+   run and tell the user to mention the agent again in the same thread.
 4. Send the projected context with the request to the worker. Pi sees a separate
    block of untrusted conversation data and the current request. Attachment
    metadata consists of file ID, media type, and size, with up to five entries
@@ -51,6 +51,31 @@ verify deduplication, safe retry after a failed history read, and no history
 import on continuation. The worker checks exercise the actual prompt builder and
 exact-session verifier. They verify separation of earlier data from the current
 request, rejection of invalid context, and failure on a missing native session.
+
+## Provider evidence
+
+On 6 November 2026, the real Pi worker and OpenRouter completed both turns on a
+temporary Vercel Sandbox and Drive from source
+`eec673b84ebc9199045dba61047cd30e9a54cc2f`. The gateway recorded one history
+load on activation. The first native user turn contained the earlier root as
+context and the activation request separately. The ordinary reply appended one
+user turn with its Slack-delivered text. The native and adapter session IDs
+matched across turns, and the saved transcript revision advanced from 6 to 8.
+These observations were captured from the provider and gateway records of the
+live Slack run below.
+
+## Live Slack evidence
+
+The existing bot installation read the synthetic thread in the allowed public
+test channel. The first in-thread mention asked for two facts stated only in the
+root, and Hydra returned both. An ordinary reply asked for one of those facts
+and received the correct answer in the same thread. Each request received an
+eyes reaction, one status ending in Completed, and a separate answer.
+
+This run exercised one short thread. The longer history limits, unrelated roots,
+duplicate deliveries, and failure paths have deterministic coverage. The
+original Slack route was restored. Removal of the temporary deployment, worker,
+seed, snapshot, and Drive was verified.
 
 ## Rollout
 
