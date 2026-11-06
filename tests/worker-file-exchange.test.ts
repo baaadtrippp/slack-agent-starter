@@ -74,7 +74,10 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
       workspace,
       workspace,
     );
-    expect(original.required).toEqual(['input-1', 'input-2']);
+    expect(original.catalog).toMatchObject([
+      { id: 'input-1', current: true },
+      { id: 'input-2', current: true },
+    ]);
     expect(original.attachments).toEqual([]);
     const revisions = join(session, 'input-revisions');
     await writeFile(join(revisions, '7.json'), JSON.stringify([first, second]));
@@ -89,7 +92,6 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
       workspace,
       workspace,
     );
-    expect(followup.required).toEqual([]);
     expect(followup.inputs).toEqual({
       'input-1': { type: 'text', text: csv.toString() },
       'input-2': { type: 'text', text: methodology.toString() },
