@@ -100,19 +100,26 @@ function harness(
   threadResume = false,
   isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>,
   inputConfig: {
+    fileExchange?: boolean;
+    jpegInput?: boolean;
     csvInput?: boolean;
     pdfInput?: boolean;
     pngInput?: boolean;
     publicUrlInput?: boolean;
     csvOutput?: boolean;
   } = {},
-  collectCsv?: (runId: string, target: SandboxTarget) => Promise<Buffer>,
+  collectArtifact?: (runId: string, target: SandboxTarget) => Promise<Buffer>,
   progressUi = false,
 ) {
   const clock = { now: initialTime };
   const tasks: Array<() => Promise<void>> = [];
   const dispatch = vi
-    .fn<(job: WorkerJob) => Promise<void | 'worker-unavailable'>>()
+    .fn<
+      (
+        job: WorkerJob,
+        stagedInputs?: Buffer[],
+      ) => Promise<void | 'worker-unavailable'>
+    >()
     .mockResolvedValue();
   const storeNamespace = `${namespace}:${randomUUID()}`;
   const store = new RedisRunStore(redis.getClient(), storeNamespace);
@@ -133,7 +140,7 @@ function harness(
     store,
     dispatch,
     ...(isSandboxStopped ? { isSandboxStopped } : {}),
-    ...(collectCsv ? { collectCsv } : {}),
+    ...(collectArtifact ? { collectArtifact } : {}),
     schedule: (task) => tasks.push(task),
     now: () => clock.now,
   });
@@ -1311,13 +1318,13 @@ describe.skipIf(!redisUrl)(
 
     it('reports an attachment failure without discarding the completed text result', async () => {
       const csv = Buffer.from('label,value\nsynthetic,1\n');
-      const collectCsv = vi.fn().mockResolvedValue(csv);
+      const collectArtifact = vi.fn().mockResolvedValue(csv);
       const gateway = harness(
         createMockState(),
         false,
         undefined,
         { csvOutput: true },
-        collectCsv,
+        collectArtifact,
         true,
       );
       const body = envelope();
@@ -1398,24 +1405,24 @@ describe.skipIf(!redisUrl)(
       'digest mismatched',
     ])('preserves the text reply with CSV outcome %s', async (outcome) => {
       const csv = Buffer.from('label,cents\r\néclair,17\r\n');
-      const collectCsv = vi.fn().mockResolvedValue(csv);
+      const collectArtifact = vi.fn().mockResolvedValue(csv);
       if (outcome === 'collection rejected')
-        collectCsv.mockRejectedValue(new Error('Artifact is unavailable'));
+        collectArtifact.mockRejectedValue(new Error('Artifact is unavailable'));
       if (outcome === 'digest mismatched')
-        collectCsv.mockResolvedValue(Buffer.from('different bytes'));
+        collectArtifact.mockResolvedValue(Buffer.from('different bytes'));
       const gateway = harness(
         createMockState(),
         false,
         undefined,
         { csvOutput: true },
-        collectCsv,
+        collectArtifact,
       );
       const body = envelope();
       await gateway.events(signed(body));
       await gateway.flush();
       const job = gateway.dispatch.mock.calls[0]![0];
       if (outcome === 'collection timed out')
-        collectCsv.mockImplementation(async () => {
+        collectArtifact.mockImplementation(async () => {
           gateway.clock.now = job.deadline;
           throw new Error('Artifact collection timed out');
         });
@@ -1466,11 +1473,11 @@ describe.skipIf(!redisUrl)(
           )
         ).status,
       ).toBe(400);
-      expect(collectCsv).not.toHaveBeenCalled();
+      expect(collectArtifact).not.toHaveBeenCalled();
       if (outcome === 'uploaded') {
         const collecting = Promise.withResolvers<void>();
         const collected = Promise.withResolvers<Buffer>();
-        collectCsv.mockImplementationOnce(() => {
+        collectArtifact.mockImplementationOnce(() => {
           collecting.resolve();
           return collected.promise;
         });
@@ -1512,9 +1519,13 @@ describe.skipIf(!redisUrl)(
 
       const threadId = `slack:CTEST1:${body.event.ts}`;
       if (outcome === 'execution target missing')
-        expect(collectCsv).not.toHaveBeenCalled();
+        expect(collectArtifact).not.toHaveBeenCalled();
       else
-        expect(collectCsv).toHaveBeenCalledExactlyOnceWith(job.runId, target);
+        expect(collectArtifact).toHaveBeenCalledExactlyOnceWith(
+          job.runId,
+          target,
+          undefined,
+        );
       expect(post).toHaveBeenNthCalledWith(1, threadId, output.text);
       if (outcome.startsWith('upload'))
         expect(post).toHaveBeenNthCalledWith(2, threadId, {
@@ -1524,7 +1535,7 @@ describe.skipIf(!redisUrl)(
       if (outcome !== 'uploaded')
         expect(post).toHaveBeenLastCalledWith(
           threadId,
-          'I could not confirm the CSV attachment. The text result is above.',
+          'I could not confirm the result.csv attachment. The text result is above.',
         );
       expect(post).toHaveBeenCalledTimes(outcome.startsWith('upload ') ? 3 : 2);
       expect(await gateway.store.getRun(job.runId)).toMatchObject({
@@ -1532,6 +1543,85 @@ describe.skipIf(!redisUrl)(
         messageId: '1800000001.000001',
       });
     });
+
+    it.each([
+      ['md', 'text/markdown'],
+      ['diff', 'text/plain'],
+    ] as const)(
+      'uploads a generated %s alongside the original answer',
+      async (format, mimeType) => {
+        const bytes = Buffer.from('Synthetic output\n');
+        const collect = vi.fn().mockResolvedValue(bytes);
+        const gateway = harness(
+          createMockState(),
+          false,
+          undefined,
+          { fileExchange: true },
+          collect,
+        );
+        const body = envelope();
+        await gateway.events(signed(body));
+        await gateway.flush();
+        const job = gateway.dispatch.mock.calls[0]![0];
+        const target = {
+          sandboxName: 'test-worker',
+          sessionId: 'test-session',
+        };
+        expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+          'recorded',
+        );
+        const output: WorkerResult = {
+          ...result(job),
+          artifact: {
+            sha256: createHash('sha256').update(bytes).digest('hex'),
+            format,
+          },
+          session: {
+            seedRunId: job.runId,
+            nativeId: randomUUID(),
+            adapterId: randomUUID(),
+            revision: 1,
+          },
+        };
+        const post = vi.mocked(SlackAdapter.prototype.postMessage);
+        post.mockResolvedValueOnce({
+          id: '1800000001.000001',
+          threadId: 'synthetic-thread',
+          raw: {},
+        });
+        post.mockResolvedValueOnce({
+          id: 'file-synthetic',
+          threadId: 'synthetic-thread',
+          raw: { uploadedFileIds: ['FTEST'] },
+        });
+        expect(
+          (await gateway.callback(callback(output, job.callbackToken))).status,
+        ).toBe(202);
+        await gateway.flush();
+
+        expect(collect).toHaveBeenCalledExactlyOnceWith(
+          job.runId,
+          target,
+          format,
+        );
+        const threadId = 'slack:CTEST1:' + body.event.ts;
+        expect(post).toHaveBeenNthCalledWith(1, threadId, output.text);
+        expect(post).toHaveBeenNthCalledWith(2, threadId, {
+          markdown: '',
+          files: [{ data: bytes, filename: 'result.' + format, mimeType }],
+        });
+        expect(
+          (
+            await gateway.callback(
+              callback(
+                { ...output, artifact: { ...output.artifact!, format: 'ts' } },
+                job.callbackToken,
+              ),
+            )
+          ).status,
+        ).toBe(409);
+      },
+    );
 
     it.each([
       [undefined, WORKER_FAILURE_REPLY],
@@ -1542,6 +1632,10 @@ describe.skipIf(!redisUrl)(
       [
         'pdf_text_too_large',
         'The PDF contains more than 16 KiB of text for this test. Mention me again with a shorter PDF.',
+      ],
+      [
+        'retained_sources_unavailable',
+        'I could not reopen an earlier file or link in this thread. Start a new message in the channel, mention me there, and include the files and links you still need.',
       ],
     ] as const)(
       'posts a safe failure once for %s',
@@ -1605,6 +1699,7 @@ describe.skipIf(!redisUrl)(
         nativeId: randomUUID(),
         adapterId: randomUUID(),
         revision: 4,
+        hasRetainedSources: true as const,
       };
       expect(
         (
@@ -1620,7 +1715,7 @@ describe.skipIf(!redisUrl)(
       expect(gateway.dispatch).toHaveBeenCalledTimes(1);
 
       const next = threadReply(mention.event.ts);
-      next.event.text = 'Continue with https://[::1]/source.txt.';
+      next.event.text = 'Continue using the earlier answer.';
       const duplicate = {
         ...next,
         event_id: `Ev${randomUUID()}`,
@@ -1641,7 +1736,7 @@ describe.skipIf(!redisUrl)(
         session,
         input: { text: next.event.text, threadTs: mention.event.ts },
       });
-      expect(followup.input).not.toHaveProperty('publicUrl');
+      expect(followup.input).not.toHaveProperty('sources');
       expect(
         (
           await gateway.callback(
@@ -1650,6 +1745,22 @@ describe.skipIf(!redisUrl)(
         ).status,
       ).toBe(409);
       const updated = { ...session, revision: session.revision + 2 };
+      const droppedRetainedSources = {
+        seedRunId: updated.seedRunId,
+        nativeId: updated.nativeId,
+        adapterId: updated.adapterId,
+        revision: updated.revision,
+      };
+      expect(
+        (
+          await gateway.callback(
+            callback(
+              { ...result(followup), session: droppedRetainedSources },
+              followup.callbackToken,
+            ),
+          )
+        ).status,
+      ).toBe(409);
       expect(
         (
           await gateway.callback(
@@ -1720,10 +1831,6 @@ describe.skipIf(!redisUrl)(
           event: { ...ordinary.event, subtype: 'thread_broadcast' },
         },
         { ...ordinary, event: { ...ordinary.event, subtype: 'file_share' } },
-        {
-          ...ordinary,
-          event: { ...ordinary.event, files: [{ id: 'FTEST1' }] },
-        },
         { ...ordinary, is_ext_shared_channel: true },
         { ...ordinary, event: { ...ordinary.event, user_team: 'TOTHER' } },
       ]) {
@@ -1738,6 +1845,194 @@ describe.skipIf(!redisUrl)(
       ).toHaveBeenCalledExactlyOnceWith(
         `slack:CTEST1:${mention.event.ts}`,
         BUSY_REPLY,
+      );
+    });
+
+    it('admits a file-only ordinary reply only in its activated conversation', async () => {
+      const gateway = harness(createMockState(), true, undefined, {
+        fileExchange: true,
+      });
+      const root = envelope();
+      const bytes = Buffer.from('{"synthetic":true}\n');
+      const file = {
+        id: 'FTEST1',
+        name: 'followup.json',
+        mimetype: 'application/json',
+        mode: 'hosted',
+        size: bytes.length,
+        url_private:
+          'https://files.slack.com/files-pri/TTEST1-FTEST1/followup.json',
+      };
+      const reply = threadReply(root.event.ts);
+      reply.event.text = '';
+      const payload = {
+        ...reply,
+        event: { ...reply.event, subtype: 'file_share', files: [file] },
+      };
+      const download = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(bytes));
+      vi.stubGlobal('fetch', download);
+
+      expect((await gateway.events(signed(payload))).status).toBe(200);
+      await gateway.flush();
+      expect(download).not.toHaveBeenCalled();
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+
+      expect((await gateway.events(signed(root))).status).toBe(200);
+      await gateway.flush();
+      const seed = gateway.dispatch.mock.calls[0]![0];
+      const session = {
+        seedRunId: seed.runId,
+        nativeId: randomUUID(),
+        adapterId: randomUUID(),
+        revision: 4,
+      };
+      vi.mocked(SlackAdapter.prototype.postMessage).mockResolvedValueOnce({
+        id: root.event.ts,
+        threadId: 'slack:CTEST1:' + root.event.ts,
+        raw: {},
+      });
+      expect(
+        (
+          await gateway.callback(
+            callback({ ...result(seed), session }, seed.callbackToken),
+          )
+        ).status,
+      ).toBe(202);
+      await gateway.flush();
+
+      expect((await gateway.events(signed(payload))).status).toBe(200);
+      expect(download).not.toHaveBeenCalled();
+      await gateway.flush();
+      const [job, staged] = gateway.dispatch.mock.calls[1]!;
+      expect(job).toMatchObject({
+        conversationId: seed.conversationId,
+        session,
+        artifactOutput: true,
+        input: {
+          sources: [
+            {
+              kind: 'text',
+              name: file.name,
+              sha256: createHash('sha256').update(bytes).digest('hex'),
+            },
+          ],
+        },
+      });
+      expect(workerJobSchema.safeParse(job).success).toBe(true);
+      expect(
+        workerJobSchema.safeParse({ ...job, csvOutput: true }).success,
+      ).toBe(false);
+      expect(job.input.threadContext).toBeUndefined();
+      expect(staged).toEqual([bytes]);
+      expect(download).toHaveBeenCalledOnce();
+    });
+
+    it('refuses an explicit private URL on an ordinary reply after activation', async () => {
+      const gateway = harness(createMockState(), true, undefined, {
+        publicUrlInput: true,
+      });
+      const root = envelope();
+      await gateway.events(signed(root));
+      await gateway.flush();
+      const seed = gateway.dispatch.mock.calls[0]![0];
+      const session = {
+        seedRunId: seed.runId,
+        nativeId: randomUUID(),
+        adapterId: randomUUID(),
+        revision: 4,
+      };
+      vi.mocked(SlackAdapter.prototype.postMessage).mockResolvedValueOnce({
+        id: root.event.ts,
+        threadId: 'slack:CTEST1:' + root.event.ts,
+        raw: {},
+      });
+      expect(
+        (
+          await gateway.callback(
+            callback({ ...result(seed), session }, seed.callbackToken),
+          )
+        ).status,
+      ).toBe(202);
+      await gateway.flush();
+
+      const reply = threadReply(root.event.ts);
+      reply.event.text = 'Check <https://[::1]/source.txt>.';
+      expect((await gateway.events(signed(reply))).status).toBe(200);
+      await gateway.flush();
+      expect(gateway.dispatch).toHaveBeenCalledOnce();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
+        'slack:CTEST1:' + root.event.ts,
+        'That URL points to a private or restricted network address.',
+      );
+    });
+
+    it.each([
+      ['png', 'image/png'],
+      ['jpg', 'image/jpeg'],
+    ])('requires a vision opt-in for %s input', async (extension, mimetype) => {
+      const gateway = harness(createMockState(), false, undefined, {
+        fileExchange: true,
+      });
+      const root = envelope();
+      const file = {
+        name: 'fixture.' + extension,
+        mode: 'hosted',
+        size: 100,
+        mimetype,
+        url_private:
+          'https://files.slack.com/files-pri/TTEST1-FTEST1/fixture.' +
+          extension,
+      };
+      const download = vi.fn<typeof fetch>();
+      vi.stubGlobal('fetch', download);
+      expect(
+        (
+          await gateway.events(
+            signed({
+              ...root,
+              event: { ...root.event, subtype: 'file_share', files: [file] },
+            }),
+          )
+        ).status,
+      ).toBe(200);
+      await gateway.flush();
+      expect(download).not.toHaveBeenCalled();
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
+        'slack:CTEST1:' + root.event.ts,
+        'Attach a supported Slack-hosted UTF-8 text, Markdown, source, JSON, CSV, text-based PDF, or enabled image file.',
+      );
+    });
+
+    it('refuses a batch over the attachment limit before any download or dispatch', async () => {
+      const gateway = harness(createMockState(), false, undefined, {
+        fileExchange: true,
+      });
+      const root = envelope();
+      const download = vi.fn<typeof fetch>();
+      vi.stubGlobal('fetch', download);
+      expect(
+        (
+          await gateway.events(
+            signed({
+              ...root,
+              event: {
+                ...root.event,
+                subtype: 'file_share',
+                files: Array(6).fill({}),
+              },
+            }),
+          )
+        ).status,
+      ).toBe(200);
+      await gateway.flush();
+      expect(download).not.toHaveBeenCalled();
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
+        'slack:CTEST1:' + root.event.ts,
+        'Attach at most 5 Slack files per message.',
       );
     });
 
@@ -1766,7 +2061,8 @@ describe.skipIf(!redisUrl)(
           url_private:
             'https://files.slack.com/files-pri/TTEST1-FTEST1/unsupported.zip',
         },
-        notice: 'Attach one Slack-hosted CSV file encoded as UTF-8.',
+        notice:
+          'Attach a supported Slack-hosted UTF-8 text, Markdown, source, JSON, CSV, text-based PDF, or enabled image file.',
         requests: 0,
       },
       {
@@ -1953,7 +2249,7 @@ describe.skipIf(!redisUrl)(
 
       expect(gateway.dispatch).toHaveBeenCalledOnce();
       expect(gateway.dispatch.mock.calls[0]![0].input).not.toHaveProperty(
-        'publicUrl',
+        'sources',
       );
       expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
     });
@@ -1980,7 +2276,7 @@ describe.skipIf(!redisUrl)(
         SlackAdapter.prototype.postMessage,
       ).toHaveBeenCalledExactlyOnceWith(
         `slack:CTEST1:${mention.event.ts}`,
-        'Mention me with one public HTTPS link on its own for this test.',
+        'Send at most one public HTTPS link per message.',
       );
     });
 

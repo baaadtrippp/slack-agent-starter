@@ -356,9 +356,16 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
   });
 
   it('claims a callback once and releases only its own thread lease on completion', async () => {
-    const run = makeRun();
+    const run = makeRun({ conversationId: 'd'.repeat(64) });
     await store.admit(run);
-    const result = makeResult(run);
+    const session = {
+      seedRunId: run.runId,
+      nativeId: randomUUID(),
+      adapterId: randomUUID(),
+      revision: 4,
+      hasRetainedSources: true as const,
+    };
+    const result = { ...makeResult(run), session };
 
     expect(await store.claimPublication(run.runId, result, Date.now())).toBe(
       'claimed',
@@ -366,17 +373,34 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     expect(await store.claimPublication(run.runId, result, Date.now())).toBe(
       'duplicate',
     );
+    expect(
+      await store.claimPublication(
+        run.runId,
+        {
+          ...result,
+          session: {
+            seedRunId: session.seedRunId,
+            nativeId: session.nativeId,
+            adapterId: session.adapterId,
+            revision: session.revision,
+          },
+        },
+        Date.now(),
+      ),
+    ).toBe('conflict');
     expect(await store.completePublication(run, '1700000002.000003')).toBe(
       true,
     );
 
     const next = await store.admit(
       makeRun({
+        conversationId: run.conversationId,
         threadTs: run.threadTs,
         messageTs: '1700000003.000004',
       }),
     );
     expect(next.outcome).toBe('accepted');
+    expect(next.run.session).toEqual(session);
   });
 
   it('rejects stale generations, expired runs, and callbacks for missing runs', async () => {

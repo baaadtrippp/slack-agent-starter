@@ -80,12 +80,12 @@ export interface RunStore {
     token: string,
     version?: number,
   ): Promise<'done' | 'changed' | 'lost'>;
-  reserveCsvCollection(runId: string, lease: string): Promise<boolean>;
+  reserveArtifactCollection(runId: string, lease: string): Promise<boolean>;
   claimPublication(
     runId: string,
     result: WorkerResult,
     now: number,
-    csvLease?: string,
+    artifactLease?: string,
   ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry'>;
   claimUnsubmitted(run: RunRecord, result: WorkerResult): Promise<boolean>;
   completePublication(run: RunRecord, messageId: string): Promise<boolean>;
@@ -155,11 +155,11 @@ if ARGV[3] == 'unsubmitted' then
 elseif run.deadline <= tonumber(ARGV[3]) then return 'expired' end
 local function sameSession(a, b)
   if not a or not b then return not a and not b end
-  return a.seedRunId == b.seedRunId and a.nativeId == b.nativeId and a.adapterId == b.adapterId and a.revision == b.revision
+  return a.seedRunId == b.seedRunId and a.nativeId == b.nativeId and a.adapterId == b.adapterId and a.revision == b.revision and a.hasRetainedSources == b.hasRetainedSources
 end
 local function sameArtifact(a, b)
   if not a or not b then return not a and not b end
-  return a.sha256 == b.sha256
+  return a.sha256 == b.sha256 and a.format == b.format
 end
 if run.state == 'publishing' or run.state == 'completed' or run.state == 'worker_failed' or run.state == 'publication_uncertain' then
   if run.result and run.result.eventId == result.eventId and run.result.runId == result.runId and run.result.generation == result.generation and run.result.sequence == result.sequence and run.result.type == result.type and run.result.text == result.text and sameArtifact(run.result.artifact, result.artifact) and sameSession(run.result.session, result.session) then
@@ -595,7 +595,10 @@ export class RedisRunStore implements RunStore {
     return (await finish().catch(finish)) as 'done' | 'changed' | 'lost';
   }
 
-  async reserveCsvCollection(runId: string, lease: string): Promise<boolean> {
+  async reserveArtifactCollection(
+    runId: string,
+    lease: string,
+  ): Promise<boolean> {
     return (
       (await this.execute((client) =>
         client.set(this.csvCollectionKey(runId), lease, {
@@ -610,7 +613,7 @@ export class RedisRunStore implements RunStore {
     runId: string,
     result: WorkerResult,
     now: number,
-    csvLease?: string,
+    artifactLease?: string,
   ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry'> {
     return (await this.execute((client) =>
       client.eval(CLAIM_SCRIPT, {
@@ -619,7 +622,7 @@ export class RedisRunStore implements RunStore {
           runId,
           JSON.stringify(result),
           String(now),
-          ...(csvLease ? [csvLease] : []),
+          ...(artifactLease ? [artifactLease] : []),
         ],
       }),
     )) as 'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry';
