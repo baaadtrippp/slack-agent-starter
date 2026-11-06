@@ -135,8 +135,10 @@ and history secret scans, and Codex review. The first full CodeRabbit review
 prompted tighter image opt-ins, exact bare URL parsing, and file-write recovery.
 The revised source passed all 227 local tests and the controlled Pi probe,
 including the same-session source reads and CSV output. The revised source also
-passed GitHub Quality CI and Codex review. A full CodeRabbit re-review was
-requested. The service rate-limited that request.
+passed GitHub Quality CI and Codex review. The full CodeRabbit re-review
+completed after a rate-limit delay. Its follow-up fixes initialize staged input
+cleanup before saved-session loading and reject a negative result in the fixture
+percentage check. These fixes followed the live runs.
 
 Provider-only verification used temporary worker, seed, Drive, and snapshot
 resources. Cleanup verified their removal. The stable Slack route still resolved
@@ -144,5 +146,5 @@ to the exact deployment captured before the provider runs.
 
 The live test reused one worker and Drive for all five inputs. After evidence
 capture the stable Slack route was restored to the exact previous deployment.
-The worker has a bounded lifetime. The temporary setup remains available for
-reuse while the operator decides whether to retain it.
+The worker stopped at its automatic timeout. The operator chose to retain the
+staged deployment, Drive, and startup seed for reuse on the tested runtime.

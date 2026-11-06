@@ -18,9 +18,11 @@ function parseCsv(text) {
     );
 }
 
-function exactPercentage(value) {
-  const escaped = value.replace('.', '\\.');
-  return new RegExp(`(?:^|[^\\d.])${escaped}\\s*%(?!\\d)`);
+function containsPercentage(text, expected) {
+  for (const [, number] of text.matchAll(/([+−-]?\s*\d+(?:\.\d+)?)\s*%/g)) {
+    if (number.trim().replace(/^\+\s*/, '') === expected) return true;
+  }
+  return false;
 }
 
 const events = [
@@ -113,16 +115,22 @@ if (downloadedCsv) {
 
 const comparisonReply = process.argv[3];
 if (comparisonReply)
-  assert.match(
-    await readFile(comparisonReply, 'utf8'),
-    exactPercentage(percentChange.toFixed(1)),
+  assert.ok(
+    containsPercentage(
+      await readFile(comparisonReply, 'utf8'),
+      percentChange.toFixed(1),
+    ),
+    'Expected the positive fixture percentage in the reply',
   );
 
 const reuseReply = process.argv[4];
 if (reuseReply)
-  assert.match(
-    await readFile(reuseReply, 'utf8'),
-    exactPercentage(q2NorthShare.toFixed(1)),
+  assert.ok(
+    containsPercentage(
+      await readFile(reuseReply, 'utf8'),
+      q2NorthShare.toFixed(1),
+    ),
+    'Expected the positive fixture percentage in the reply',
   );
 
 console.log(

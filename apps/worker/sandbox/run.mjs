@@ -384,7 +384,11 @@ async function prompt(job, model, key, root, reportWorking) {
       : undefined;
   let before;
   let adapterId;
-  let current = [];
+  const current = (job.input.sources ?? []).map((source, index) => ({
+    ...source,
+    runId: job.runId,
+    index,
+  }));
   let started = false;
   let stopped = true;
   await mkdir(dirname(scratch), { recursive: true, mode: 0o700 });
@@ -401,11 +405,6 @@ async function prompt(job, model, key, root, reportWorking) {
     const retained = job.session
       ? await loadRetainedInputs(sessionRoot, job.session.revision)
       : [];
-    current = (job.input.sources ?? []).map((source, index) => ({
-      ...source,
-      runId: job.runId,
-      index,
-    }));
     const sources = [...retained, ...current];
     if (sources.length > maxRetainedInputs) throw tooManySources;
     const { inputs, attachments, required, catalog } = await prepareSources(
