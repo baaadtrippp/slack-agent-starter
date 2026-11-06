@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import net from 'node:net';
 import { createRedisState } from '@chat-adapter/state-redis';
 import { afterAll, describe, expect, it, vi } from 'vitest';
@@ -397,6 +397,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
     'staged explicit IPv6 URL with period',
     'staged uppercase explicit IPv6 URL with period',
     'staged bare IPv6 URL with comma-shaped query data',
+    'staged bare URL with balanced parentheses',
     'staged PDF',
     'staged PNG with all file types enabled',
     'staged PDF with CSV enabled',
@@ -414,15 +415,19 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         outcome === 'staged uppercase explicit IPv6 URL with period';
       const commaQueryIpv6 =
         outcome === 'staged bare IPv6 URL with comma-shaped query data';
-      const url = bareIpv6
-        ? 'https://[2001:4860:4860::8888]/source.txt'
-        : commaQueryIpv6
-          ? 'https://[2001:4860:4860::8888]/source.txt?next=alpha,https://[2606:4700:4700::1111]/other.txt'
-          : uppercaseExplicitIpv6
-            ? 'HTTPS://[2001:4860:4860::8888]/source.txt.'
-            : explicitIpv6
-              ? 'https://[2001:4860:4860::8888]/source.txt.'
-              : 'https://example.com/source.txt?a=1&b=2';
+      const balancedUrl =
+        outcome === 'staged bare URL with balanced parentheses';
+      const url = balancedUrl
+        ? 'https://example.com/methodology_(v1)'
+        : bareIpv6
+          ? 'https://[2001:4860:4860::8888]/source.txt'
+          : commaQueryIpv6
+            ? 'https://[2001:4860:4860::8888]/source.txt?next=alpha,https://[2606:4700:4700::1111]/other.txt'
+            : uppercaseExplicitIpv6
+              ? 'HTTPS://[2001:4860:4860::8888]/source.txt.'
+              : explicitIpv6
+                ? 'https://[2001:4860:4860::8888]/source.txt.'
+                : 'https://example.com/source.txt?a=1&b=2';
       const slackUrl =
         explicitIpv6 || uppercaseExplicitIpv6
           ? url
@@ -430,6 +435,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       const isMixed = outcome === 'staged CSV and URL';
       const isUrl =
         outcome === 'staged URL' ||
+        balancedUrl ||
         bareIpv6 ||
         commaQueryIpv6 ||
         explicitIpv6 ||
@@ -509,11 +515,13 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           ? {
               text: bareIpv6
                 ? '<@UBOT1> Read https://[2001:4860:4860::8888]/source.txt.'
-                : commaQueryIpv6
-                  ? `<@UBOT1> Read ${url}`
-                  : explicitIpv6 || uppercaseExplicitIpv6
-                    ? `<@UBOT1> Read <${slackUrl}>.`
-                    : `<@UBOT1> Read <${slackUrl}|the source>.`,
+                : balancedUrl
+                  ? '<@UBOT1> Read (' + url + ').'
+                  : commaQueryIpv6
+                    ? `<@UBOT1> Read ${url}`
+                    : explicitIpv6 || uppercaseExplicitIpv6
+                      ? `<@UBOT1> Read <${slackUrl}>.`
+                      : `<@UBOT1> Read <${slackUrl}|the source>.`,
             }
           : {
               files: [
@@ -566,9 +574,18 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           expect(runCommand).toHaveBeenCalledTimes(1);
           expect(stagedBeforeLaunch).toBe(true);
           expect(job?.input.sources).toMatchObject([
-            { kind, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+            {
+              kind,
+              sha256: createHash('sha256').update(content).digest('hex'),
+            },
             ...(isMixed
-              ? [{ kind: 'publicUrl', name: 'Public URL text' }]
+              ? [
+                  {
+                    kind: 'publicUrl',
+                    name: 'Public URL text',
+                    sha256: createHash('sha256').update(urlBytes).digest('hex'),
+                  },
+                ]
               : []),
           ]);
           if (isMixed) expect(job?.artifactOutput).toBe(true);

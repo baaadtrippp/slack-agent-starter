@@ -30,8 +30,8 @@ Use a matching gateway and Sandbox worker build. Set `SLACK_FILE_EXCHANGE=1`
 with the bot's `files:read` and `files:write` grants. The worker seed needs
 Poppler for PDFs. Enable `SLACK_THREAD_RESUME` for ordinary thread replies and
 `SLACK_PUBLIC_URL_INPUT` for direct public HTTPS URLs that return UTF-8 plain
-text. Enable `SLACK_JPEG_INPUT` after a vision check on the exact selected model
-and adapter.
+text. Enable `SLACK_PNG_INPUT` and `SLACK_JPEG_INPUT` after vision checks on the
+exact selected model and adapter.
 [File exchange limits and evidence](../../docs/spec/f04-f06-file-exchange.md).
 
 ## Coordinated idle stop

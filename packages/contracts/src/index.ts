@@ -149,6 +149,7 @@ export const workerJobSchema = z
     callbackToken: z.string().regex(/^[0-9a-f]{64}$/),
   })
   .strict()
+  .refine(({ csvOutput, artifactOutput }) => !(csvOutput && artifactOutput))
   .refine(({ input, session }) => {
     const messages = input.threadContext?.messages;
     return (

@@ -121,6 +121,13 @@ exact session continuation, and clean exit. A stalled or rejected progress
 callback did not prevent the terminal result. An immediate model failure did not
 emit working. This does not verify a paid model, Sandbox, or live Slack.
 
+The [F04–F06 file-exchange tracer](f04-f06-file-exchange.md) records
+deterministic file intake, scoped reuse, and artifact checks separately from
+[real Pi and OpenRouter evidence](f04-f06-file-exchange.md#provider-integration-evidence)
+for JPEG, patch review, and CSV analysis. The two
+[live Slack scenarios](f04-f06-file-exchange.md#live-slack-evidence) remain
+pending for AC12.
+
 ## Evidence rules
 
 For each slice, link evidence and label it as one of:

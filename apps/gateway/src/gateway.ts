@@ -491,7 +491,7 @@ export function createGateway({
     const enabledFiles = {
       csv: config.fileExchange || config.csvInput,
       pdf: config.fileExchange || config.pdfInput,
-      png: config.fileExchange || config.pngInput,
+      png: config.pngInput,
       jpeg: config.jpegInput,
       text: config.fileExchange,
     };
@@ -950,8 +950,20 @@ function currentMessageLinks(text: string) {
   );
   const bare = (
     plain.replace(/<[^>]*>/g, ' ').match(/https?:\/\/[^\s<>|]+/gi) ?? []
-  ).map((url) => unescapeSlackText(url).replace(/[.,;:!?)"']+$/g, ''));
+  ).map((url) => trimBareLink(unescapeSlackText(url)));
   return [...new Set([...explicit, ...bare])];
+}
+
+function trimBareLink(url: string) {
+  let unmatchedClosing = url.split(')').length - url.split('(').length;
+  let end = url.length;
+  while (end > 0) {
+    const character = url[end - 1]!;
+    if (character === ')' && unmatchedClosing > 0) unmatchedClosing -= 1;
+    else if (!/[.,;:!?"']/.test(character)) break;
+    end -= 1;
+  }
+  return url.slice(0, end);
 }
 
 function digest(value: string | Buffer) {

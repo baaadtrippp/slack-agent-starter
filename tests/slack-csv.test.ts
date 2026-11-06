@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   downloadSlackFile,
@@ -346,6 +347,20 @@ describe('Slack JPEG validation and download', () => {
       expect(
         await downloadSlackFile([attachment], 'synthetic-token', 'jpeg'),
       ).toEqual(jpeg);
+    },
+  );
+
+  it.each(['baseline.jpg', 'progressive.jpg'])(
+    'accepts a complete %s with JPEG metadata, tables, and image data',
+    async (name) => {
+      const bytes = readFileSync(
+        new URL('./fixtures/file-exchange/' + name, import.meta.url),
+      );
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(bytes)));
+      const attachment = { ...file, name, size: bytes.length };
+      await expect(
+        downloadSlackFile([attachment], 'synthetic-token', 'jpeg'),
+      ).resolves.toEqual(bytes);
     },
   );
 

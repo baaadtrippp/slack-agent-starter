@@ -1900,6 +1900,9 @@ describe.skipIf(!redisUrl)(
         },
       });
       expect(workerJobSchema.safeParse(job).success).toBe(true);
+      expect(
+        workerJobSchema.safeParse({ ...job, csvOutput: true }).success,
+      ).toBe(false);
       expect(job.input.threadContext).toBeUndefined();
       expect(staged).toEqual([bytes]);
       expect(download).toHaveBeenCalledOnce();
@@ -1941,6 +1944,44 @@ describe.skipIf(!redisUrl)(
       expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
         'slack:CTEST1:' + root.event.ts,
         'That URL points to a private or restricted network address.',
+      );
+    });
+
+    it.each([
+      ['png', 'image/png'],
+      ['jpg', 'image/jpeg'],
+    ])('requires a vision opt-in for %s input', async (extension, mimetype) => {
+      const gateway = harness(createMockState(), false, undefined, {
+        fileExchange: true,
+      });
+      const root = envelope();
+      const file = {
+        name: 'fixture.' + extension,
+        mode: 'hosted',
+        size: 100,
+        mimetype,
+        url_private:
+          'https://files.slack.com/files-pri/TTEST1-FTEST1/fixture.' +
+          extension,
+      };
+      const download = vi.fn<typeof fetch>();
+      vi.stubGlobal('fetch', download);
+      expect(
+        (
+          await gateway.events(
+            signed({
+              ...root,
+              event: { ...root.event, subtype: 'file_share', files: [file] },
+            }),
+          )
+        ).status,
+      ).toBe(200);
+      await gateway.flush();
+      expect(download).not.toHaveBeenCalled();
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
+        'slack:CTEST1:' + root.event.ts,
+        'Attach a supported Slack-hosted UTF-8 text, Markdown, source, JSON, CSV, text-based PDF, or enabled image file.',
       );
     });
 

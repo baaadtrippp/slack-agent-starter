@@ -89,7 +89,7 @@ export default async function (pi) {
 
 export const writeArtifactExtension = `
 import { createHash } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
+import { constants, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Type } from 'typebox';
 
@@ -116,9 +116,29 @@ export default function (pi) {
       reserved = true;
       const bytes = Buffer.from(content);
       const filename = 'result.' + format;
-      await writeFile(join(process.env.HYDRA_RESULTS, filename), bytes, {
-        mode: 0o600, flag: 'wx',
-      });
+      const path = join(process.env.HYDRA_RESULTS, filename);
+      let file;
+      let owned = false;
+      try {
+        file = await open(
+          path,
+          constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+          0o600,
+        );
+        owned = true;
+        await file.writeFile(bytes);
+        await file.close();
+        file = undefined;
+      } catch (error) {
+        await file?.close().catch(() => {});
+        let cleanupFailed = false;
+        if (owned)
+          await rm(path, { force: true }).catch(() => {
+            cleanupFailed = true;
+          });
+        if (!cleanupFailed) reserved = false;
+        throw error;
+      }
       return {
         content: [{ type: 'text', text: 'Saved ' + filename + '.' }],
         details: {
@@ -364,6 +384,7 @@ async function prompt(job, model, key, root, reportWorking) {
       : undefined;
   let before;
   let adapterId;
+  let current = [];
   let started = false;
   let stopped = true;
   await mkdir(dirname(scratch), { recursive: true, mode: 0o700 });
@@ -380,7 +401,7 @@ async function prompt(job, model, key, root, reportWorking) {
     const retained = job.session
       ? await loadRetainedInputs(sessionRoot, job.session.revision)
       : [];
-    const current = (job.input.sources ?? []).map((source, index) => ({
+    current = (job.input.sources ?? []).map((source, index) => ({
       ...source,
       runId: job.runId,
       index,
@@ -566,11 +587,7 @@ async function prompt(job, model, key, root, reportWorking) {
     if (sources.length) {
       const revisions = join(sessionRoot, 'input-revisions');
       await mkdir(revisions, { recursive: true, mode: 0o700 });
-      await writeFile(
-        join(revisions, String(saved.records.length) + '.json'),
-        JSON.stringify(sources),
-        { mode: 0o600, flag: 'wx' },
-      );
+      await writeRevisionCatalog(revisions, saved.records.length, sources);
     }
     return {
       text: text.slice(0, 4000).toWellFormed(),
@@ -583,6 +600,7 @@ async function prompt(job, model, key, root, reportWorking) {
       },
     };
   } catch (error) {
+    if (error === uncertainRun) throw error;
     if (before && started && stopped) {
       // The committed transcript is safe to restore only after Pi has exited.
       const path = join(sessions, before.file);
@@ -594,12 +612,70 @@ async function prompt(job, model, key, root, reportWorking) {
         throw uncertainRun;
       }
     }
+    await removeRejectedCurrentInputs(seedRunId, job.runId, current).catch(
+      () => {},
+    );
     throw error;
   } finally {
     if (stopped)
       await rm(scratch, { recursive: true, force: true }).catch(() => {
         throw uncertainRun;
       });
+  }
+}
+
+export async function removeRejectedCurrentInputs(
+  seedRunId,
+  runId,
+  current,
+  workspace = '/workspace',
+) {
+  if (!current.length) return;
+  const flags =
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+  let directory = await open(workspace, flags);
+  try {
+    for (const name of ['inputs', seedRunId, runId]) {
+      const next = await open(
+        '/proc/self/fd/' + directory.fd + '/' + name,
+        flags,
+      );
+      await directory.close();
+      directory = next;
+    }
+    await Promise.all(
+      current.map(({ index }) =>
+        rm('/proc/self/fd/' + directory.fd + '/input-' + index, {
+          force: true,
+        }),
+      ),
+    );
+  } finally {
+    await directory.close();
+  }
+}
+
+export async function writeRevisionCatalog(revisions, revision, sources) {
+  const path = join(revisions, String(revision) + '.json');
+  let file;
+  let owned = false;
+  try {
+    file = await open(
+      path,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      0o600,
+    );
+    owned = true;
+    await file.writeFile(JSON.stringify(sources));
+    await file.close();
+    file = undefined;
+  } catch (error) {
+    await file?.close().catch(() => {});
+    if (owned)
+      await rm(path, { force: true }).catch(() => {
+        throw uncertainRun;
+      });
+    throw error;
   }
 }
 

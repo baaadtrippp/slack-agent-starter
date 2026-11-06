@@ -1,7 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { StagedSource } from '../packages/contracts/src/index.js';
 
@@ -9,7 +17,13 @@ import type { StagedSource } from '../packages/contracts/src/index.js';
 // @ts-expect-error The Sandbox entry point has no declaration file.
 import * as sandboxWorker from '../apps/worker/sandbox/run.mjs';
 
-const { loadRetainedInputs, prepareSources } = sandboxWorker;
+const {
+  loadRetainedInputs,
+  prepareSources,
+  removeRejectedCurrentInputs,
+  writeArtifactExtension,
+  writeRevisionCatalog,
+} = sandboxWorker;
 
 describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
   let workspace: string;
@@ -156,5 +170,118 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
       mimeType: 'image/jpeg',
       data,
     });
+  });
+
+  it('allows an artifact write retry after file creation fails', async () => {
+    const extension = join(workspace, 'write-artifact.mjs');
+    await writeFile(
+      extension,
+      writeArtifactExtension.replace(
+        "import { Type } from 'typebox';",
+        'const Type = { String: (value) => value, Object: (value) => value, Unsafe: (value) => value };',
+      ),
+    );
+    const results = join(workspace, 'results');
+    const previousResults = process.env.HYDRA_RESULTS;
+    const previousArtifactOutput = process.env.HYDRA_ARTIFACT_OUTPUT;
+    process.env.HYDRA_RESULTS = results;
+    process.env.HYDRA_ARTIFACT_OUTPUT = '1';
+    let tool:
+      | {
+          execute(
+            id: string,
+            args: { format: string; content: string },
+          ): Promise<unknown>;
+        }
+      | undefined;
+    try {
+      const register = (await import(pathToFileURL(extension).href)).default;
+      register({
+        registerTool(value: typeof tool) {
+          tool = value;
+        },
+      });
+      const args = { format: 'csv', content: 'period,total\nQ1,18\n' };
+      await expect(tool!.execute('first', args)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await mkdir(results);
+      await expect(tool!.execute('retry', args)).resolves.toMatchObject({
+        content: [{ type: 'text', text: 'Saved result.csv.' }],
+        details: { format: 'csv' },
+      });
+      expect(await readFile(join(results, 'result.csv'), 'utf8')).toBe(
+        args.content,
+      );
+    } finally {
+      if (previousResults === undefined) delete process.env.HYDRA_RESULTS;
+      else process.env.HYDRA_RESULTS = previousResults;
+      if (previousArtifactOutput === undefined)
+        delete process.env.HYDRA_ARTIFACT_OUTPUT;
+      else process.env.HYDRA_ARTIFACT_OUTPUT = previousArtifactOutput;
+    }
+  });
+
+  it('removes only rejected current-run staged inputs', async () => {
+    const current = join(workspace, 'inputs', seed, run);
+    const retainedRun = randomUUID();
+    const retained = join(workspace, 'inputs', seed, retainedRun);
+    await mkdir(current, { recursive: true });
+    await mkdir(retained, { recursive: true });
+    await writeFile(join(current, 'input-0'), csv);
+    await writeFile(join(current, 'input-1'), methodology);
+    await writeFile(join(current, 'keep.txt'), 'preexisting');
+    await writeFile(join(retained, 'input-0'), 'retained');
+
+    await removeRejectedCurrentInputs(
+      seed,
+      run,
+      [{ index: 0 }, { index: 1 }],
+      workspace,
+    );
+
+    await expect(readFile(join(current, 'input-0'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(readFile(join(current, 'input-1'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect(await readFile(join(current, 'keep.txt'), 'utf8')).toBe(
+      'preexisting',
+    );
+    expect(await readFile(join(retained, 'input-0'), 'utf8')).toBe('retained');
+
+    await rm(current, { recursive: true });
+    await symlink(retained, current, 'dir');
+    await expect(
+      removeRejectedCurrentInputs(seed, run, [{ index: 0 }], workspace),
+    ).rejects.toThrow();
+    expect(await readFile(join(retained, 'input-0'), 'utf8')).toBe('retained');
+  });
+
+  it('atomically commits revision catalogs without replacing existing files', async () => {
+    const revisions = join(session, 'input-revisions');
+    const { source } = await stage(csv, 'csv', 'revenue.csv', 0);
+    await expect(
+      writeRevisionCatalog(revisions, 7, [
+        {
+          toJSON() {
+            throw new Error('synthetic serialization failure');
+          },
+        },
+      ]),
+    ).rejects.toThrow('synthetic serialization failure');
+    await expect(readFile(join(revisions, '7.json'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+
+    await writeRevisionCatalog(revisions, 7, [source]);
+    const committed = await readFile(join(revisions, '7.json'), 'utf8');
+    expect(JSON.parse(committed)).toEqual([source]);
+
+    await expect(writeRevisionCatalog(revisions, 7, [])).rejects.toMatchObject({
+      code: 'EEXIST',
+    });
+    expect(await readFile(join(revisions, '7.json'), 'utf8')).toBe(committed);
   });
 });

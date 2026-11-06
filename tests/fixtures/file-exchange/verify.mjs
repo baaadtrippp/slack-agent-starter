@@ -3,6 +3,26 @@ import { readFile } from 'node:fs/promises';
 
 import { selectEvents } from './window.ts';
 
+function parseCsv(text) {
+  return text
+    .trimEnd()
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .split(',')
+        .map((field) =>
+          field.startsWith('"') && field.endsWith('"')
+            ? field.slice(1, -1)
+            : field,
+        ),
+    );
+}
+
+function exactPercentage(value) {
+  const escaped = value.replace('.', '\\.');
+  return new RegExp(`(?:^|[^\\d.])${escaped}\\s*%(?!\\d)`);
+}
+
 const events = [
   { id: 'start', atMs: 100 },
   { id: 'middle', atMs: 150 },
@@ -18,11 +38,12 @@ const csv = await readFile(
   new URL('./regional-revenue.csv', import.meta.url),
   'utf8',
 );
-const [header, ...lines] = csv.trimEnd().split('\n');
-assert.equal(header, 'period,region,orders,revenue_cents');
+const [sourceHeader, ...sourceRecords] = parseCsv(csv);
+assert.deepEqual(sourceHeader, ['period', 'region', 'orders', 'revenue_cents']);
 
-const rows = lines.map((line) => {
-  const [period, region, orders, revenueCents] = line.split(',');
+const rows = sourceRecords.map(([period, region, orders, revenueCents]) => {
+  assert.match(orders.trim(), /^(?:\d+)?$/);
+  assert.match(revenueCents, /^\d+$/);
   return {
     period: period.trim(),
     region: region.trim(),
@@ -60,26 +81,49 @@ assert.deepEqual(
 
 const downloadedCsv = process.argv[2];
 if (downloadedCsv) {
-  const cleaned = (await readFile(downloadedCsv, 'utf8'))
-    .trimEnd()
-    .split(/\r?\n/);
-  assert.equal(
-    cleaned.shift(),
-    'period,region,orders,revenue_cents,quality_flag',
+  const [cleanedHeader, ...cleanedRecords] = parseCsv(
+    await readFile(downloadedCsv, 'utf8'),
+  );
+  const expectedHeader = [
+    'period',
+    'region',
+    'orders',
+    'revenue_cents',
+    'quality_flag',
+  ];
+  assert.equal(new Set(cleanedHeader).size, expectedHeader.length);
+  assert.deepEqual(cleanedHeader.toSorted(), expectedHeader.toSorted());
+  const cleanedIndex = Object.fromEntries(
+    cleanedHeader.map((name, index) => [name, index]),
   );
   assert.deepEqual(
-    cleaned,
-    rows.map((row) =>
-      [
-        row.period,
-        row.region,
-        row.orders,
-        row.revenueCents,
-        row.orders === '' ? 'missing_orders' : '',
-      ].join(','),
-    ),
+    cleanedRecords.map((record) => {
+      assert.equal(record.length, cleanedHeader.length);
+      return expectedHeader.map((name) => record[cleanedIndex[name]]);
+    }),
+    rows.map((row) => [
+      row.period,
+      row.region,
+      row.orders,
+      String(row.revenueCents),
+      row.orders === '' ? 'missing_orders' : '',
+    ]),
   );
 }
+
+const comparisonReply = process.argv[3];
+if (comparisonReply)
+  assert.match(
+    await readFile(comparisonReply, 'utf8'),
+    exactPercentage(percentChange.toFixed(1)),
+  );
+
+const reuseReply = process.argv[4];
+if (reuseReply)
+  assert.match(
+    await readFile(reuseReply, 'utf8'),
+    exactPercentage(q2NorthShare.toFixed(1)),
+  );
 
 console.log(
   JSON.stringify({
@@ -95,6 +139,8 @@ console.log(
       q2NorthShare,
       missingOrdersRegion: 'West',
       verifiedDownload: Boolean(downloadedCsv),
+      verifiedComparisonReply: Boolean(comparisonReply),
+      verifiedReuseReply: Boolean(reuseReply),
     },
   }),
 );
