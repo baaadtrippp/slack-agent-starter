@@ -63,10 +63,11 @@ Q2 revenue. It identified West as the row with missing orders.
 
 ## Provider integration evidence
 
-The tested runtime source was `cd23e9bb9576d2385f0c4691987a90bedb77b5d7`. The
-pinned acpx, pi-acp, and Pi worker ran in a Vercel Sandbox on a writable Drive
-with the selected OpenRouter model. A local HTTPS recorder authenticated worker
-admission and captured callbacks inside the Sandbox.
+The provider-only workflow probes used
+`cd23e9bb9576d2385f0c4691987a90bedb77b5d7`. The pinned acpx, pi-acp, and Pi
+worker ran in a Vercel Sandbox on a writable Drive with the selected OpenRouter
+model. A local HTTPS recorder authenticated worker admission and captured
+callbacks inside the Sandbox.
 
 - **JPEG vision.** The native user turn contained the exact staged JPEG. Pi
   returned the fixture total of 91, then reopened the same image with
@@ -88,14 +89,43 @@ admission and captured callbacks inside the Sandbox.
   missing-orders flag. A third turn reopened both earlier sources and returned
   North's 46.0% share. All three turns used the same session IDs.
 
+The JPEG vision and scoped reopening check also passed on the revised
+`a5c08a2cb985bc16e619ef25bd9c3a03ce3cfa76` worker before live routing. The
+provider-only patch and CSV workflows used independent native sessions.
+
 The [earlier IPv6 probe](milestone-13.md#ipv6-sandbox-probe) distinguishes
 gateway refusal from unverified provider IPv6 firewall enforcement.
 
 ## Live Slack evidence
 
-Both AC12 Slack workflows are pending. The operator has two synthetic fixture
-sets and paste-ready prompts. Earlier live single-source and CSV-upload checks
-remain linked from [traceability](traceability.md).
+Both AC12 workflows passed in the authorized test channel on runtime source
+`a5c08a2cb985bc16e619ef25bd9c3a03ce3cfa76`. The tester uploaded the CSV as a new
+request in the existing patch thread. This exercised follow-up file and URL
+intake in the same conversation. Conversation isolation was checked separately
+in the deterministic suite and provider-only probes.
+
+- **Uploaded patch review.** The initial Slack message included the diff and
+  related source. Hydra asked which endpoints should be included. On the
+  ordinary reply, Pi used both earlier files in the same native session and
+  reported a high-severity issue at `window.ts:11`. It distinguished code
+  inspection and logic checks from assumptions. The independent fixture run
+  confirmed the regression at both exact endpoints.
+- **CSV analysis.** One message included a CSV and an explicit, immutable
+  methodology link. Hydra read both and asked which periods to compare. After
+  the ordinary reply, Pi reopened both sources, reported 28,200 and 32,600
+  cents, and uploaded `result.csv` in the same thread. A later reply reopened
+  both sources again and reported North's 46.0% share of Q2. The independent
+  verifier checked the 15.6% increase, all six cleaned rows, and West's
+  missing-orders flag. The 195-byte Slack download matched the Drive artifact
+  and the native tool and callback digests.
+
+All five accepted inputs received one acknowledgement and one status that ended
+in Completed. The five recorded answer IDs matched the Slack messages. Native
+records showed one new user turn per message, the exact scoped reads requested
+in each turn, and the same native and adapter IDs throughout. The gateway staged
+two sources on each file-bearing request and uploaded one CSV. The final code
+and Markdown upload formats and the failure fallback have deterministic
+coverage.
 
 ## Delivery state
 
@@ -104,9 +134,15 @@ The source revision passed 219 local tests, GitHub Quality CI, the repository
 and history secret scans, and Codex review. The first full CodeRabbit review
 prompted tighter image opt-ins, exact bare URL parsing, and file-write recovery.
 The revised source passed all 227 local tests and the controlled Pi probe,
-including the same-session source reads and CSV output. Use this source for the
-live Slack checks.
+including the same-session source reads and CSV output. The revised source also
+passed GitHub Quality CI and Codex review. A full CodeRabbit re-review was
+requested. The service rate-limited that request.
 
 Provider-only verification used temporary worker, seed, Drive, and snapshot
 resources. Cleanup verified their removal. The stable Slack route still resolved
 to the exact deployment captured before the provider runs.
+
+The live test reused one worker and Drive for all five inputs. After evidence
+capture the stable Slack route was restored to the exact previous deployment.
+The worker has a bounded lifetime. The temporary setup remains available for
+reuse while the operator decides whether to retain it.

@@ -124,9 +124,10 @@ emit working. This does not verify a paid model, Sandbox, or live Slack.
 The [F04–F06 file-exchange tracer](f04-f06-file-exchange.md) records
 deterministic file intake, scoped reuse, and artifact checks separately from
 [real Pi and OpenRouter evidence](f04-f06-file-exchange.md#provider-integration-evidence)
-for JPEG, patch review, and CSV analysis. The two
-[live Slack scenarios](f04-f06-file-exchange.md#live-slack-evidence) remain
-pending for AC12.
+for JPEG, patch review, and CSV analysis. Both
+[live Slack scenarios](f04-f06-file-exchange.md#live-slack-evidence) passed for
+AC12 in the selected test channel. The evidence includes exact native source
+reuse, an independent patch check, and a verified Slack CSV download.
 
 ## Evidence rules
 
