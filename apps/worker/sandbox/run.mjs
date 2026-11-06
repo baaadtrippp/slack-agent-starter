@@ -199,7 +199,9 @@ async function run(job, model, key) {
         !job.session.adapterId ||
         job.session.adapterId.length > 128 ||
         !Number.isSafeInteger(job.session?.revision) ||
-        job.session.revision < 1)) ||
+        job.session.revision < 1 ||
+        (job.session.hasRetainedSources !== undefined &&
+          job.session.hasRetainedSources !== true))) ||
     typeof model !== 'string' ||
     !/^[a-z0-9][a-z0-9._:/-]{1,127}$/i.test(model) ||
     !key
@@ -408,11 +410,13 @@ async function prompt(job, model, key, root, reportWorking) {
         work,
       );
     const retained = job.session
-      ? await loadRetainedInputs(sessionRoot, job.session.revision).catch(
-          () => {
-            throw retainedSourcesUnavailable;
-          },
-        )
+      ? await loadRetainedInputs(
+          sessionRoot,
+          job.session.revision,
+          job.session.hasRetainedSources,
+        ).catch(() => {
+          throw retainedSourcesUnavailable;
+        })
       : [];
     const sources = [...retained, ...current];
     if (sources.length > maxRetainedInputs) throw tooManySources;
@@ -595,6 +599,7 @@ async function prompt(job, model, key, root, reportWorking) {
         nativeId: saved.nativeId,
         adapterId,
         revision: saved.records.length,
+        ...(sources.length ? { hasRetainedSources: true } : {}),
       },
     };
   } catch (error) {
@@ -741,20 +746,25 @@ async function readBoundedFile(base, directories, filename, limit) {
   }
 }
 
-export async function loadRetainedInputs(sessionRoot, revision) {
-  // Old sessions may not have a catalog for their saved revision.
+export async function loadRetainedInputs(
+  sessionRoot,
+  revision,
+  hasRetainedSources = false,
+) {
+  // A missing catalog is valid for legacy and source-free sessions.
   const bytes = await readBoundedFile(
     sessionRoot,
     ['input-revisions'],
     String(revision) + '.json',
     sourceByteLimit,
   ).catch((error) => {
-    if (error.code !== 'ENOENT') throw error;
+    if (hasRetainedSources || error.code !== 'ENOENT') throw error;
   });
   if (!bytes) return [];
   const sources = JSON.parse(bytes.toString('utf8'));
   if (
     !Array.isArray(sources) ||
+    (hasRetainedSources && sources.length === 0) ||
     sources.length > maxRetainedInputs ||
     !sources.every(
       (source) =>

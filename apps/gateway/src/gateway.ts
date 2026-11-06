@@ -882,7 +882,8 @@ export function createGateway({
           expected &&
           (received.nativeId !== expected.nativeId ||
             received.adapterId !== expected.adapterId ||
-            received.revision <= expected.revision))
+            received.revision <= expected.revision ||
+            (expected.hasRetainedSources && !received.hasRetainedSources)))
       )
         return new Response(null, { status: 409 });
     }

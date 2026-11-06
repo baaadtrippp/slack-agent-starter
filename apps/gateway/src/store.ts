@@ -155,7 +155,7 @@ if ARGV[3] == 'unsubmitted' then
 elseif run.deadline <= tonumber(ARGV[3]) then return 'expired' end
 local function sameSession(a, b)
   if not a or not b then return not a and not b end
-  return a.seedRunId == b.seedRunId and a.nativeId == b.nativeId and a.adapterId == b.adapterId and a.revision == b.revision
+  return a.seedRunId == b.seedRunId and a.nativeId == b.nativeId and a.adapterId == b.adapterId and a.revision == b.revision and a.hasRetainedSources == b.hasRetainedSources
 end
 local function sameArtifact(a, b)
   if not a or not b then return not a and not b end

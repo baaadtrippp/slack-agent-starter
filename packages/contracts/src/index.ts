@@ -6,6 +6,7 @@ const workerSessionSchema = z
     nativeId: z.uuid(),
     adapterId: z.uuid(),
     revision: z.number().int().positive(),
+    hasRetainedSources: z.literal(true).optional(),
   })
   .strict();
 

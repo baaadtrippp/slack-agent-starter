@@ -84,7 +84,7 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
     await writeFile(join(revisions, '8.json'), JSON.stringify([second]));
     expect(await loadRetainedInputs(session, 6)).toEqual([]);
 
-    const selected = await loadRetainedInputs(session, 7);
+    const selected = await loadRetainedInputs(session, 7, true);
     const followup = await prepareSources(
       selected,
       seed,
@@ -114,6 +114,19 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
         workspace,
       ),
     ).rejects.toThrow('Retained sources are unavailable');
+  });
+
+  it('requires a nonempty catalog for a session with retained sources', async () => {
+    expect(await loadRetainedInputs(session, 7)).toEqual([]);
+    await expect(loadRetainedInputs(session, 7, true)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+
+    await writeFile(join(session, 'input-revisions', '7.json'), '[]');
+    expect(await loadRetainedInputs(session, 7)).toEqual([]);
+    await expect(loadRetainedInputs(session, 7, true)).rejects.toThrow(
+      'Invalid retained input catalog',
+    );
   });
 
   it.each(['missing', 'corrupt'])(

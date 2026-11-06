@@ -30,8 +30,9 @@ Supported images have at most 1,024 pixels on each edge. The worker makes up to
 12 accepted sources available per saved session and allows one UTF-8 result file
 of up to 16 KiB per run. Start a new thread when the source limit is reached. If
 an earlier source cannot be reopened, Hydra asks the user to start a new message
-and include the needed files and links. O05 production limits and retention are
-open.
+and include the needed files and links. A saved session with retained sources
+requires its revision catalog. Legacy and source-free sessions can resume
+without a catalog. O05 production limits and retention are open.
 
 Deploy the gateway and worker together. PNG and JPEG are opt-in after vision
 checks on the selected model and adapter build. Conversations with native
@@ -148,7 +149,9 @@ A controlled worker regression reproduced a retained checksum failure. The
 worker returned a specific failure before a model call, removed the new turn's
 staged input, and preserved the earlier session and source files. The normal
 same-session read and artifact path also passed after restoring the synthetic
-fixture.
+fixture. Removing an expected revision catalog took the same recovery path. A
+session with a valid older catalog resumed and recorded the retained-source flag
+in its next revision.
 
 Provider-only verification used temporary worker, seed, Drive, and snapshot
 resources. Cleanup verified their removal. The stable Slack route still resolved

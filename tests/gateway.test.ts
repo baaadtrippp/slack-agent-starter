@@ -1699,6 +1699,7 @@ describe.skipIf(!redisUrl)(
         nativeId: randomUUID(),
         adapterId: randomUUID(),
         revision: 4,
+        hasRetainedSources: true as const,
       };
       expect(
         (
@@ -1744,6 +1745,22 @@ describe.skipIf(!redisUrl)(
         ).status,
       ).toBe(409);
       const updated = { ...session, revision: session.revision + 2 };
+      const droppedRetainedSources = {
+        seedRunId: updated.seedRunId,
+        nativeId: updated.nativeId,
+        adapterId: updated.adapterId,
+        revision: updated.revision,
+      };
+      expect(
+        (
+          await gateway.callback(
+            callback(
+              { ...result(followup), session: droppedRetainedSources },
+              followup.callbackToken,
+            ),
+          )
+        ).status,
+      ).toBe(409);
       expect(
         (
           await gateway.callback(
