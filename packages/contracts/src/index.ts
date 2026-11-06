@@ -32,6 +32,56 @@ export const slackAttachmentSchema = z
   })
   .strict();
 
+export const MAX_SLACK_INPUT_FILES = 5;
+export const MAX_RETAINED_INPUTS = 12;
+export const INPUT_BYTE_LIMIT = 16 * 1024;
+
+export const artifactFormats = [
+  'csv',
+  'md',
+  'diff',
+  'patch',
+  'txt',
+  'js',
+  'mjs',
+  'ts',
+  'tsx',
+  'jsx',
+  'py',
+  'go',
+  'rs',
+  'rb',
+  'java',
+  'kt',
+  'cs',
+  'c',
+  'cpp',
+  'h',
+  'sh',
+  'sql',
+  'json',
+  'yaml',
+  'yml',
+  'html',
+  'css',
+] as const;
+
+const checksum = z.string().regex(/^[0-9a-f]{64}$/);
+const stagedSourceSchema = z
+  .object({
+    kind: z.enum(['csv', 'pdf', 'png', 'jpeg', 'text', 'publicUrl']),
+    name: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(/^[^/\\\p{Cc}]+$/u),
+    sha256: checksum,
+  })
+  .strict();
+
+export type StagedSource = z.infer<typeof stagedSourceSchema>;
+export type ArtifactFormat = (typeof artifactFormats)[number];
+
 const slackAttachments = z
   .array(slackAttachmentSchema)
   .max(MAX_SLACK_ATTACHMENT_METADATA);
@@ -78,18 +128,22 @@ export const workerJobSchema = z
         messageTs: slackTimestamp,
         attachments: slackAttachments.optional(),
         threadContext: slackThreadContextSchema.optional(),
-        csv: z.literal(true).optional(),
-        pdf: z.literal(true).optional(),
-        png: z.literal(true).optional(),
-        publicUrl: z.literal(true).optional(),
+        sources: z
+          .array(stagedSourceSchema)
+          .min(1)
+          .max(MAX_SLACK_INPUT_FILES + 1)
+          .refine((sources) => {
+            const urls = sources.filter(
+              ({ kind }) => kind === 'publicUrl',
+            ).length;
+            return urls <= 1 && sources.length - urls <= MAX_SLACK_INPUT_FILES;
+          })
+          .optional(),
       })
-      .strict()
-      .refine(
-        ({ csv, pdf, png, publicUrl }) =>
-          [csv, pdf, png, publicUrl].filter(Boolean).length <= 1,
-      ),
+      .strict(),
     session: workerSessionSchema.optional(),
     csvOutput: z.literal(true).optional(),
+    artifactOutput: z.literal(true).optional(),
     deadline: z.number().int().positive(),
     callbackUrl: z.url().startsWith('https://'),
     callbackToken: z.string().regex(/^[0-9a-f]{64}$/),
@@ -119,9 +173,11 @@ export const workerResultSchema = z
     eventId: z.uuid(),
     sequence: z.union([z.literal(1), z.literal(2)]),
     type: z.enum(['completed', 'failed']),
-    inputError: z.enum(['pdf_unreadable', 'pdf_text_too_large']).optional(),
+    inputError: z
+      .enum(['pdf_unreadable', 'pdf_text_too_large', 'too_many_sources'])
+      .optional(),
     artifact: z
-      .object({ sha256: z.string().regex(/^[0-9a-f]{64}$/) })
+      .object({ sha256: checksum, format: z.enum(artifactFormats).optional() })
       .strict()
       .optional(),
     session: workerSessionSchema.optional(),

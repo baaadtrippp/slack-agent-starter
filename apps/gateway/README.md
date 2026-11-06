@@ -24,6 +24,16 @@ detached worker command after admission. Configure model authentication on the
 Sandbox firewall. The gateway does not need the OpenRouter key. Keep this
 deployment within the selected test channel and Sandbox lifetime.
 
+## File exchange test mode
+
+Use a matching gateway and Sandbox worker build. Set `SLACK_FILE_EXCHANGE=1`
+with the bot's `files:read` and `files:write` grants. The worker seed needs
+Poppler for PDFs. Enable `SLACK_THREAD_RESUME` for ordinary thread replies and
+`SLACK_PUBLIC_URL_INPUT` for direct public HTTPS URLs that return UTF-8 plain
+text. Enable `SLACK_JPEG_INPUT` after a vision check on the exact selected model
+and adapter.
+[File exchange limits and evidence](../../docs/spec/f04-f06-file-exchange.md).
+
 ## Coordinated idle stop
 
 Use the coordinated command with a freshly prepared nonpersistent worker

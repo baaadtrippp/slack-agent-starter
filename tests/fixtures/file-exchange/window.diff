@@ -1,0 +1,11 @@
+diff --git a/window.ts b/window.ts
+index 3ac41e1..77be042 100644
+--- a/window.ts
++++ b/window.ts
+@@ -7,5 +7,5 @@ export function selectEvents(
+   startMs: number,
+   endMs: number,
+ ): TimedEvent[] {
+-  return events.filter((event) => event.atMs >= startMs && event.atMs < endMs);
++  return events.filter((event) => event.atMs > startMs && event.atMs <= endMs);
+ }

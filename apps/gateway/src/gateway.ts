@@ -14,16 +14,20 @@ import { Chat, ConsoleLogger, emoji } from 'chat';
 import type { StateAdapter } from 'chat';
 import { z } from 'zod';
 import {
+  MAX_RETAINED_INPUTS,
+  MAX_SLACK_INPUT_FILES,
   WORKER_FAILURE_REPLY,
   workerCallbackSchema,
   workerResultSchema,
 } from '../../../packages/contracts/src/index.js';
 import type {
+  ArtifactFormat,
+  StagedSource,
   WorkerJob,
   WorkerResult,
 } from '../../../packages/contracts/src/index.js';
 import { fetchPublicText } from './public-url.js';
-import { downloadSlackFile } from './slack-file.js';
+import { downloadSlackFile, selectSlackFileKind } from './slack-file.js';
 import {
   loadThreadContext,
   slackAttachmentMetadata,
@@ -37,6 +41,8 @@ export type GatewayConfig = {
   channelIds: string[];
   origin: string;
   threadResume?: boolean;
+  fileExchange?: boolean;
+  jpegInput?: boolean;
   csvInput?: boolean;
   pdfInput?: boolean;
   pngInput?: boolean;
@@ -50,9 +56,13 @@ type GatewayOptions = {
   store: RunStore;
   dispatch: (
     job: WorkerJob,
-    stagedInput?: Buffer,
+    stagedInputs?: Buffer[],
   ) => Promise<void | 'worker-unavailable' | 'input-staging-failed'>;
-  collectCsv?: (runId: string, target: SandboxTarget) => Promise<Buffer>;
+  collectArtifact?: (
+    runId: string,
+    target: SandboxTarget,
+    format?: ArtifactFormat,
+  ) => Promise<Buffer>;
   isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>;
   schedule: (task: () => Promise<void>) => void;
   now?: () => number;
@@ -92,13 +102,10 @@ export const RECOVERED_REPLY =
 export const WORKER_UNAVAILABLE_REPLY =
   'The worker is unavailable. Your message was not submitted. Mention me again when the worker is ready.';
 
-const INPUT_STAGING_FAILURE_REPLY = {
-  csv: 'The CSV could not be staged. Mention me again with the file to retry.',
-  pdf: 'The PDF could not be staged. Mention me again with the file to retry.',
-  png: 'The PNG could not be staged. Mention me again with the file to retry.',
-  publicUrl:
-    'The public URL text could not be staged. Mention me again with the link to retry.',
-};
+const INPUT_STAGING_FAILURE_REPLY =
+  'The inputs could not be staged. Resend the message with its files and links to retry.';
+const UNSUPPORTED_FILE_REPLY =
+  'Attach a supported Slack-hosted UTF-8 text, Markdown, source, JSON, CSV, text-based PDF, or enabled image file.';
 const THREAD_CONTEXT_UNAVAILABLE_REPLY =
   'I could not read the earlier messages in this thread. Your request was not submitted. Mention me again in this thread to retry.';
 const PDF_UNREADABLE_REPLY =
@@ -122,7 +129,7 @@ const threadReplyEnvelope = z.object({
     user: z.string(),
     ts: z.string(),
     thread_ts: z.string(),
-    text: z.string(),
+    text: z.string().default(''),
   }),
 });
 
@@ -150,7 +157,7 @@ export function createGateway({
   state,
   store,
   dispatch,
-  collectCsv,
+  collectArtifact,
   isSandboxStopped,
   schedule,
   now = Date.now,
@@ -289,7 +296,11 @@ export function createGateway({
     }
   }
 
-  async function publish(run: RunRecord, result: WorkerResult, csv?: Buffer) {
+  async function publish(
+    run: RunRecord,
+    result: WorkerResult,
+    artifact?: Buffer,
+  ) {
     let messageId: string | undefined;
     let threadId: string;
     let publishingStatus: Promise<void> | undefined;
@@ -329,12 +340,20 @@ export function createGateway({
     if (result.artifact) {
       const attachmentStatus = renderStatus(run.runId);
       const thread = bot.thread(threadId);
+      const format = result.artifact.format ?? 'csv';
+      const filename = 'result.' + format;
+      const mimeType =
+        format === 'csv'
+          ? 'text/csv'
+          : format === 'md'
+            ? 'text/markdown'
+            : 'text/plain';
       let artifactPublication: 'uploaded' | 'failed';
       try {
-        if (!csv) throw new Error('Generated CSV was unavailable');
+        if (!artifact) throw new Error('Generated file was unavailable');
         const upload = await slack.postMessage(threadId, {
           markdown: '',
-          files: [{ data: csv, filename: 'result.csv', mimeType: 'text/csv' }],
+          files: [{ data: artifact, filename, mimeType }],
         });
         const receipt = z.object({
           uploadedFileIds: z.tuple([z.string().min(1)]),
@@ -345,8 +364,8 @@ export function createGateway({
         console.info(
           JSON.stringify({
             runId: run.runId,
-            phase: 'csv_uploaded',
-            bytes: csv.length,
+            phase: 'artifact_uploaded',
+            bytes: artifact.length,
           }),
         );
       } catch {
@@ -354,13 +373,15 @@ export function createGateway({
         console.error(
           JSON.stringify({
             runId: run.runId,
-            phase: 'csv_attachment_unconfirmed',
-            category: csv ? 'slack_upload' : 'artifact_unavailable',
+            phase: 'artifact_attachment_unconfirmed',
+            category: artifact ? 'slack_upload' : 'artifact_unavailable',
           }),
         );
         await thread
           .post(
-            'I could not confirm the CSV attachment. The text result is above.',
+            'I could not confirm the ' +
+              filename +
+              ' attachment. The text result is above.',
           )
           .catch(() => {});
       }
@@ -467,13 +488,16 @@ export function createGateway({
     const rawEvent = input.raw;
     const attachedFiles = rawEvent?.files;
     const hasFiles = Array.isArray(attachedFiles) && attachedFiles.length > 0;
-    const fileInputEnabled =
-      config.csvInput || config.pdfInput || config.pngInput;
+    const enabledFiles = {
+      csv: config.fileExchange || config.csvInput,
+      pdf: config.fileExchange || config.pdfInput,
+      png: config.fileExchange || config.pngInput,
+      jpeg: config.jpegInput,
+      text: config.fileExchange,
+    };
+    const fileInputEnabled = Object.values(enabledFiles).some(Boolean);
     const fileShare =
-      fileInputEnabled &&
-      mention &&
-      rawEvent?.subtype === 'file_share' &&
-      hasFiles;
+      fileInputEnabled && rawEvent?.subtype === 'file_share' && hasFiles;
     if (
       input.teamId !== config.workspaceId ||
       !config.channelIds.includes(input.channelId) ||
@@ -486,13 +510,13 @@ export function createGateway({
       !/^\d{10}\.\d{6}$/.test(input.ts) ||
       !/^\d{10}\.\d{6}$/.test(input.threadTs) ||
       input.threadTs > input.ts ||
-      !input.text ||
+      (!input.text.trim() && !(hasFiles && fileInputEnabled && !mention)) ||
       input.text.length > 12_000 ||
       !rawEvent ||
       rawEvent.bot_id ||
       rawEvent.bot_profile ||
       (rawEvent.subtype !== undefined && !fileShare) ||
-      (!mention && fileInputEnabled && hasFiles) ||
+      (!mention && !fileInputEnabled && hasFiles) ||
       (rawEvent.user_team !== undefined &&
         rawEvent.user_team !== config.workspaceId) ||
       (rawEvent.team !== undefined && rawEvent.team !== config.workspaceId) ||
@@ -595,71 +619,59 @@ export function createGateway({
             );
           return;
         }
-        const urlText =
-          config.publicUrlInput && mention
-            ? input.text.replace(/```[\s\S]*?```|`[^`\n]*`/g, ' ')
-            : '';
-        const explicitIpv6Links = Array.from(
-          urlText.matchAll(
-            /<(https?:\/\/(?:[^\s<>|/]+@)?\[[\da-f:.]+\][^\s<>|]*)(?:\|[^>]*)?>/gi,
-          ),
-          ([, url]) => unescapeSlackText(url!),
-        );
         const links = config.publicUrlInput
-          ? [
-              ...new Set([
-                ...(message?.links ?? []).map((link) =>
-                  unescapeSlackText(link.url),
-                ),
-                ...explicitIpv6Links,
-                ...(
-                  urlText
-                    .replace(/<[^>]*>/g, ' ')
-                    .match(
-                      /https?:\/\/(?:[^\s<>|/]+@)?\[[\da-f:.]+\][^\s<>|]*/gi,
-                    ) ?? []
-                ).map((url) =>
-                  unescapeSlackText(url).replace(/[.,;:!?)"']+$/g, ''),
-                ),
-              ]),
-            ]
+          ? currentMessageLinks(input.text)
           : [];
         const publicUrl = links[0];
-        if (links.length > 1 || (publicUrl && hasFiles)) {
+        if (links.length > 1) {
           await publishNotice(
             run,
             'failed',
-            'Mention me with one public HTTPS link on its own for this test.',
+            'Send at most one public HTTPS link per message.',
           );
           return;
         }
 
-        const mimeType = hasFiles ? attachedFiles[0]?.mimetype : undefined;
-        const fileKind =
-          config.pngInput && mimeType === 'image/png'
-            ? 'png'
-            : config.pdfInput && mimeType === 'application/pdf'
-              ? 'pdf'
-              : config.csvInput
-                ? 'csv'
-                : config.pdfInput
-                  ? 'pdf'
-                  : 'png';
-        const inputKind = publicUrl
-          ? 'publicUrl'
-          : fileInputEnabled && hasFiles
-            ? fileKind
-            : undefined;
-        let stagedInput: Buffer | undefined;
-        if (inputKind) {
-          const source = publicUrl
-            ? await fetchPublicText(publicUrl)
-            : await downloadSlackFile(attachedFiles, config.botToken, fileKind);
-          if (typeof source === 'string') {
-            await publishNotice(run, 'failed', source);
+        const files = fileInputEnabled && hasFiles ? attachedFiles : [];
+        if (files.length > MAX_SLACK_INPUT_FILES) {
+          await publishNotice(
+            run,
+            'failed',
+            'Attach at most ' +
+              MAX_SLACK_INPUT_FILES +
+              ' Slack files per message.',
+          );
+          return;
+        }
+        const sources: StagedSource[] = [];
+        const downloads: Promise<Buffer | string>[] = [];
+        const selected = files.map((file: unknown) =>
+          selectSlackFileKind(file),
+        );
+        if (selected.some((kind) => !kind || !enabledFiles[kind])) {
+          await publishNotice(run, 'failed', UNSUPPORTED_FILE_REPLY);
+          return;
+        }
+        for (const [index, kind] of selected.entries()) {
+          if (kind)
+            downloads.push(
+              downloadSlackFile([files[index]], config.botToken, kind),
+            );
+        }
+        if (publicUrl) downloads.push(fetchPublicText(publicUrl));
+        const stagedInputs: Buffer[] = [];
+        for (const [index, value] of (await Promise.all(downloads)).entries()) {
+          if (typeof value === 'string') {
+            await publishNotice(run, 'failed', value);
             return;
           }
-          stagedInput = source;
+          const kind = selected[index] ?? 'publicUrl';
+          sources.push({
+            kind,
+            name: kind === 'publicUrl' ? 'Public URL text' : files[index].name,
+            sha256: digest(value),
+          });
+          stagedInputs.push(value);
         }
 
         let threadContext: WorkerJob['input']['threadContext'];
@@ -699,7 +711,9 @@ export function createGateway({
           conversationId: run.conversationId,
           generation: run.generation,
           input: {
-            text: input.text,
+            text: input.text.trim()
+              ? input.text
+              : 'Use the attached files for this thread.',
             senderId: run.senderId,
             workspaceId: run.workspaceId,
             channelId: run.channelId,
@@ -707,22 +721,26 @@ export function createGateway({
             messageTs: run.messageTs,
             ...(threadContext ? { threadContext } : {}),
             ...(attachments ? { attachments } : {}),
-            ...(inputKind ? { [inputKind]: true } : {}),
+            ...(sources.length ? { sources } : {}),
           },
           ...(run.session ? { session: run.session } : {}),
-          ...(config.csvOutput && !stagedInput ? { csvOutput: true } : {}),
+          ...(config.fileExchange
+            ? { artifactOutput: true }
+            : config.csvOutput
+              ? { csvOutput: true }
+              : {}),
           deadline: run.deadline,
           callbackUrl: `${config.origin}/api/worker/callback`,
           callbackToken,
         };
-        const dispatchOutcome = stagedInput
-          ? await dispatch(job, stagedInput)
+        const dispatchOutcome = stagedInputs.length
+          ? await dispatch(job, stagedInputs)
           : await dispatch(job);
         const notice =
           dispatchOutcome === 'worker-unavailable'
             ? WORKER_UNAVAILABLE_REPLY
-            : dispatchOutcome === 'input-staging-failed' && inputKind
-              ? INPUT_STAGING_FAILURE_REPLY[inputKind]
+            : dispatchOutcome === 'input-staging-failed'
+              ? INPUT_STAGING_FAILURE_REPLY
               : undefined;
         if (notice && !(await publishNotice(run, 'failed', notice)))
           console.error(
@@ -839,7 +857,11 @@ export function createGateway({
           ? PDF_UNREADABLE_REPLY
           : result.inputError === 'pdf_text_too_large'
             ? PDF_TEXT_TOO_LARGE_REPLY
-            : WORKER_FAILURE_REPLY;
+            : result.inputError === 'too_many_sources'
+              ? 'This thread has reached its ' +
+                MAX_RETAINED_INPUTS +
+                '-source limit. Start a new thread to add more files or links.'
+              : WORKER_FAILURE_REPLY;
     } else if (result.inputError) {
       return new Response(null, { status: 400 });
     }
@@ -861,29 +883,32 @@ export function createGateway({
         return new Response(null, { status: 409 });
     }
     const claimAt = now();
-    let csv: Buffer | undefined;
-    let csvLease: string | undefined;
+    let artifact: Buffer | undefined;
+    let artifactLease: string | undefined;
     if (
       result.artifact &&
-      config.csvOutput &&
-      collectCsv &&
+      (config.fileExchange ||
+        (config.csvOutput && (result.artifact.format ?? 'csv') === 'csv')) &&
+      collectArtifact &&
       run.execution &&
       result.session &&
       !run.result &&
       claimAt < run.deadline
     ) {
       // Keep retries from racing the collection or acknowledging it early.
-      csvLease = randomUUID();
+      artifactLease = randomUUID();
       const reserved = await store
-        .reserveCsvCollection(run.runId, csvLease)
+        .reserveArtifactCollection(run.runId, artifactLease)
         .catch(() => false);
       if (!reserved) return new Response(null, { status: 503 });
 
       // Collect before the worker can exit and release its Sandbox reservation.
-      const bytes = await collectCsv(run.runId, run.execution).catch(
-        () => undefined,
-      );
-      if (bytes && digest(bytes) === result.artifact.sha256) csv = bytes;
+      const bytes = await collectArtifact(
+        run.runId,
+        run.execution,
+        result.artifact.format,
+      ).catch(() => undefined);
+      if (bytes && digest(bytes) === result.artifact.sha256) artifact = bytes;
     }
     let claim;
     try {
@@ -892,7 +917,7 @@ export function createGateway({
         run.runId,
         result,
         claimAt,
-        csvLease,
+        artifactLease,
       );
     } catch {
       console.error(
@@ -910,11 +935,23 @@ export function createGateway({
     if (claim === 'expired') return new Response(null, { status: 410 });
     if (claim === 'retry') return new Response(null, { status: 503 });
     if (claim !== 'claimed') return new Response(null, { status: 409 });
-    schedule(() => publish(run, result, csv));
+    schedule(() => publish(run, result, artifact));
     return new Response(null, { status: 202 });
   }
 
   return { events, callback };
+}
+
+function currentMessageLinks(text: string) {
+  const plain = text.replace(/`{3}[\s\S]*?`{3}|`[^`\n]*`/g, ' ');
+  const explicit = Array.from(
+    plain.matchAll(/<(https?:\/\/[^\s<>|]+)(?:\|[^>]*)?>/gi),
+    ([, url]) => unescapeSlackText(url!),
+  );
+  const bare = (
+    plain.replace(/<[^>]*>/g, ' ').match(/https?:\/\/[^\s<>|]+/gi) ?? []
+  ).map((url) => unescapeSlackText(url).replace(/[.,;:!?)"']+$/g, ''));
+  return [...new Set([...explicit, ...bare])];
 }
 
 function digest(value: string | Buffer) {

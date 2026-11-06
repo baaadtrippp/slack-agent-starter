@@ -12,9 +12,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  collectRunCsv,
-  readRunCsv,
-} from '../apps/gateway/src/generated-csv.js';
+  collectRunArtifact,
+  readRunArtifact,
+} from '../apps/gateway/src/generated-artifact.js';
 
 const { sandboxGet } = vi.hoisted(() => ({ sandboxGet: vi.fn() }));
 vi.mock('../apps/gateway/node_modules/@vercel/sandbox/dist/index.js', () => ({
@@ -44,10 +44,18 @@ describe.skipIf(process.platform !== 'linux')('Sandbox result reader', () => {
 
   afterEach(() => rmSync(workspace, { recursive: true, force: true }));
 
-  function collect(id = runId) {
+  function collect(id = runId, format = 'csv') {
     return spawnSync(
       process.execPath,
-      ['--input-type=module', '-e', readRunCsv, '--', workspace, id],
+      [
+        '--input-type=module',
+        '-e',
+        readRunArtifact,
+        '--',
+        workspace,
+        id,
+        format,
+      ],
       { timeout: 2_000 },
     );
   }
@@ -59,9 +67,19 @@ describe.skipIf(process.platform !== 'linux')('Sandbox result reader', () => {
     expect(Buffer.from(read.stdout.toString(), 'base64')).toEqual(csv);
   });
 
+  it.each(['diff', 'md'])('collects exact UTF-8 bytes for %s', (format) => {
+    const content = Buffer.from('Synthetic artifact.\n');
+    writeFileSync(join(results, 'result.' + format), content);
+    const read = collect(runId, format);
+    expect(read.status).toBe(0);
+    expect(Buffer.from(read.stdout.toString(), 'base64')).toEqual(content);
+    expect(collect().status).toBe(1);
+  });
+
   it('does not search another run or accept traversal', () => {
     expect(collect().status).toBe(1);
     expect(collect('../' + otherRun).status).toBe(1);
+    expect(collect(runId, '../result.csv').status).toBe(1);
   });
 
   it.each([
@@ -98,7 +116,7 @@ it.each([
     });
 
     await expect(
-      collectRunCsv(runId, {
+      collectRunArtifact(runId, {
         sandboxName: 'test-worker',
         sessionId: 'test-session',
       }),

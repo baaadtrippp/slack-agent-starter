@@ -1,17 +1,22 @@
 import { Sandbox } from '@vercel/sandbox';
 import { isUtf8 } from 'node:buffer';
+import {
+  artifactFormats,
+  INPUT_BYTE_LIMIT,
+} from '../../../packages/contracts/src/index.js';
+import type { ArtifactFormat } from '../../../packages/contracts/src/index.js';
 import type { SandboxTarget } from './store.js';
-
-const maxBytes = 16 * 1024;
 
 // Run in the reserved Linux Sandbox. Open each component relative to an
 // already-open directory so replacing a path cannot redirect the next open.
-export const readRunCsv = `
+export const readRunArtifact = `
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 
 try {
-  const [workspace, runId] = process.argv.slice(1);
+  const [workspace, runId, format = 'csv'] = process.argv.slice(1);
   if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(runId))
+    throw new Error();
+  if (!${JSON.stringify(artifactFormats)}.includes(format))
     throw new Error();
   const { O_RDONLY, O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK } = constants;
   const dirFlags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW;
@@ -21,10 +26,10 @@ try {
     closeSync(dir);
     dir = next;
   }
-  const file = openSync('/proc/self/fd/' + dir + '/result.csv',
+  const file = openSync('/proc/self/fd/' + dir + '/result.' + format,
     O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
   closeSync(dir);
-  const limit = ${maxBytes};
+  const limit = ${INPUT_BYTE_LIMIT};
   const stat = fstatSync(file);
   if (!stat.isFile() || stat.nlink !== 1 || stat.size < 1 || stat.size > limit)
     throw new Error();
@@ -43,7 +48,11 @@ try {
 }
 `;
 
-export async function collectRunCsv(runId: string, target: SandboxTarget) {
+export async function collectRunArtifact(
+  runId: string,
+  target: SandboxTarget,
+  format: ArtifactFormat = 'csv',
+) {
   const signal = AbortSignal.timeout(5_000);
   const sandbox = await Sandbox.get({
     name: target.sandboxName,
@@ -56,18 +65,26 @@ export async function collectRunCsv(runId: string, target: SandboxTarget) {
 
   const command = await session.runCommand({
     cmd: 'node',
-    args: ['--input-type=module', '-e', readRunCsv, '--', '/workspace', runId],
+    args: [
+      '--input-type=module',
+      '-e',
+      readRunArtifact,
+      '--',
+      '/workspace',
+      runId,
+      format,
+    ],
     timeoutMs: 3_000,
     signal,
   });
   if (command.exitCode !== 0) throw new Error('Artifact is unavailable');
   const encoded = await command.stdout({ signal });
-  if (encoded.length > Math.ceil(maxBytes / 3) * 4)
+  if (encoded.length > Math.ceil(INPUT_BYTE_LIMIT / 3) * 4)
     throw new Error('Artifact transfer exceeded its limit');
   const bytes = Buffer.from(encoded, 'base64');
   if (
     bytes.length === 0 ||
-    bytes.length > maxBytes ||
+    bytes.length > INPUT_BYTE_LIMIT ||
     bytes.toString('base64') !== encoded ||
     !isUtf8(bytes)
   )

@@ -1,0 +1,22 @@
+Synthetic regional revenue comparison methodology
+
+Data definitions
+- period identifies a calendar quarter in YYYY-QN form.
+- region identifies the reporting region.
+- orders is a non-negative integer count. A blank value is missing.
+- revenue_cents is a non-negative integer amount in cents.
+
+Cleaning rules
+- Trim surrounding whitespace from period and region.
+- Retain a row with blank orders and mark its quality_flag as missing_orders.
+- Use an empty quality_flag for rows without a detected quality issue.
+- Preserve source row order.
+
+Period comparison
+- Use the two periods selected by the requester.
+- Sum revenue_cents for each selected period.
+- Subtract the earlier-period total from the later-period total.
+- Divide that difference by the earlier-period total and multiply by 100.
+- Round the percentage change to one decimal place.
+
+Cleaned output

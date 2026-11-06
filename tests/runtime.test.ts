@@ -391,6 +391,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
 
   const stagingOutcomes = [
     'staged CSV',
+    'staged CSV and URL',
     'staged URL',
     'staged bare IPv6 URL',
     'staged explicit IPv6 URL with period',
@@ -426,6 +427,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         explicitIpv6 || uppercaseExplicitIpv6
           ? url
           : 'https://example.com/source.txt?a=1&amp;b=2';
+      const isMixed = outcome === 'staged CSV and URL';
       const isUrl =
         outcome === 'staged URL' ||
         bareIpv6 ||
@@ -435,7 +437,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       const isPdf = outcome.startsWith('staged PDF');
       const isPng = outcome.startsWith('staged PNG');
       const kind = isUrl ? 'publicUrl' : isPng ? 'png' : isPdf ? 'pdf' : 'csv';
-      const isStaged = outcome === 'staged CSV' || isUrl || isPdf || isPng;
+      const isStaged =
+        isMixed || outcome === 'staged CSV' || isUrl || isPdf || isPng;
       const content = isUrl
         ? 'Synthetic text source.\n'
         : isPdf
@@ -446,7 +449,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
                 'base64',
               )
             : 'region,amount\nNorth,12\nSouth,18\n';
-      vi.stubEnv('SLACK_PUBLIC_URL_INPUT', isUrl ? '1' : '0');
+      vi.stubEnv('SLACK_PUBLIC_URL_INPUT', isUrl || isMixed ? '1' : '0');
+      vi.stubEnv('SLACK_FILE_EXCHANGE', isMixed ? '1' : '0');
       vi.stubEnv('SLACK_PDF_INPUT', isPdf || isPng ? '1' : '0');
       vi.stubEnv('SLACK_PNG_INPUT', isPng ? '1' : '0');
       vi.stubEnv(
@@ -455,7 +459,10 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           ? '1'
           : '0',
       );
-      fetchPublicText.mockResolvedValue(Buffer.from(content));
+      const urlBytes = Buffer.from(
+        isMixed ? 'Use the sum of amounts.\n' : content,
+      );
+      fetchPublicText.mockResolvedValue(urlBytes);
       const download = vi
         .fn<typeof fetch>()
         .mockResolvedValue(new Response(content));
@@ -516,6 +523,9 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
                 ),
               ],
               ...(isStaged ? { subtype: 'file_share' } : {}),
+              ...(isMixed
+                ? { text: '<@UBOT1> Compare the CSV with <' + slackUrl + '>.' }
+                : {}),
             },
       );
       let runId: string | undefined;
@@ -525,7 +535,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         expect((await handle(event.request, 'events')).status).toBe(200);
         expect(fetchPublicText).not.toHaveBeenCalled();
         await drainBackground();
-        if (isUrl) expect(fetchPublicText).toHaveBeenCalledExactlyOnceWith(url);
+        if (isUrl || isMixed)
+          expect(fetchPublicText).toHaveBeenCalledExactlyOnceWith(url);
         runId =
           (await observer
             .getClient()
@@ -534,17 +545,33 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         expect(writeFiles).toHaveBeenCalledExactlyOnceWith(
           [
             {
-              path: `/workspace/inputs/${runId}/${runId}/${isUrl ? 'source.txt' : `input.${kind}`}`,
+              path: '/workspace/inputs/' + runId + '/' + runId + '/input-0',
               content: Buffer.from(content),
               mode: 0o600,
             },
+            ...(isMixed
+              ? [
+                  {
+                    path:
+                      '/workspace/inputs/' + runId + '/' + runId + '/input-1',
+                    content: urlBytes,
+                    mode: 0o600,
+                  },
+                ]
+              : []),
           ],
           { signal: expect.anything() },
         );
         if (isStaged) {
           expect(runCommand).toHaveBeenCalledTimes(1);
           expect(stagedBeforeLaunch).toBe(true);
-          expect(job?.input).toHaveProperty(kind, true);
+          expect(job?.input.sources).toMatchObject([
+            { kind, sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+            ...(isMixed
+              ? [{ kind: 'publicUrl', name: 'Public URL text' }]
+              : []),
+          ]);
+          if (isMixed) expect(job?.artifactOutput).toBe(true);
           expect(postMessage).toHaveBeenCalledExactlyOnceWith(
             `slack:CTEST1:${event.ts}`,
             'Starting…',
@@ -559,7 +586,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           });
           expect(postMessage).toHaveBeenLastCalledWith(
             `slack:CTEST1:${event.ts}`,
-            'The CSV could not be staged. Mention me again with the file to retry.',
+            'The inputs could not be staged. Resend the message with its files and links to retry.',
           );
         }
       } finally {

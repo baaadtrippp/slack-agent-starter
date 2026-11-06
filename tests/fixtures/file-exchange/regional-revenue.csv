@@ -1,0 +1,7 @@
+period,region,orders,revenue_cents
+ 2026-Q1 , North ,10,12500
+2026-Q1,South,8,8800
+2026-Q1,West,,6900
+2026-Q2,North,12,15000
+2026-Q2,South,9,9900
+2026-Q2,West,7,7700
