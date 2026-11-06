@@ -1633,6 +1633,10 @@ describe.skipIf(!redisUrl)(
         'pdf_text_too_large',
         'The PDF contains more than 16 KiB of text for this test. Mention me again with a shorter PDF.',
       ],
+      [
+        'retained_sources_unavailable',
+        'I could not reopen an earlier file or link in this thread. Start a new message in the channel, mention me there, and include the files and links you still need.',
+      ],
     ] as const)(
       'posts a safe failure once for %s',
       async (inputError, notice) => {

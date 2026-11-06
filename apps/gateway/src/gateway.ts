@@ -112,6 +112,8 @@ const PDF_UNREADABLE_REPLY =
   'I could not extract readable text from this PDF. Mention me again with a small text-based PDF.';
 const PDF_TEXT_TOO_LARGE_REPLY =
   'The PDF contains more than 16 KiB of text for this test. Mention me again with a shorter PDF.';
+const RETAINED_SOURCES_UNAVAILABLE_REPLY =
+  'I could not reopen an earlier file or link in this thread. Start a new message in the channel, mention me there, and include the files and links you still need.';
 
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_EVENT_BYTES = 256 * 1024;
@@ -861,7 +863,9 @@ export function createGateway({
               ? 'This thread has reached its ' +
                 MAX_RETAINED_INPUTS +
                 '-source limit. Start a new thread to add more files or links.'
-              : WORKER_FAILURE_REPLY;
+              : result.inputError === 'retained_sources_unavailable'
+                ? RETAINED_SOURCES_UNAVAILABLE_REPLY
+                : WORKER_FAILURE_REPLY;
     } else if (result.inputError) {
       return new Response(null, { status: 400 });
     }

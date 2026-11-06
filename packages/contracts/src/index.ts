@@ -175,7 +175,12 @@ export const workerResultSchema = z
     sequence: z.union([z.literal(1), z.literal(2)]),
     type: z.enum(['completed', 'failed']),
     inputError: z
-      .enum(['pdf_unreadable', 'pdf_text_too_large', 'too_many_sources'])
+      .enum([
+        'pdf_unreadable',
+        'pdf_text_too_large',
+        'too_many_sources',
+        'retained_sources_unavailable',
+      ])
       .optional(),
     artifact: z
       .object({ sha256: checksum, format: z.enum(artifactFormats).optional() })

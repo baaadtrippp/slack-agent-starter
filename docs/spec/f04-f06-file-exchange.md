@@ -28,8 +28,10 @@ The gateway accepts up to five Slack attachments and one direct public HTTPS
 plain-text URL per current message. The byte limit is 16 KiB per source.
 Supported images have at most 1,024 pixels on each edge. The worker makes up to
 12 accepted sources available per saved session and allows one UTF-8 result file
-of up to 16 KiB per run. Start a new thread when the source limit is reached.
-O05 production limits and retention are open.
+of up to 16 KiB per run. Start a new thread when the source limit is reached. If
+an earlier source cannot be reopened, Hydra asks the user to start a new message
+and include the needed files and links. O05 production limits and retention are
+open.
 
 Deploy the gateway and worker together. PNG and JPEG are opt-in after vision
 checks on the selected model and adapter build. Conversations with native
@@ -117,7 +119,8 @@ in the deterministic suite and provider-only probes.
   both sources again and reported North's 46.0% share of Q2. The independent
   verifier checked the 15.6% increase, all six cleaned rows, and West's
   missing-orders flag. The 195-byte Slack download matched the Drive artifact
-  and the native tool and callback digests.
+  and the native tool and callback digests. The live run fetched the methodology
+  pinned to `cd23e9b`. The current fixture adds the explicit output columns.
 
 All five accepted inputs received one acknowledgement and one status that ended
 in Completed. The five recorded answer IDs matched the Slack messages. Native
@@ -129,16 +132,23 @@ coverage.
 
 ## Delivery state
 
-[PR #22](https://github.com/baaadtrippp/slack-agent-starter/pull/22) is a draft.
-The source revision passed 219 local tests, GitHub Quality CI, the repository
-and history secret scans, and Codex review. The first full CodeRabbit review
-prompted tighter image opt-ins, exact bare URL parsing, and file-write recovery.
-The revised source passed all 227 local tests and the controlled Pi probe,
-including the same-session source reads and CSV output. The revised source also
-passed GitHub Quality CI and Codex review. The full CodeRabbit re-review
-completed after a rate-limit delay. Its follow-up fixes initialize staged input
-cleanup before saved-session loading and reject a negative result in the fixture
-percentage check. These fixes followed the live runs.
+[PR #22](https://github.com/baaadtrippp/slack-agent-starter/pull/22) carries the
+file-exchange change. The source revision passed 219 local tests, GitHub Quality
+CI, the repository and history secret scans, and Codex review. The first full
+CodeRabbit review prompted tighter image opt-ins, exact bare URL parsing, and
+file-write recovery. The revised source passed all 227 local tests and the
+controlled Pi probe, including the same-session source reads and CSV output. The
+revised source also passed GitHub Quality CI and Codex review. The full
+CodeRabbit re-review completed after a rate-limit delay. Its follow-up fixes
+initialize staged input cleanup before saved-session loading and reject a
+negative result in the fixture percentage check. These fixes followed the live
+runs.
+
+A controlled worker regression reproduced a retained checksum failure. The
+worker returned a specific failure before a model call, removed the new turn's
+staged input, and preserved the earlier session and source files. The normal
+same-session read and artifact path also passed after restoring the synthetic
+fixture.
 
 Provider-only verification used temporary worker, seed, Drive, and snapshot
 resources. Cleanup verified their removal. The stable Slack route still resolved

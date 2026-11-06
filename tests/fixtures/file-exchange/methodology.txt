@@ -20,3 +20,7 @@ Period comparison
 - Round the percentage change to one decimal place.
 
 Cleaned output
+- Write CSV containing exactly these columns: period, region, orders,
+  revenue_cents, and quality_flag.
+- Column order may vary. Include each named column exactly once.
+- Emit the cleaned data rows in source row order.

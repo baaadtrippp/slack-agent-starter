@@ -113,8 +113,32 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
         workspace,
         workspace,
       ),
-    ).rejects.toMatchObject({ code: 'ENOENT' });
+    ).rejects.toThrow('Retained sources are unavailable');
   });
+
+  it.each(['missing', 'corrupt'])(
+    'reports a %s retained source separately from a current source failure',
+    async (failure) => {
+      const { path, source } = await stage(csv, 'csv', 'revenue.csv', 0);
+      if (failure === 'missing') await rm(path);
+      else await writeFile(path, Buffer.from(csv).fill('A'));
+
+      await expect(
+        prepareSources(
+          [source],
+          seed,
+          { runId: randomUUID() },
+          workspace,
+          workspace,
+        ),
+      ).rejects.toThrow('Retained sources are unavailable');
+      await expect(
+        prepareSources([source], seed, { runId: run }, workspace, workspace),
+      ).rejects.toThrow(
+        failure === 'missing' ? 'ENOENT' : 'Staged input checksum mismatch',
+      );
+    },
+  );
 
   it('rejects traversal in a retained catalog before resolving any input path', async () => {
     const { source } = await stage(csv, 'csv', 'revenue.csv', 0);

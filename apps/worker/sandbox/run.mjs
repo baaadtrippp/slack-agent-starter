@@ -55,6 +55,9 @@ const artifactFormats = [
   'css',
 ];
 const tooManySources = new Error('Too many sources in the session');
+const retainedSourcesUnavailable = new Error(
+  'Retained sources are unavailable',
+);
 const uncertainRun = new Error('Worker state requires inspection');
 const unreadablePdf = new Error('PDF text extraction failed');
 const oversizedPdfText = new Error('PDF text exceeds the test limit');
@@ -283,6 +286,8 @@ async function run(job, model, key) {
       if (error === unreadablePdf) result.inputError = 'pdf_unreadable';
       if (error === oversizedPdfText) result.inputError = 'pdf_text_too_large';
       if (error === tooManySources) result.inputError = 'too_many_sources';
+      if (error === retainedSourcesUnavailable)
+        result.inputError = 'retained_sources_unavailable';
       console.error(
         JSON.stringify({
           runId: job.runId,
@@ -403,7 +408,11 @@ async function prompt(job, model, key, root, reportWorking) {
         work,
       );
     const retained = job.session
-      ? await loadRetainedInputs(sessionRoot, job.session.revision)
+      ? await loadRetainedInputs(sessionRoot, job.session.revision).catch(
+          () => {
+            throw retainedSourcesUnavailable;
+          },
+        )
       : [];
     const sources = [...retained, ...current];
     if (sources.length > maxRetainedInputs) throw tooManySources;
@@ -775,14 +784,19 @@ export async function prepareSources(
   for (const [position, source] of sources.entries()) {
     const id = 'input-' + (position + 1);
     const current = source.runId === job.runId;
-    const bytes = await readBoundedFile(
-      workspace,
-      ['inputs', seedRunId, source.runId],
-      'input-' + source.index,
-      sourceByteLimit,
-    );
-    if (createHash('sha256').update(bytes).digest('hex') !== source.sha256)
-      throw new Error('Staged input checksum mismatch');
+    let bytes;
+    try {
+      bytes = await readBoundedFile(
+        workspace,
+        ['inputs', seedRunId, source.runId],
+        'input-' + source.index,
+        sourceByteLimit,
+      );
+      if (createHash('sha256').update(bytes).digest('hex') !== source.sha256)
+        throw new Error('Staged input checksum mismatch');
+    } catch (error) {
+      throw current ? error : retainedSourcesUnavailable;
+    }
     const mimeType = imageMimeTypes[source.kind];
     if (mimeType) {
       const data = bytes.toString('base64');
