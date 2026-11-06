@@ -51,3 +51,9 @@ verify deduplication, safe retry after a failed history read, and no history
 import on continuation. The worker checks exercise the actual prompt builder and
 exact-session verifier. They verify separation of earlier data from the current
 request, rejection of invalid context, and failure on a missing native session.
+
+## Rollout
+
+Use the worker build from this revision before routing Slack events to the new
+gateway. The gateway supplies the context in the job and the updated worker
+places it in Pi's first prompt.

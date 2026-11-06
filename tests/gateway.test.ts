@@ -23,7 +23,10 @@ import {
 import { RedisRunStore } from '../apps/gateway/src/store.js';
 import type { SandboxTarget } from '../apps/gateway/src/store.js';
 import { createFakeWorker } from '../apps/worker/src/fake-worker.js';
-import { WORKER_FAILURE_REPLY } from '../packages/contracts/src/index.js';
+import {
+  WORKER_FAILURE_REPLY,
+  workerJobSchema,
+} from '../packages/contracts/src/index.js';
 import type {
   WorkerJob,
   WorkerResult,
@@ -743,6 +746,67 @@ describe.skipIf(!redisUrl)(
       expect(independent.session).toBeUndefined();
       expect(independent.input).not.toHaveProperty('threadContext');
       expect(independent.conversationId).not.toBe(seed.conversationId);
+      expect(historyFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps safe attachment metadata for a file-only root and the distinct request', async () => {
+      const root = '1799999999.000001';
+      historyFetch.mockResolvedValueOnce(
+        Response.json({
+          ok: true,
+          messages: [
+            {
+              type: 'message',
+              ts: root,
+              user: 'UTEST1',
+              subtype: 'file_share',
+              files: Array.from({ length: 6 }, (_, i) => ({
+                id: `FHISTORY${i}`,
+                mimetype: 'invalid optional media type',
+                url_private: 'https://example.test/signed-history',
+              })),
+            },
+          ],
+        }),
+      );
+      const mention = envelope();
+      const gateway = harness();
+      await gateway.events(
+        signed({
+          ...mention,
+          event: {
+            ...mention.event,
+            thread_ts: root,
+            files: [
+              {
+                id: 'FREQUEST1',
+                mimetype: 'text/plain',
+                size: 0,
+                url_private_download: 'https://example.test/signed-request',
+              },
+            ],
+          },
+        }),
+      );
+      await gateway.flush();
+
+      const job = workerJobSchema.parse(gateway.dispatch.mock.calls[0]![0]);
+      expect(job.input.attachments).toEqual([
+        { id: 'FREQUEST1', mimeType: 'text/plain', size: 0 },
+      ]);
+      expect(job.input.threadContext).toEqual({
+        truncated: true,
+        messages: [
+          {
+            messageTs: root,
+            senderId: 'UTEST1',
+            text: '',
+            attachments: Array.from({ length: 5 }, (_, i) => ({
+              id: `FHISTORY${i}`,
+            })),
+          },
+        ],
+      });
       expect(historyFetch).toHaveBeenCalledTimes(1);
     });
 

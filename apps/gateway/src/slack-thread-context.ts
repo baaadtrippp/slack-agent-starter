@@ -15,9 +15,9 @@ import type { RunRecord } from './store.js';
 type ThreadContext = NonNullable<WorkerJob['input']['threadContext']>;
 
 const slackFile = z.object({
-  id: z.unknown(),
-  mimetype: z.unknown().optional(),
-  size: z.unknown().optional(),
+  id: slackAttachmentSchema.shape.id,
+  mimetype: slackAttachmentSchema.shape.mimeType.catch(undefined),
+  size: slackAttachmentSchema.shape.size.catch(undefined),
 });
 
 export function slackAttachmentMetadata(files: unknown) {
@@ -27,12 +27,14 @@ export function slackAttachmentMetadata(files: unknown) {
     .flatMap((raw: unknown) => {
       const file = slackFile.safeParse(raw);
       if (!file.success) return [];
-      const safe = slackAttachmentSchema.safeParse({
-        id: file.data.id,
-        mimeType: file.data.mimetype,
-        size: file.data.size,
-      });
-      return safe.success ? [safe.data] : [];
+      const { id, mimetype, size } = file.data;
+      return [
+        {
+          id,
+          ...(mimetype === undefined ? {} : { mimeType: mimetype }),
+          ...(size === undefined ? {} : { size }),
+        },
+      ];
     });
   return attachments.length ? attachments : undefined;
 }
@@ -41,7 +43,7 @@ const slackHistoryMessage = z.object({
   type: z.literal('message'),
   ts: slackTimestamp,
   thread_ts: slackTimestamp.optional(),
-  text: z.string(),
+  text: z.string().default(''),
   user: slackContextSender.optional(),
   bot_id: slackContextSender.optional(),
   team: z.string().optional(),
@@ -120,6 +122,11 @@ export async function loadThreadContext(
       { stream: true },
     );
     const attachments = slackAttachmentMetadata(row.files);
+    if (
+      Array.isArray(row.files) &&
+      row.files.length > MAX_SLACK_ATTACHMENT_METADATA
+    )
+      context.truncated = true;
     context.messages.push({
       messageTs: row.ts,
       senderId: row.senderId,
