@@ -1801,12 +1801,14 @@ describe.skipIf(!redisUrl)(
           pngInput: true,
           publicUrlInput: true,
         });
+        const root = '1799999999.000001';
         const base = envelope();
         const mention = file
           ? {
               ...base,
               event: {
                 ...base.event,
+                thread_ts: root,
                 subtype: 'file_share',
                 files: [file],
               },
@@ -1815,6 +1817,7 @@ describe.skipIf(!redisUrl)(
               ...base,
               event: {
                 ...base.event,
+                thread_ts: root,
                 text: '<@UBOT1> Read <https://127.0.0.1/source.txt>.',
               },
             };
@@ -1830,15 +1833,12 @@ describe.skipIf(!redisUrl)(
         expect(gateway.dispatch).not.toHaveBeenCalled();
         expect(
           SlackAdapter.prototype.postMessage,
-        ).toHaveBeenCalledExactlyOnceWith(
-          `slack:CTEST1:${mention.event.ts}`,
-          notice,
-        );
+        ).toHaveBeenCalledExactlyOnceWith(`slack:CTEST1:${root}`, notice);
         const run = await gateway.run();
         expect(await gateway.store.getRun(run!.runId)).toMatchObject({
           state: 'worker_failed',
         });
-        expect(await gateway.owner(mention.event.ts)).toBeNull();
+        expect(await gateway.owner(root)).toBeNull();
       },
     );
 

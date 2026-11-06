@@ -57,3 +57,6 @@ request, rejection of invalid context, and failure on a missing native session.
 Use the worker build from this revision before routing Slack events to the new
 gateway. The gateway supplies the context in the job and the updated worker
 places it in Pi's first prompt.
+
+The bot installation uses the public-channel `channels:history` grant for
+[Slack's thread replies method](https://docs.slack.dev/reference/methods/conversations.replies/).

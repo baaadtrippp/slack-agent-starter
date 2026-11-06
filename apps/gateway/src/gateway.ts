@@ -634,6 +634,34 @@ export function createGateway({
           return;
         }
 
+        const mimeType = hasFiles ? attachedFiles[0]?.mimetype : undefined;
+        const fileKind =
+          config.pngInput && mimeType === 'image/png'
+            ? 'png'
+            : config.pdfInput && mimeType === 'application/pdf'
+              ? 'pdf'
+              : config.csvInput
+                ? 'csv'
+                : config.pdfInput
+                  ? 'pdf'
+                  : 'png';
+        const inputKind = publicUrl
+          ? 'publicUrl'
+          : fileInputEnabled && hasFiles
+            ? fileKind
+            : undefined;
+        let stagedInput: Buffer | undefined;
+        if (inputKind) {
+          const source = publicUrl
+            ? await fetchPublicText(publicUrl)
+            : await downloadSlackFile(attachedFiles, config.botToken, fileKind);
+          if (typeof source === 'string') {
+            await publishNotice(run, 'failed', source);
+            return;
+          }
+          stagedInput = source;
+        }
+
         let threadContext: WorkerJob['input']['threadContext'];
         if (mention && !run.session && run.threadTs !== run.messageTs) {
           threadContext = await loadThreadContext(run, config.botToken).catch(
@@ -663,33 +691,6 @@ export function createGateway({
           );
         }
 
-        const mimeType = hasFiles ? attachedFiles[0]?.mimetype : undefined;
-        const fileKind =
-          config.pngInput && mimeType === 'image/png'
-            ? 'png'
-            : config.pdfInput && mimeType === 'application/pdf'
-              ? 'pdf'
-              : config.csvInput
-                ? 'csv'
-                : config.pdfInput
-                  ? 'pdf'
-                  : 'png';
-        const inputKind = publicUrl
-          ? 'publicUrl'
-          : fileInputEnabled && hasFiles
-            ? fileKind
-            : undefined;
-        let stagedInput: Buffer | undefined;
-        if (inputKind) {
-          const source = publicUrl
-            ? await fetchPublicText(publicUrl)
-            : await downloadSlackFile(attachedFiles, config.botToken, fileKind);
-          if (typeof source === 'string') {
-            await publishNotice(run, 'failed', source);
-            return;
-          }
-          stagedInput = source;
-        }
         const attachments = slackAttachmentMetadata(attachedFiles);
         acknowledgement = acknowledge(run);
         const job: WorkerJob = {
