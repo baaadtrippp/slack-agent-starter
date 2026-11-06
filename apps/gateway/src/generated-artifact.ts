@@ -48,6 +48,10 @@ try {
 }
 `;
 
+/**
+ * Collects a bounded UTF-8 result file from the run's reserved Sandbox session.
+ * Rejects stale sessions and invalid transfers before returning bytes.
+ */
 export async function collectRunArtifact(
   runId: string,
   target: SandboxTarget,

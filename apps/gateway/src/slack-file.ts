@@ -101,6 +101,7 @@ export function isSafeSlackFilename(name: string) {
   );
 }
 
+/** Classifies a Slack attachment using its filename and declared MIME type. */
 export function selectSlackFileKind(raw: unknown): SlackFileKind | undefined {
   const parsed = metadata.safeParse(raw);
   if (!parsed.success) return;
@@ -137,6 +138,10 @@ export function selectSlackFileKind(raw: unknown): SlackFileKind | undefined {
   return textName && textMime ? 'text' : undefined;
 }
 
+/**
+ * Downloads and validates one Slack-hosted attachment.
+ * Returns bytes on success or a refusal message suitable for the Slack thread.
+ */
 export async function downloadSlackFile(
   files: unknown,
   token: string,
