@@ -1,17 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import {
-  constants,
-  copyFile,
-  mkdir,
-  open,
-  readFile,
-  rm,
-} from 'node:fs/promises';
+import { constants, link, mkdir, open, readFile, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+const publishingRecord = new Error('Worker record is being published');
 
 if (
   process.argv[1] &&
@@ -267,6 +261,17 @@ function validateExit(exit, request) {
 }
 
 async function readRegularJson(path) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      return await readRegularJsonOnce(path);
+    } catch (error) {
+      if (error !== publishingRecord || attempt === 4) throw error;
+      await delay(10);
+    }
+  }
+}
+
+async function readRegularJsonOnce(path) {
   let file;
   try {
     file = await open(
@@ -279,11 +284,12 @@ async function readRegularJson(path) {
   }
   try {
     const stat = await file.stat();
+    if (stat.isFile() && stat.nlink === 2) throw publishingRecord;
     if (
       !stat.isFile() ||
       stat.nlink !== 1 ||
       stat.size < 1 ||
-      stat.size > 16 * 1024
+      stat.size > 32 * 1024
     )
       throw new Error('Invalid worker record');
     const source = await file.readFile('utf8');
@@ -298,17 +304,18 @@ async function readRegularJson(path) {
 async function createExclusiveJson(path, value) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = path + '.' + randomUUID() + '.tmp';
-  const file = await open(temporary, 'wx', 0o600);
+  let file;
   try {
+    file = await open(temporary, 'wx', 0o600);
     await file.writeFile(JSON.stringify(value));
     await file.sync();
-  } finally {
     await file.close();
-  }
-  try {
-    await copyFile(temporary, path, constants.COPYFILE_EXCL);
+    file = undefined;
+    await link(temporary, path);
+    await rm(temporary);
     await syncDirectory(dirname(path));
   } finally {
+    await file?.close().catch(() => {});
     await rm(temporary, { force: true });
   }
 }

@@ -136,9 +136,21 @@ describe('Sandbox run inspection', () => {
       runCommand,
     } as unknown as Session;
     expect(await inspectSandboxRun(run, true, replacement)).toEqual({
-      state: 'unknown',
+      state: 'stopped',
     });
-    expect(runCommand).not.toHaveBeenCalled();
+    expect(runCommand).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        env: {
+          HYDRA_CONTROL: JSON.stringify({
+            version: 1,
+            runId: run.runId,
+            generation: 1,
+            action: 'status',
+            environmentStopped: true,
+          }),
+        },
+      }),
+    );
     expect(await inspectSandboxRun(run, false, replacement)).toEqual({
       state: 'exited',
       result,

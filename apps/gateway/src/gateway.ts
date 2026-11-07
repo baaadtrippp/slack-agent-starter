@@ -68,6 +68,7 @@ export type WorkerInspection =
       state: 'exited';
       result?: WorkerResult;
       artifactTarget?: SandboxTarget;
+      artifactBytes?: Buffer;
       sessionRestored?: true;
     };
 
@@ -605,15 +606,15 @@ export function createGateway({
             validateResult(run, result)
           )
             return;
-          const artifact = supportsArtifact(result)
-            ? await readArtifact(
-                {
-                  runId: run.runId,
-                  execution: inspection.artifactTarget ?? run.execution,
-                },
-                result,
-              )
-            : undefined;
+          const bytes = inspection.artifactTarget
+            ? inspection.artifactBytes
+            : supportsArtifact(result)
+              ? await readArtifact(run, result)
+              : undefined;
+          const artifact =
+            bytes && digest(bytes) === result.artifact?.sha256
+              ? bytes
+              : undefined;
           if ((await store.claimSavedResult(run, result)) === 'claimed') {
             try {
               await publish(run, result, artifact);
@@ -635,7 +636,9 @@ export function createGateway({
     }
   }
 
-  async function recoverInterruptedRun(run: RunRecord) {
+  async function recoverInterruptedRun(
+    run: RunRecord,
+  ): Promise<string | false> {
     if (!run.blockedBy) return false;
     const previous = await store.getRun(run.blockedBy);
     if (
@@ -648,9 +651,18 @@ export function createGateway({
     if (previous.controls && config.controlsEnabled) {
       if (previous.deadline <= now()) await reconcileStatus(previous);
       const current = await store.getRun(previous.runId);
-      return (
-        current?.state === 'interrupted' && store.interruptRun(current, now())
-      );
+      if (
+        current?.state === 'interrupted' &&
+        (await store.interruptRun(current, now()))
+      )
+        return RECOVERED_REPLY;
+      if (
+        current &&
+        ['completed', 'worker_failed', 'stopped'].includes(current.state) &&
+        (await store.isThreadAvailable(current))
+      )
+        return 'The previous run ended. This message was not submitted. Please resend it.';
+      return false;
     }
     if (!isSandboxStopped || !previous.execution) return false;
     if (previous.state !== 'interrupted') {
@@ -667,7 +679,7 @@ export function createGateway({
       .interruptRun(previous, now())
       .catch(() => store.interruptRun(previous, now()));
     if (recovered) await renderStatus(previous.runId);
-    return recovered;
+    return recovered && RECOVERED_REPLY;
   }
 
   function channelEnabled(workspaceId: string, channelId: string) {
@@ -684,7 +696,7 @@ export function createGateway({
       enabledChannelIds: config.channelIds,
       channelId,
       userId,
-    }).catch(() => false);
+    });
   }
 
   async function feedback(event: SlackFeedbackReaction) {
@@ -757,7 +769,9 @@ export function createGateway({
         (action.actionId === STOP_ACTION_ID &&
           run.senderId !== action.userId &&
           !config.operatorIds?.includes(action.userId)) ||
-        !(await actorAllowed(action.channelId, action.userId))
+        !(await actorAllowed(action.channelId, action.userId).catch(
+          () => false,
+        ))
       )
         return;
       if (action.actionId === STATUS_ACTION_ID) {
@@ -822,9 +836,25 @@ export function createGateway({
     if (config.controlsEnabled && payload.kind === 'unsupported') {
       const reaction = parseSlackFeedbackReaction(payload.raw);
       if (reaction) {
-        if (channelEnabled(reaction.workspaceId, reaction.channelId))
-          schedule(() => feedback(reaction));
-        return new Response(null, { status: 200 });
+        if (!channelEnabled(reaction.workspaceId, reaction.channelId))
+          return new Response(null, { status: 200 });
+        // A transient lookup or Redis failure leaves the delivery retryable.
+        // Bound the entire receipt so Slack gets a response within its deadline.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const status = await Promise.race([
+            feedback(reaction).then(
+              () => 200,
+              () => 503,
+            ),
+            new Promise<number>((resolve) => {
+              timer = setTimeout(() => resolve(503), 2_200);
+            }),
+          ]);
+          return new Response(null, { status });
+        } finally {
+          clearTimeout(timer);
+        }
       }
     }
     const mention = payload.kind === 'app_mention';
@@ -954,13 +984,13 @@ export function createGateway({
                 phase: 'recovery_unavailable',
               }),
             );
-            return false;
+            return false as const;
           });
           if (
             !(await publishNotice(
               run,
               'completed',
-              recovered ? RECOVERED_REPLY : await busyMessage(run),
+              recovered || (await busyMessage(run)),
             ))
           )
             console.error(

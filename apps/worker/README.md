@@ -39,10 +39,11 @@ The gateway launches `node /tmp/hydra-worker/supervise.mjs` by Sandbox name with
 SDK detachment enabled. It invokes `control.mjs` separately with a
 run-and-generation-bound `HYDRA_CONTROL` value for Stop or Status. Stop sends
 cooperative cancellation to only that run. The supervisor reports exit only
-after the worker and its marked ACP/Pi descendants are gone and a resumed
-session matches its prior committed revision. If cancellation or session
-rollback cannot be confirmed, the run remains Stopping and retains ownership. It
-does not stop the shared Sandbox.
+after the worker and its marked ACP/Pi descendants are gone. A resumed session
+must match its prior committed revision or a completed checkpoint of the same
+native session. When Stop wins the publication race, the gateway can keep that
+checkpoint and suppress its Slack answer. If exit or session safety cannot be
+confirmed, the run remains Stopping and retains ownership.
 
 The SDK request signal bounds launch acknowledgement. The worker deadline and
 Sandbox lifetime bound execution. Status can recover the exact bounded Drive

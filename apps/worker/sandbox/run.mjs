@@ -166,7 +166,7 @@ if (
     delete process.env.OPENROUTER_API_KEY;
     const stop = new AbortController();
     const cancel = () => stop.abort(cancelledRun);
-    process.once('SIGTERM', cancel);
+    process.on('SIGTERM', cancel);
     try {
       const job = JSON.parse(HYDRA_JOB ?? 'null');
       await waitForSupervisor(job, stop.signal);

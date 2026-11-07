@@ -2,17 +2,20 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   constants,
-  copyFile,
+  link,
   mkdir,
   open,
   readFile,
   readdir,
+  rename,
   rm,
 } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+const publishingRecord = new Error('Worker record is being published');
 
 if (
   process.argv[1] &&
@@ -33,6 +36,8 @@ export async function supervise(
     workspace = '/workspace',
     worker = join(import.meta.dirname, 'run.mjs'),
     ready = sendReady,
+    readIdentity = processStartTicks,
+    descendantGraceMs = 2_000,
   } = {},
 ) {
   if (
@@ -53,13 +58,35 @@ export async function supervise(
     child.once('error', reject);
     child.once('close', (code, signal) => resolve({ code, signal }));
   });
+  let captured;
+  try {
+    captured = await Promise.race([
+      readIdentity(child.pid).then((startTicks) => ({ startTicks })),
+      closed.then((outcome) => ({ outcome })),
+    ]);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    return finishSupervision(job, {
+      outcome: await closed,
+      controls,
+      workspace,
+      descendantGraceMs,
+    });
+  }
+  if (captured.outcome)
+    return finishSupervision(job, {
+      outcome: captured.outcome,
+      controls,
+      workspace,
+      descendantGraceMs,
+    });
   const record = {
     version: 1,
     runId: job.runId,
     generation: job.generation,
     controlId: randomUUID(),
     pid: child.pid,
-    startTicks: await processStartTicks(child.pid),
+    startTicks: captured.startTicks,
   };
   try {
     await createExclusiveJson(join(controls, job.runId + '.json'), record);
@@ -86,12 +113,25 @@ export async function supervise(
     process.removeListener('SIGTERM', forward);
   }
 
-  if (await markedProcessesRemain(job.runId))
-    throw new Error('Worker descendants remain active');
-  const stop = await readMatchingJson(
-    join(controls, job.runId + '.stop.json'),
+  return finishSupervision(job, {
     record,
-  );
+    outcome,
+    readyError,
+    controls,
+    workspace,
+    descendantGraceMs,
+  });
+}
+
+async function finishSupervision(
+  job,
+  { record, outcome, readyError, controls, workspace, descendantGraceMs },
+) {
+  if (!(await waitForMarkedProcessesExit(job.runId, descendantGraceMs)))
+    throw new Error('Worker descendants remain active');
+  const stop = record
+    ? await readMatchingJson(join(controls, job.runId + '.stop.json'), record)
+    : undefined;
   if (readyError)
     console.error(
       JSON.stringify({ runId: job.runId, phase: 'worker_ready_failed' }),
@@ -116,7 +156,7 @@ export async function supervise(
     exitCode: outcome.code,
     signal: outcome.signal,
   };
-  await createExclusiveJson(join(runRoot, 'exit.json'), exit);
+  await writeAtomicJson(join(runRoot, 'exit.json'), exit);
   return exit;
 }
 
@@ -171,6 +211,16 @@ async function markedProcessesRemain(runId) {
       return true;
   }
   return false;
+}
+
+async function waitForMarkedProcessesExit(runId, graceMs) {
+  const deadline = Date.now() + graceMs;
+  while (await markedProcessesRemain(runId)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await delay(Math.min(50, remaining));
+  }
+  return true;
 }
 
 async function verifySessionState(job, result, stop, workspace) {
@@ -278,6 +328,17 @@ async function readMatchingJson(path, record) {
 }
 
 async function readRegularJson(path) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      return await readRegularJsonOnce(path);
+    } catch (error) {
+      if (error !== publishingRecord || attempt === 4) throw error;
+      await delay(10);
+    }
+  }
+}
+
+async function readRegularJsonOnce(path) {
   let file;
   try {
     file = await open(
@@ -290,11 +351,12 @@ async function readRegularJson(path) {
   }
   try {
     const stat = await file.stat();
+    if (stat.isFile() && stat.nlink === 2) throw publishingRecord;
     if (
       !stat.isFile() ||
       stat.nlink !== 1 ||
       stat.size < 1 ||
-      stat.size > 16 * 1024
+      stat.size > 32 * 1024
     )
       throw new Error('Invalid worker record');
     const source = await file.readFile('utf8');
@@ -309,17 +371,41 @@ async function readRegularJson(path) {
 async function createExclusiveJson(path, value) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = path + '.' + randomUUID() + '.tmp';
-  const file = await open(temporary, 'wx', 0o600);
+  let file;
   try {
+    file = await open(temporary, 'wx', 0o600);
     await file.writeFile(JSON.stringify(value));
     await file.sync();
-  } finally {
     await file.close();
-  }
-  try {
-    await copyFile(temporary, path, constants.COPYFILE_EXCL);
+    file = undefined;
+    await link(temporary, path);
+    await rm(temporary);
     await syncDirectory(dirname(path));
   } finally {
+    await file?.close().catch(() => {});
+    await rm(temporary, { force: true });
+  }
+}
+
+async function writeAtomicJson(path, value) {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  if ((await readRegularJson(path)) !== undefined) {
+    const error = new Error('Worker record already exists');
+    error.code = 'EEXIST';
+    throw error;
+  }
+  const temporary = path + '.' + randomUUID() + '.tmp';
+  let file;
+  try {
+    file = await open(temporary, 'wx', 0o600);
+    await file.writeFile(JSON.stringify(value));
+    await file.sync();
+    await file.close();
+    file = undefined;
+    await rename(temporary, path);
+    await syncDirectory(dirname(path));
+  } finally {
+    await file?.close().catch(() => {});
     await rm(temporary, { force: true });
   }
 }

@@ -91,6 +91,7 @@ export interface RunStore {
     run: RunRecord;
   }>;
   getRun(runId: string): Promise<RunRecord | null>;
+  isThreadAvailable(run: RunRecord): Promise<boolean>;
   claimProgress(
     progress: WorkerProgress,
     now: number,
@@ -480,7 +481,7 @@ if gate ~= 'open' then
   local stopping = cjson.decode(gate)
   return stopping.operationId == ARGV[1] and 'claimed' or 'stopping'
 end
-if redis.call('SCARD', KEYS[2]) ~= 0 then return 'active' end
+if redis.call('SCARD', KEYS[2]) ~= 0 or redis.call('EXISTS', KEYS[3]) ~= 0 then return 'active' end
 redis.call('SET', KEYS[1], cjson.encode({state = 'stopping', operationId = ARGV[1]}))
 return 'claimed'
 `;
@@ -660,6 +661,10 @@ export class RedisRunStore implements RunStore {
 
   private idleGateKey(target: SandboxTarget): string {
     return `${this.namespace}:idle:${target.sandboxName}:${target.sessionId}:gate`;
+  }
+
+  private recoveryKey(target: SandboxTarget) {
+    return this.idleGateKey(target) + ':read';
   }
 
   private activeDispatchKey(target: SandboxTarget): string {
@@ -1210,13 +1215,56 @@ export class RedisRunStore implements RunStore {
     );
   }
 
+  async reserveRecovery(target: SandboxTarget, token: string) {
+    return (
+      Number(
+        await this.execute((client) =>
+          client.eval(
+            `
+        if redis.call('GET', KEYS[1]) ~= 'open' then return 0 end
+        return redis.call('SET', KEYS[2], ARGV[1], 'NX', 'PX', 30000) and 1 or 0
+      `,
+            {
+              keys: [this.idleGateKey(target), this.recoveryKey(target)],
+              arguments: [token],
+            },
+          ),
+        ),
+      ) === 1
+    );
+  }
+
+  async finishRecovery(target: SandboxTarget, token: string) {
+    await this.execute((client) =>
+      client.eval(
+        `
+        if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('DEL', KEYS[1]) end
+        return 1
+      `,
+        { keys: [this.recoveryKey(target)], arguments: [token] },
+      ),
+    );
+  }
+
+  async isThreadAvailable(run: RunRecord) {
+    return (
+      (await this.execute((client) =>
+        client.get(this.ownerKey(run.workspaceId, run.channelId, run.threadTs)),
+      )) === null
+    );
+  }
+
   async claimIdleStop(
     target: SandboxTarget,
     operationId: string,
   ): Promise<'claimed' | 'active' | 'unenrolled' | 'stopping'> {
     return (await this.execute((client) =>
       client.eval(CLAIM_IDLE_STOP_SCRIPT, {
-        keys: [this.idleGateKey(target), this.activeDispatchKey(target)],
+        keys: [
+          this.idleGateKey(target),
+          this.activeDispatchKey(target),
+          this.recoveryKey(target),
+        ],
         arguments: [operationId],
       }),
     )) as 'claimed' | 'active' | 'unenrolled' | 'stopping';

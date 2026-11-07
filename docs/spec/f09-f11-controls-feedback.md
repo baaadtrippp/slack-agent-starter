@@ -66,9 +66,9 @@ The packaged worker files had these SHA-256 digests.
 
 | File            | SHA-256                                                            |
 | --------------- | ------------------------------------------------------------------ |
-| `run.mjs`       | `2862598e95ab5a24f7541794554f721d9305593bdaeae92947c223d872372bb7` |
-| `supervise.mjs` | `c6c105371047a9b920479c391509338035393e0d0970730014d62467d6fe783e` |
-| `control.mjs`   | `645f6103c3de3eb6cf37b15d640f8f2e42093952c4b4a972622dd343ebdb4c4c` |
+| `run.mjs`       | `4ac39ecfc548d58500761dc0114a97adaaa1b9aa752343e7a9169cd5423ae956` |
+| `supervise.mjs` | `f5de343d7f2941981fe10c9bac43f7f079eda2aa3ac17318450e54e95025a5d5` |
+| `control.mjs`   | `7ee89c20b95d8164b135c17b9171b5b1a12d8ab93e65057dd3c9ae9e5e8ca4f6` |
 
 ## Live Slack acceptance
 

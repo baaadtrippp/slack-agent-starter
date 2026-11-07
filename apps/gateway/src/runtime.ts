@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { createRedisState } from '@chat-adapter/state-redis';
 import { waitUntil } from '@vercel/functions';
 import { Sandbox } from '@vercel/sandbox';
@@ -147,7 +148,6 @@ function initialize() {
             if (exact?.state === 'exited' || exact?.state === 'stopped')
               return exact;
             if (
-              stop ||
               !managed ||
               !run.execution ||
               run.execution.sandboxName !== sandboxName ||
@@ -158,13 +158,58 @@ function initialize() {
             // Only inspect a replacement after the exact original session has
             // stopped and the existing lifecycle verifies the managed Drive.
             const session = await managed.getSession(Date.now() + 25_000);
-            return session
-              ? inspectSandboxRun(run, false, session)
-              : { state: 'unknown' };
+            if (!session) return { state: 'unknown' };
+            const target = {
+              sandboxName: run.execution.sandboxName,
+              sessionId: session.sessionId,
+            };
+            const token = randomUUID();
+            if (!(await store.reserveRecovery(target, token)))
+              return { state: 'unknown' };
+            try {
+              const inspection = await inspectSandboxRun(run, stop, session);
+              if (
+                inspection.state === 'exited' &&
+                inspection.result?.artifact
+              ) {
+                const format = inspection.result.artifact.format;
+                if (
+                  config.fileExchange ||
+                  (config.csvOutput && (format ?? 'csv') === 'csv')
+                ) {
+                  const bytes = await collectRunArtifact(
+                    run.runId,
+                    target,
+                    format,
+                  ).catch(() => undefined);
+                  if (bytes) return { ...inspection, artifactBytes: bytes };
+                }
+              }
+              return inspection;
+            } finally {
+              await store.finishRecovery(target, token);
+              if (!stop) await managed.stopIfIdle(session).catch(() => {});
+            }
           },
           releaseRecoveredWorker: async (run) => {
-            if (!run.execution) return;
-            await store.releaseDispatchTarget(run.runId, run.execution);
+            if (
+              !run.execution ||
+              !(await store.releaseDispatchTarget(run.runId, run.execution)) ||
+              !managed ||
+              run.execution.sandboxName !== sandboxName
+            )
+              return;
+            const sandbox = await Sandbox.get({
+              name: run.execution.sandboxName,
+              resume: false,
+              signal: AbortSignal.timeout(5_000),
+            }).catch(() => undefined);
+            const session = sandbox?.currentSession();
+            if (
+              session?.status === 'running' &&
+              session.sessionId === run.execution.sessionId
+            )
+              await managed.stopIfIdle(session).catch(() => {});
           },
         }
       : {}),

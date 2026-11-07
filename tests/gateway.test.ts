@@ -648,8 +648,15 @@ describe.skipIf(!redisUrl)(
           },
         },
       });
+      const removal = react('+1', 'reaction_removed', 5);
+      historyFetch.mockRejectedValueOnce(new Error('Synthetic Slack outage'));
+      expect((await gateway.events(removal.clone())).status).toBe(503);
+      expect(
+        (await gateway.store.getRun(run.runId))?.feedback?.UOTHER1?.thumbsup
+          ?.active,
+      ).toBe(true);
       for (const request of [
-        react('+1', 'reaction_removed', 5),
+        removal,
         react('-1', 'reaction_removed', 6),
         react('+1', 'reaction_added', 4),
         react('-1', 'reaction_removed', 6),

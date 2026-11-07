@@ -55,13 +55,15 @@ interactivity settings does not prove delivery, and the live Slack check remains
 a separate acceptance step.
 
 Stage the matching worker files described in the
-[worker setup](../../apps/worker/README.md). Before enabling
-`SLACK_CONTROLS_AND_FEEDBACK` on the candidate gateway, run
-`node apps/gateway/scripts/backfill-feedback-index.mjs` once with the target
-gateway's `REDIS_URL` in the environment. The script indexes existing confirmed
-final answers without altering their run records. It can be rerun safely. Set
-`SLACK_STOP_OPERATOR_IDS` only for the intended internal operators. Preserve the
-existing route and matching worker build for rollback during acceptance.
+[worker setup](../../apps/worker/README.md). Drain publications from the earlier
+gateway before the final backfill. Run
+`node apps/gateway/scripts/backfill-feedback-index.mjs` with the target
+gateway's `REDIS_URL` in the environment, then route new work to the candidate
+with `SLACK_CONTROLS_AND_FEEDBACK` enabled. The script indexes existing
+confirmed final answers without altering their run records and can be rerun
+safely. Set `SLACK_STOP_OPERATOR_IDS` only for the intended internal operators.
+Preserve the existing route and matching worker build for rollback during
+acceptance.
 
 ## Create an app shell
 

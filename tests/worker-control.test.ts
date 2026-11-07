@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -22,7 +30,24 @@ function request(runId: string, action: 'status' | 'cancel', generation = 1) {
   return { version: 1, runId, generation, action };
 }
 
+function paddedJson(value: object, size: number) {
+  const empty = JSON.stringify({ ...value, padding: '' });
+  return JSON.stringify({
+    ...value,
+    padding: 'x'.repeat(size - Buffer.byteLength(empty)),
+  });
+}
+
 describe('Sandbox worker control', () => {
+  test('keeps cooperative cancellation active through rollback', async () => {
+    const source = await readFile(
+      join(import.meta.dirname, '../apps/worker/sandbox/run.mjs'),
+      'utf8',
+    );
+    expect(source).toContain("process.on('SIGTERM', cancel)");
+    expect(source).not.toContain("process.once('SIGTERM', cancel)");
+  });
+
   test('recovers only a normal committed result', async () => {
     const paths = await fixture();
     const runId = randomUUID();
@@ -248,9 +273,24 @@ process.once('message', async (message) => {
           sessionSafe: 'uncommitted',
         }),
       ]);
-      await expect(supervised).resolves.toEqual(
+      const exit = await supervised;
+      expect(exit).toEqual(
         expect.objectContaining({ stopRequested: true, processesExited: true }),
       );
+      await expect(
+        Promise.all([
+          stat(join(paths.controls, runId + '.json')),
+          stat(join(paths.controls, runId + '.stop.json')),
+          stat(join(paths.workspace, 'runs', runId, 'exit.json')),
+        ]),
+      ).resolves.toEqual([
+        expect.objectContaining({ nlink: 1 }),
+        expect.objectContaining({ nlink: 1 }),
+        expect.objectContaining({ nlink: 1 }),
+      ]);
+      expect(
+        (await readdir(paths.controls)).some((name) => name.endsWith('.tmp')),
+      ).toBe(false);
       await rm(paths.root, { recursive: true, force: true });
     },
   );
@@ -329,6 +369,96 @@ process.once('message', async (message) => {
           state: 'exited',
           stopRequested: false,
         }),
+      );
+      await rm(paths.root, { recursive: true, force: true });
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
+    'proves a bounded result when the child exits before identity capture',
+    async () => {
+      const paths = await fixture();
+      const runId = randomUUID();
+      const run = join(paths.workspace, 'runs', runId);
+      const worker = join(paths.root, 'immediate-worker.mjs');
+      const result = {
+        version: 1,
+        runId,
+        generation: 1,
+        eventId: randomUUID(),
+        sequence: 2,
+        type: 'completed',
+        text: 'Synthetic answer',
+      };
+      await mkdir(run);
+      await writeFile(join(run, 'result.json'), paddedJson(result, 32 * 1024));
+      await writeFile(worker, 'process.exit(0)');
+      await expect(
+        supervise(
+          { version: 1, runId, generation: 1 },
+          {
+            ...paths,
+            worker,
+            readIdentity: async () => {
+              await delay(200);
+              return '1';
+            },
+          },
+        ),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          processesExited: true,
+          resultType: 'completed',
+          sessionSafe: 'committed',
+        }),
+      );
+      await expect(
+        controlRun(request(runId, 'status'), paths),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          state: 'exited',
+          result: expect.objectContaining(result),
+        }),
+      );
+      await writeFile(
+        join(run, 'result.json'),
+        paddedJson(result, 32 * 1024 + 1),
+      );
+      await expect(controlRun(request(runId, 'status'), paths)).rejects.toThrow(
+        'Invalid worker record',
+      );
+      await rm(paths.root, { recursive: true, force: true });
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
+    'waits briefly for a marked descendant to finish',
+    async () => {
+      const paths = await fixture();
+      const runId = randomUUID();
+      const worker = join(paths.root, 'draining-worker.mjs');
+      await writeFile(
+        worker,
+        `
+import { spawn } from 'node:child_process';
+
+process.once('message', () => {
+  spawn(process.execPath, ['-e', 'setTimeout(() => {}, 150)'], {
+    detached: true,
+    env: process.env,
+    stdio: 'ignore',
+  }).unref();
+  process.disconnect();
+});
+`,
+      );
+      await expect(
+        supervise(
+          { version: 1, runId, generation: 1 },
+          { ...paths, worker, descendantGraceMs: 500 },
+        ),
+      ).resolves.toEqual(
+        expect.objectContaining({ processesExited: true, exitCode: 0 }),
       );
       await rm(paths.root, { recursive: true, force: true });
     },

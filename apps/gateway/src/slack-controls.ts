@@ -209,7 +209,8 @@ export async function verifySlackActorAndChannel(options: {
   };
   async function actorIsMember() {
     let cursor: string | undefined;
-    for (let page = 0; page < 10; page += 1) {
+    const seenCursors = new Set<string>();
+    for (;;) {
       const raw = await callSlackApi<SlackApiResponse>(
         'conversations.members',
         {
@@ -222,10 +223,12 @@ export async function verifySlackActorAndChannel(options: {
       const parsed = membersSchema.safeParse(raw);
       if (!parsed.success) return false;
       if (parsed.data.members.includes(options.userId)) return true;
-      cursor = parsed.data.response_metadata?.next_cursor || undefined;
-      if (!cursor) return false;
+      const nextCursor =
+        parsed.data.response_metadata?.next_cursor || undefined;
+      if (!nextCursor || seenCursors.has(nextCursor)) return false;
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
     }
-    return false;
   }
   const [rawUser, rawChannel, member] = await Promise.all([
     callSlackApi<SlackApiResponse>(

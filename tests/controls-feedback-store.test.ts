@@ -124,6 +124,21 @@ describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
     ).toBe('busy');
   });
 
+  it('fences idle shutdown while replacement recovery reads the Drive', async () => {
+    const target = makeTarget();
+    const reader = randomUUID();
+    const stop = randomUUID();
+    expect(await store.enrollIdleSession(target)).toBe(true);
+    expect(await store.reserveRecovery(target, reader)).toBe(true);
+    expect(await store.reserveRecovery(target, randomUUID())).toBe(false);
+    expect(await store.claimIdleStop(target, stop)).toBe('active');
+    await store.finishRecovery(target, randomUUID());
+    expect(await store.claimIdleStop(target, stop)).toBe('active');
+    await store.finishRecovery(target, reader);
+    expect(await store.claimIdleStop(target, stop)).toBe('claimed');
+    expect(await store.reserveRecovery(target, reader)).toBe(false);
+  });
+
   it('clears a never-launched stopping target before confirming exit', async () => {
     const run = await admitControlledRun();
     const target = makeTarget();

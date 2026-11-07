@@ -270,7 +270,7 @@ describe('Slack controls and feedback boundary', () => {
     ).resolves.toBe(false);
   });
 
-  it('checks bounded membership pages for the actor', async () => {
+  it('finds the actor beyond the tenth membership page', async () => {
     let memberPage = 0;
     const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
       const method = new URL(String(input)).pathname.split('/').at(-1);
@@ -288,8 +288,10 @@ describe('Slack controls and feedback boundary', () => {
         memberPage += 1;
         return Response.json({
           ok: true,
-          members: memberPage === 2 ? ['UTEST1'] : ['UOTHER1'],
-          response_metadata: { next_cursor: memberPage === 1 ? 'next' : '' },
+          members: memberPage === 11 ? ['UTEST1'] : ['UOTHER1'],
+          response_metadata: {
+            next_cursor: memberPage < 11 ? `next-${memberPage}` : '',
+          },
         });
       }
       return Response.json({
@@ -313,6 +315,52 @@ describe('Slack controls and feedback boundary', () => {
         fetch,
       }),
     ).resolves.toBe(true);
+    expect(memberPage).toBe(11);
+  });
+
+  it('rejects a repeated membership cursor', async () => {
+    let memberPage = 0;
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const method = new URL(String(input)).pathname.split('/').at(-1);
+      if (method === 'users.info')
+        return Response.json({
+          ok: true,
+          user: {
+            id: 'UTEST1',
+            team_id: 'TTEST1',
+            deleted: false,
+            is_bot: false,
+          },
+        });
+      if (method === 'conversations.members') {
+        memberPage += 1;
+        return Response.json({
+          ok: true,
+          members: ['UOTHER1'],
+          response_metadata: { next_cursor: 'same-cursor' },
+        });
+      }
+      return Response.json({
+        ok: true,
+        channel: {
+          id: 'CTEST1',
+          is_channel: true,
+          is_private: false,
+          is_member: true,
+          is_ext_shared: false,
+        },
+      });
+    });
+    await expect(
+      verifySlackActorAndChannel({
+        botToken: 'synthetic',
+        workspaceId: 'TTEST1',
+        enabledChannelIds: ['CTEST1'],
+        channelId: 'CTEST1',
+        userId: 'UTEST1',
+        fetch,
+      }),
+    ).resolves.toBe(false);
     expect(memberPage).toBe(2);
   });
 });

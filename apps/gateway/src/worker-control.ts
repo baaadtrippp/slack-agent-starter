@@ -23,7 +23,7 @@ export async function inspectSandboxRun(
   recoverySession?: Session,
 ): Promise<WorkerInspection> {
   const target = run.execution;
-  if (!target || (stop && recoverySession)) return { state: 'unknown' };
+  if (!target) return { state: 'unknown' };
   const signal = AbortSignal.timeout(18_000);
   const session =
     recoverySession ??
@@ -48,7 +48,7 @@ export async function inspectSandboxRun(
         version: 1,
         runId: run.runId,
         generation: run.generation,
-        action: stop ? 'cancel' : 'status',
+        action: stop && !recoverySession ? 'cancel' : 'status',
         ...(recoverySession ? { environmentStopped: true } : {}),
       }),
     },
@@ -68,7 +68,7 @@ export async function inspectSandboxRun(
   const { stopRequested, sessionSafe, result } = proof.data;
   if (
     stop &&
-    stopRequested &&
+    (stopRequested || (recoverySession && sessionSafe === 'restored')) &&
     sessionSafe === (run.session ? 'restored' : 'uncommitted')
   )
     return { state: 'stopped' };
