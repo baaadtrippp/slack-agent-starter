@@ -59,6 +59,7 @@ const retainedSourcesUnavailable = new Error(
   'Retained sources are unavailable',
 );
 const uncertainRun = new Error('Worker state requires inspection');
+const cancelledRun = new Error('Worker run was cancelled');
 const unreadablePdf = new Error('PDF text extraction failed');
 const oversizedPdfText = new Error('PDF text exceeds the test limit');
 const bin = join(import.meta.dirname, 'node_modules', '.bin');
@@ -163,14 +164,61 @@ if (
     delete process.env.HYDRA_JOB;
     delete process.env.HYDRA_MODEL;
     delete process.env.OPENROUTER_API_KEY;
-    await run(JSON.parse(HYDRA_JOB ?? 'null'), HYDRA_MODEL, OPENROUTER_API_KEY);
-  } catch {
-    console.error('Sandbox worker could not complete its callback');
-    process.exitCode = 1;
+    const stop = new AbortController();
+    const cancel = () => stop.abort(cancelledRun);
+    process.on('SIGTERM', cancel);
+    try {
+      const job = JSON.parse(HYDRA_JOB ?? 'null');
+      await waitForSupervisor(job, stop.signal);
+      await run(job, HYDRA_MODEL, OPENROUTER_API_KEY, stop.signal);
+    } finally {
+      process.removeListener('SIGTERM', cancel);
+    }
+  } catch (error) {
+    if (error !== cancelledRun) {
+      console.error('Sandbox worker could not complete its callback');
+      process.exitCode = 1;
+    }
   }
 }
 
-async function run(job, model, key) {
+async function waitForSupervisor(job, stopSignal) {
+  if (typeof process.send !== 'function') return;
+  stopSignal.throwIfAborted();
+  let timer;
+  const abort = () => rejectReady(cancelledRun);
+  let rejectReady = () => {};
+  const stopped = new Promise((_, reject) => {
+    rejectReady = reject;
+    stopSignal.addEventListener('abort', abort, { once: true });
+  });
+  let message;
+  try {
+    message = await Promise.race([
+      new Promise((resolve) => process.once('message', resolve)),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Worker supervisor did not become ready')),
+          5_000,
+        );
+      }),
+      stopped,
+    ]);
+  } finally {
+    clearTimeout(timer);
+    stopSignal.removeEventListener('abort', abort);
+    if (process.connected) process.disconnect();
+  }
+  if (
+    message?.version !== 1 ||
+    message.type !== 'ready' ||
+    message.runId !== job?.runId ||
+    message.generation !== job?.generation
+  )
+    throw new Error('Invalid worker supervisor handshake');
+}
+
+async function run(job, model, key, stopSignal = new AbortController().signal) {
   if (
     job?.version !== 1 ||
     !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(job.runId) ||
@@ -228,6 +276,7 @@ async function run(job, model, key) {
     signal: AbortSignal.timeout(5000),
   });
   if (authorized.status !== 204) throw new Error('Run admission denied');
+  stopSignal.throwIfAborted();
 
   const root = join('/workspace/runs', job.runId);
   const manifest = join(root, 'result.json');
@@ -278,13 +327,20 @@ async function run(job, model, key) {
       return deliver(callback, headers, prior, job.deadline);
     }
     try {
-      const completed = await prompt(job, model, key, root, reportWorking);
+      const completed = await prompt(
+        job,
+        model,
+        key,
+        root,
+        reportWorking,
+        stopSignal,
+      );
       result.text = completed.text;
       result.session = completed.session;
       if (completed.artifact) result.artifact = completed.artifact;
       result.type = 'completed';
     } catch (error) {
-      if (error === uncertainRun) throw error;
+      if (error === uncertainRun || error === cancelledRun) throw error;
       if (error === unreadablePdf) result.inputError = 'pdf_unreadable';
       if (error === oversizedPdfText) result.inputError = 'pdf_text_too_large';
       if (error === tooManySources) result.inputError = 'too_many_sources';
@@ -310,7 +366,7 @@ async function run(job, model, key) {
       throw error;
     }
   } catch (error) {
-    if (error === uncertainRun) throw error;
+    if (error === uncertainRun || error === cancelledRun) throw error;
     console.error(
       JSON.stringify({ runId: job.runId, phase: 'drive_write_failed' }),
     );
@@ -368,7 +424,7 @@ async function deliver(callback, headers, result, deadline) {
   throw new Error('Callback was not accepted');
 }
 
-async function prompt(job, model, key, root, reportWorking) {
+async function prompt(job, model, key, root, reportWorking, stopSignal) {
   const { createAcpRuntime, createAgentRegistry, createRuntimeStore } =
     await import('acpx/runtime');
   const seedRunId = job.session?.seedRunId ?? job.runId;
@@ -401,6 +457,8 @@ async function prompt(job, model, key, root, reportWorking) {
   await mkdir(dirname(scratch), { recursive: true, mode: 0o700 });
   await mkdir(scratch, { mode: 0o700 });
   try {
+    const supervised = process.env.HYDRA_RUN_ID === job.runId;
+    if (supervised) await writeRollbackOwner(scratch, job);
     if (job.session)
       before = await verifySavedSession(
         job.session,
@@ -409,6 +467,8 @@ async function prompt(job, model, key, root, reportWorking) {
         scratch,
         work,
       );
+    if (supervised && before)
+      await writeRollbackCheckpoint(scratch, job, before);
     const retained = job.session
       ? await loadRetainedInputs(
           sessionRoot,
@@ -468,7 +528,10 @@ async function prompt(job, model, key, root, reportWorking) {
     const timeoutMs =
       job.deadline - Date.now() - callbackReserve - (outputTool ? 6_000 : 0);
     if (timeoutMs <= 0) throw new Error('Worker deadline expired');
-    const signal = AbortSignal.timeout(timeoutMs);
+    const signal = AbortSignal.any([
+      AbortSignal.timeout(timeoutMs),
+      stopSignal,
+    ]);
     const runtime = createAcpRuntime({
       cwd: work,
       sessionStore: createRuntimeStore({ stateDir: join(scratch, 'acpx') }),
@@ -483,6 +546,7 @@ async function prompt(job, model, key, root, reportWorking) {
         PI_ACP_PI_COMMAND: launcher,
         HYDRA_MODEL: model,
         OPENROUTER_API_KEY: key,
+        HYDRA_RUN_ID: job.runId,
         ...(sources.length ? { HYDRA_INPUT_DATA: inputData } : {}),
         ...(outputTool ? { HYDRA_RESULTS: results } : {}),
         ...(job.artifactOutput ? { HYDRA_ARTIFACT_OUTPUT: '1' } : {}),
@@ -516,7 +580,11 @@ async function prompt(job, model, key, root, reportWorking) {
         timeoutMs,
       });
       const outcome = await consumeTurn(turn, reportWorking);
+      if (stopSignal.aborted) throw cancelledRun;
       if (outcome.status !== 'completed') throw new Error('Pi turn failed');
+    } catch (error) {
+      if (stopSignal.aborted) throw cancelledRun;
+      throw error;
     } finally {
       try {
         await runtime.shutdown();
@@ -609,7 +677,10 @@ async function prompt(job, model, key, root, reportWorking) {
       const path = join(sessions, before.file);
       const temporary = `${path}.${job.runId}.tmp`;
       try {
-        await writeFile(temporary, before.source, { mode: 0o600, flag: 'wx' });
+        await writeFile(temporary, before.sourceBytes, {
+          mode: 0o600,
+          flag: 'wx',
+        });
         await rename(temporary, path);
       } catch {
         throw uncertainRun;
@@ -1019,6 +1090,73 @@ function messageText(message) {
     .join('');
 }
 
+export async function writeRollbackOwner(scratch, job) {
+  const owner = {
+    version: 1,
+    runId: job.runId,
+    generation: job.generation,
+    seedRunId: job.session?.seedRunId ?? job.runId,
+  };
+  await writeSyncedAtomic(
+    join(scratch, 'rollback-owner.json'),
+    JSON.stringify(owner),
+  );
+}
+
+export async function writeRollbackCheckpoint(scratch, job, before) {
+  const bytes = before.sourceBytes;
+  const owner = {
+    version: 1,
+    runId: job.runId,
+    generation: job.generation,
+    seedRunId: job.session.seedRunId,
+  };
+  await writeSyncedAtomic(join(scratch, 'rollback.jsonl'), bytes);
+  await writeSyncedAtomic(
+    join(scratch, 'rollback.json'),
+    JSON.stringify({
+      ...owner,
+      nativeId: before.nativeId,
+      adapterId: before.adapterId,
+      revision: before.records.length,
+      file: before.file,
+      size: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    }),
+  );
+}
+
+async function writeSyncedAtomic(path, value) {
+  const temporary = path + '.' + randomUUID() + '.tmp';
+  let published = false;
+  try {
+    const file = await open(
+      temporary,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      0o600,
+    );
+    try {
+      await file.writeFile(value);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await rename(temporary, path);
+    published = true;
+    const directory = await open(
+      dirname(path),
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+  } finally {
+    if (!published) await rm(temporary, { force: true }).catch(() => {});
+  }
+}
+
 export async function verifySavedSession(
   reference,
   sessions,
@@ -1063,7 +1201,10 @@ export async function verifySavedSession(
 async function readNativeSession(sessions) {
   const files = await Array.fromAsync(glob('**/*.jsonl', { cwd: sessions }));
   if (files.length !== 1) throw new Error('Missing exact native session');
-  const source = await readFile(join(sessions, files[0]), 'utf8');
+  const sourceBytes = await readFile(join(sessions, files[0]));
+  const source = sourceBytes.toString('utf8');
+  if (!sourceBytes.length || !Buffer.from(source).equals(sourceBytes))
+    throw new Error('Native session is not exact UTF-8');
   const records = source
     .trim()
     .split('\n')
@@ -1071,5 +1212,5 @@ async function readNativeSession(sessions) {
   const nativeId = records[0]?.type === 'session' ? records[0].id : undefined;
   if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(nativeId ?? ''))
     throw new Error('Invalid native session ID');
-  return { file: files[0], nativeId, records, source };
+  return { file: files[0], nativeId, records, source, sourceBytes };
 }
