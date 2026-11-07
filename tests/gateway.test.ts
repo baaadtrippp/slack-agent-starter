@@ -20,8 +20,14 @@ import {
   STARTING_STATUS,
   WORKER_UNAVAILABLE_REPLY,
 } from '../apps/gateway/src/gateway.js';
+import type { WorkerInspection } from '../apps/gateway/src/gateway.js';
+import {
+  encodeControlValue,
+  STATUS_ACTION_ID,
+  STOP_ACTION_ID,
+} from '../apps/gateway/src/slack-controls.js';
 import { RedisRunStore } from '../apps/gateway/src/store.js';
-import type { SandboxTarget } from '../apps/gateway/src/store.js';
+import type { RunRecord, SandboxTarget } from '../apps/gateway/src/store.js';
 import { createFakeWorker } from '../apps/worker/src/fake-worker.js';
 import {
   WORKER_FAILURE_REPLY,
@@ -110,6 +116,10 @@ function harness(
   } = {},
   collectArtifact?: (runId: string, target: SandboxTarget) => Promise<Buffer>,
   progressUi = false,
+  controls?: {
+    inspectWorker: (run: RunRecord, stop: boolean) => Promise<WorkerInspection>;
+    operatorIds?: string[];
+  },
 ) {
   const clock = { now: initialTime };
   const tasks: Array<() => Promise<void>> = [];
@@ -135,12 +145,16 @@ function harness(
       origin: 'https://gateway.example',
       threadResume,
       ...inputConfig,
+      ...(controls
+        ? { controlsEnabled: true, operatorIds: controls.operatorIds ?? [] }
+        : {}),
     },
     state: sdkState,
     store,
     dispatch,
     ...(isSandboxStopped ? { isSandboxStopped } : {}),
     ...(collectArtifact ? { collectArtifact } : {}),
+    ...(controls ? { inspectWorker: controls.inspectWorker } : {}),
     schedule: (task) => tasks.push(task),
     now: () => clock.now,
   });
@@ -189,6 +203,108 @@ function progress(job: WorkerJob, eventId = randomUUID()) {
     sequence: 1 as const,
     type: 'working' as const,
   };
+}
+
+const statusTs = '1800000001.000001';
+const answerTs = '1800000002.000001';
+const controlNow = initialTime + 3_000;
+
+function interaction(
+  run: RunRecord,
+  actionId: string,
+  changes: {
+    user?: string;
+    generation?: number;
+    messageTs?: string;
+    threadTs?: string;
+    actionTs?: string;
+    secret?: string;
+    sentAt?: number;
+  } = {},
+) {
+  const user = changes.user ?? run.senderId;
+  const threadTs = changes.threadTs ?? run.threadTs;
+  const messageTs = changes.messageTs ?? statusTs;
+  const body = new URLSearchParams({
+    payload: JSON.stringify({
+      type: 'block_actions',
+      team: { id: run.workspaceId },
+      user: { id: user, team_id: run.workspaceId },
+      channel: { id: run.channelId },
+      container: {
+        type: 'message',
+        channel_id: run.channelId,
+        message_ts: messageTs,
+        thread_ts: threadTs,
+      },
+      message: { ts: messageTs, thread_ts: threadTs },
+      actions: [
+        {
+          type: 'button',
+          action_id: actionId,
+          action_ts: changes.actionTs ?? '1800000003.000000',
+          value: encodeControlValue({
+            version: 1,
+            runId: run.runId,
+            generation: changes.generation ?? run.generation,
+          }),
+        },
+      ],
+    }),
+  }).toString();
+  const seconds = String(Math.floor((changes.sentAt ?? controlNow) / 1_000));
+  const signature = createHmac('sha256', changes.secret ?? signingSecret)
+    .update(`v0:${seconds}:${body}`)
+    .digest('hex');
+  return new Request('https://gateway.example/api/slack/interactions', {
+    method: 'POST',
+    body,
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      'x-slack-request-timestamp': seconds,
+      'x-slack-signature': `v0=${signature}`,
+    },
+  });
+}
+
+function mockControlAccess() {
+  historyFetch.mockImplementation(async (url, options) => {
+    const method = String(url).split('/').at(-1);
+    const raw = String(options?.body);
+    const params = raw.startsWith('{')
+      ? (JSON.parse(raw) as Record<string, string>)
+      : Object.fromEntries(new URLSearchParams(raw));
+    if (method === 'users.info') {
+      return Response.json({
+        ok: true,
+        user: {
+          id: params.user,
+          team_id: params.user === 'UEXTERNAL' ? 'TOTHER1' : 'TTEST1',
+          is_bot: params.user === 'UBOT1',
+          deleted: false,
+        },
+      });
+    }
+    if (method === 'conversations.info') {
+      return Response.json({
+        ok: true,
+        channel: {
+          id: params.channel,
+          is_channel: true,
+          is_private: false,
+          is_member: true,
+          is_ext_shared: false,
+          is_pending_ext_shared: false,
+        },
+      });
+    }
+    if (method === 'conversations.members')
+      return Response.json({
+        ok: true,
+        members: ['UTEST1', 'UOTHER1', 'UOP1', 'UBOT1', 'UEXTERNAL'],
+      });
+    throw new Error('Unexpected Slack request');
+  });
 }
 
 function callback(body: unknown, token: string) {
@@ -240,6 +356,379 @@ describe.skipIf(!redisUrl)(
       for await (const keys of client.scanIterator({ MATCH: `${namespace}:*` }))
         if (keys.length > 0) await client.del(keys);
       await redis.disconnect();
+    });
+
+    async function startControlled(
+      inspectWorker: (
+        run: RunRecord,
+        stop: boolean,
+      ) => Promise<WorkerInspection>,
+      operatorIds: string[] = [],
+    ) {
+      mockControlAccess();
+      vi.mocked(SlackAdapter.prototype.postMessage)
+        .mockResolvedValueOnce({
+          id: statusTs,
+          threadId: 'slack:CTEST1:1800000000.000001',
+          raw: {},
+        })
+        .mockResolvedValue({
+          id: answerTs,
+          threadId: 'slack:CTEST1:1800000000.000001',
+          raw: {},
+        });
+      const gateway = harness(
+        createMockState(),
+        false,
+        undefined,
+        {},
+        undefined,
+        true,
+        { inspectWorker, operatorIds },
+      );
+      const target = { sandboxName: 'test-sandbox', sessionId: 'test-session' };
+      gateway.dispatch.mockImplementationOnce(async (job) => {
+        expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+          'recorded',
+        );
+      });
+      const event = envelope();
+      expect((await gateway.events(signed(event))).status).toBe(200);
+      await gateway.flush();
+      gateway.clock.now = controlNow;
+      const admitted = (await gateway.run())!;
+      const job = gateway.dispatch.mock.calls[0]![0];
+      const run = (await gateway.store.getRun(admitted.runId))!;
+      expect(run).toMatchObject({
+        statusMessageId: statusTs,
+        execution: target,
+      });
+      return { gateway, run, job };
+    }
+
+    it('acknowledges signed controls before lookup and rejects forged, stale, and unauthorized Stop', async () => {
+      const inspect = vi.fn().mockResolvedValue({ state: 'stopped' });
+      const { gateway, run } = await startControlled(inspect, [
+        'UOP1',
+        'UEXTERNAL',
+      ]);
+      expect(
+        (
+          await gateway.interactions(
+            interaction(run, STOP_ACTION_ID, {
+              secret: 'wrong-signing-secret',
+            }),
+          )
+        ).status,
+      ).toBe(401);
+      expect(
+        (
+          await gateway.interactions(
+            interaction(run, STOP_ACTION_ID, {
+              sentAt: controlNow - 301_000,
+            }),
+          )
+        ).status,
+      ).toBe(401);
+      for (const changed of [
+        { generation: 2 },
+        { messageTs: answerTs },
+        { threadTs: '1800000000.000000' },
+        { user: 'UOTHER1' },
+        { user: 'UEXTERNAL' },
+        { actionTs: '1799999000.000000' },
+      ]) {
+        expect(
+          (
+            await gateway.interactions(
+              interaction(run, STOP_ACTION_ID, changed),
+            )
+          ).status,
+        ).toBe(200);
+        await gateway.flush();
+      }
+      expect(inspect).not.toHaveBeenCalled();
+      expect(await gateway.owner(run.threadTs)).toBe(run.runId);
+      expect(
+        (
+          await gateway.interactions(
+            interaction(run, STOP_ACTION_ID, { user: 'UOP1' }),
+          )
+        ).status,
+      ).toBe(200);
+      expect(inspect).not.toHaveBeenCalled();
+      await gateway.flush();
+      expect(inspect).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ runId: run.runId, state: 'stopping' }),
+        true,
+      );
+      expect(await gateway.store.getRun(run.runId)).toMatchObject({
+        state: 'stopped',
+      });
+    });
+
+    it('keeps ownership during Stop, fences terminal and progress callbacks, and leaves a newer owner alone', async () => {
+      const entered = Promise.withResolvers<void>();
+      const proof = Promise.withResolvers<WorkerInspection>();
+      const inspect = vi.fn(async () => {
+        entered.resolve();
+        return proof.promise;
+      });
+      const { gateway, run, job } = await startControlled(inspect);
+      expect(
+        (await gateway.interactions(interaction(run, STOP_ACTION_ID))).status,
+      ).toBe(200);
+      const stop = gateway.tasks.shift()!();
+      await entered.promise;
+      expect(await gateway.store.getRun(run.runId)).toMatchObject({
+        state: 'stopping',
+      });
+      expect(await gateway.owner(run.threadTs)).toBe(run.runId);
+      await vi.waitFor(() => {
+        expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
+          expect.any(String),
+          statusTs,
+          expect.objectContaining({
+            children: expect.arrayContaining([
+              expect.objectContaining({ content: 'Stopping…' }),
+            ]),
+          }),
+        );
+      });
+      const reply = result(job);
+      expect(
+        (await gateway.callback(callback(reply, job.callbackToken))).status,
+      ).toBe(409);
+      expect(
+        (await gateway.callback(callback(progress(job), job.callbackToken)))
+          .status,
+      ).toBe(409);
+      expect(
+        (await gateway.interactions(interaction(run, STOP_ACTION_ID))).status,
+      ).toBe(200);
+      await gateway.flush();
+      expect(inspect).toHaveBeenCalledTimes(1);
+      proof.resolve({ state: 'stopped' });
+      await stop;
+      expect(await gateway.owner(run.threadTs)).toBeNull();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
+
+      const later = envelope();
+      expect(
+        (
+          await gateway.events(
+            signed(
+              {
+                ...later,
+                event: { ...later.event, thread_ts: run.threadTs },
+              },
+              controlNow,
+            ),
+          )
+        ).status,
+      ).toBe(200);
+      const newer = await gateway.owner(run.threadTs);
+      expect(newer).toBeTruthy();
+      expect(newer).not.toBe(run.runId);
+      expect(
+        (await gateway.callback(callback(reply, job.callbackToken))).status,
+      ).toBe(409);
+      expect(await gateway.owner(run.threadTs)).toBe(newer);
+    });
+
+    it('lets terminal publication finish if its claim beats Stop', async () => {
+      const inspect = vi.fn().mockResolvedValue({ state: 'stopped' });
+      const { gateway, run, job } = await startControlled(inspect);
+      expect(
+        (await gateway.callback(callback(result(job), job.callbackToken)))
+          .status,
+      ).toBe(202);
+      expect(
+        (await gateway.interactions(interaction(run, STOP_ACTION_ID))).status,
+      ).toBe(200);
+      await gateway.flush();
+      expect(inspect).not.toHaveBeenCalled();
+      expect(await gateway.store.getRun(run.runId)).toMatchObject({
+        state: 'completed',
+        messageId: answerTs,
+      });
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('recovers an exited run’s saved answer with Status and does not submit a new run', async () => {
+      const inspect = vi.fn();
+      const { gateway, run, job } = await startControlled(inspect);
+      inspect.mockResolvedValue({ state: 'exited', result: result(job) });
+      gateway.clock.now = run.deadline + 1_000;
+      expect(
+        (
+          await gateway.interactions(
+            interaction(run, STATUS_ACTION_ID, {
+              user: 'UOTHER1',
+              actionTs: '1800000061.000000',
+              sentAt: gateway.clock.now,
+            }),
+          )
+        ).status,
+      ).toBe(200);
+      expect(inspect).not.toHaveBeenCalled();
+      await gateway.flush();
+      expect(inspect).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ runId: run.runId }),
+        false,
+      );
+      expect(await gateway.store.getRun(run.runId)).toMatchObject({
+        state: 'completed',
+        messageId: answerTs,
+      });
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(2);
+      expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
+        expect.any(String),
+        statusTs,
+        expect.objectContaining({
+          children: [
+            expect.objectContaining({
+              content: 'Completed. The result is in this thread.',
+            }),
+          ],
+        }),
+      );
+    });
+
+    it('records timestamp-ordered thumbs only on a final answer, without a worker dispatch', async () => {
+      const inspect = vi.fn();
+      const { gateway, run, job } = await startControlled(inspect);
+      const react = (
+        reaction: string,
+        type: string,
+        order: number,
+        ts = answerTs,
+        user = 'UOTHER1',
+      ) =>
+        signed(
+          {
+            type: 'event_callback',
+            team_id: run.workspaceId,
+            event_id: `Ev${randomUUID()}`,
+            is_ext_shared_channel: false,
+            event: {
+              type,
+              user,
+              reaction,
+              item_user: 'UBOT1',
+              item: { type: 'message', channel: run.channelId, ts },
+              event_ts: `1800000003.${String(order).padStart(6, '0')}`,
+            },
+          },
+          controlNow,
+        );
+
+      expect(
+        (await gateway.callback(callback(result(job), job.callbackToken)))
+          .status,
+      ).toBe(202);
+      await gateway.flush();
+      for (const request of [
+        react('+1', 'reaction_added', 1, run.messageTs),
+        react('+1', 'reaction_added', 1, statusTs),
+        react('+1', 'reaction_added', 1, answerTs, 'UBOT1'),
+        react('+1', 'reaction_added', 1, answerTs, 'UEXTERNAL'),
+        react('+1', 'reaction_added', 2),
+        react('-1', 'reaction_added', 3),
+        react('+1', 'reaction_added', 2),
+      ])
+        expect((await gateway.events(request)).status).toBe(200);
+      await gateway.flush();
+      expect(await gateway.store.getRun(run.runId)).toMatchObject({
+        feedback: {
+          UOTHER1: {
+            thumbsup: { active: true, eventTs: '1800000003.000002' },
+            thumbsdown: { active: true, eventTs: '1800000003.000003' },
+          },
+        },
+      });
+      for (const request of [
+        react('+1', 'reaction_removed', 5),
+        react('-1', 'reaction_removed', 6),
+        react('+1', 'reaction_added', 4),
+        react('-1', 'reaction_removed', 6),
+      ])
+        expect((await gateway.events(request)).status).toBe(200);
+      await gateway.flush();
+      expect((await gateway.store.getRun(run.runId))?.feedback).toEqual({
+        UOTHER1: {
+          thumbsup: { active: false, eventTs: '1800000003.000005' },
+          thumbsdown: { active: false, eventTs: '1800000003.000006' },
+        },
+      });
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+      expect(inspect).not.toHaveBeenCalled();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('rechecks a reaction delivered between the Slack post and answer indexing', async () => {
+      const { gateway, run, job } = await startControlled(vi.fn());
+      const posted = Promise.withResolvers<void>();
+      const index = Promise.withResolvers<void>();
+      const missed = Promise.withResolvers<void>();
+      const complete = gateway.store.completePublication.bind(gateway.store);
+      const lookup = gateway.store.getPublishedAnswer.bind(gateway.store);
+      vi.spyOn(gateway.store, 'completePublication').mockImplementation(
+        async (...args) => {
+          posted.resolve();
+          await index.promise;
+          return complete(...args);
+        },
+      );
+      vi.spyOn(gateway.store, 'getPublishedAnswer').mockImplementation(
+        async (ref) => {
+          const published = await lookup(ref);
+          if (!published) missed.resolve();
+          return published;
+        },
+      );
+
+      expect(
+        (await gateway.callback(callback(result(job), job.callbackToken)))
+          .status,
+      ).toBe(202);
+      const publication = gateway.tasks.shift()!();
+      await posted.promise;
+      expect(
+        (
+          await gateway.events(
+            signed(
+              {
+                type: 'event_callback',
+                team_id: run.workspaceId,
+                event_id: 'EvEarlyReaction',
+                is_ext_shared_channel: false,
+                event: {
+                  type: 'reaction_added',
+                  user: 'UOTHER1',
+                  reaction: '+1',
+                  item: {
+                    type: 'message',
+                    channel: run.channelId,
+                    ts: answerTs,
+                  },
+                  event_ts: '1800000003.000001',
+                },
+              },
+              controlNow,
+            ),
+          )
+        ).status,
+      ).toBe(200);
+      const feedback = gateway.tasks.shift()!();
+      await missed.promise;
+      index.resolve();
+      await Promise.all([publication, feedback]);
+      expect((await gateway.store.getRun(run.runId))?.feedback).toMatchObject({
+        UOTHER1: { thumbsup: { active: true } },
+      });
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
     });
 
     it('returns a signed URL challenge without admitting work', async () => {

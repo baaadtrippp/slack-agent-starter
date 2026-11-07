@@ -39,11 +39,10 @@ receives only its own [`GATEWAY_ORIGIN`](../apps/worker/.env.example).
 
 Use `integrations/slack/milestone-1.yaml` for the first deployment: it requests
 only `app_mentions:read`, `chat:write`, and the `app_mention` event. Do not
-apply the broader `manifest.yaml` or proposed controls overlay for this slice.
-Configure both projects before enabling Vercel builds. The main gateway project
-is ready for an executable build after the repository checks pass. Keep the
-temporary worker deployment separate and replace it when milestone 2 adds the Pi
-worker.
+apply a later manifest to the first tracer. Configure both projects before
+enabling Vercel builds. The main gateway project is ready for an executable
+build after the repository checks pass. Keep the temporary worker deployment
+separate and replace it when milestone 2 adds the Pi worker.
 
 ## 2. Vercel Sandbox and Drive
 
@@ -100,10 +99,10 @@ References: [Upstash Redis](https://upstash.com/docs/redis) and
 ## 4. Slack app
 
 The files under `integrations/slack/` include a minimal milestone-1 manifest,
-the broader future-v1 manifest, and a separate proposed controls overlay. Use
-the milestone-1 manifest only for the initial public test channel. O01 permits
-internal channel members and rejects external or Slack Connect users. Private
-channels and DMs are disabled in this slice.
+the broader future-v1 manifest, and a complete F09/F11 public-channel manifest.
+Use the milestone-1 manifest for the first tracer. O01 permits internal channel
+members and rejects external or Slack Connect users. Private channels and DMs
+are disabled in this slice.
 
 An optional blank app shell may be created before the gateway exists. It needs
 only an app display name and target workspace; leave it uninstalled, with event
@@ -128,6 +127,12 @@ After the gateway endpoint exists, complete the milestone-1 app configuration:
 Request-URL verification and live event delivery require a real gateway
 endpoint. Record those as live application evidence rather than treating
 manifest validation as an end-to-end test.
+
+For F09/F11, stage matching gateway and worker builds, then use the
+[controls and feedback manifest](../integrations/slack/f09-f11-controls-feedback.yaml)
+in the authorized public channel. See the
+[Slack setup steps](../integrations/slack/README.md) for the event and
+interaction URLs, added scopes, and reinstall procedure.
 
 References:
 [Slack app manifests](https://docs.slack.dev/reference/app-manifest/),

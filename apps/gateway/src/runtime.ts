@@ -8,6 +8,7 @@ import { createGateway } from './gateway.js';
 import { createManagedWorker } from './managed-worker.js';
 import { RedisRunStore } from './store.js';
 import type { SandboxTarget } from './store.js';
+import { inspectSandboxRun } from './worker-control.js';
 
 let gateway: ReturnType<typeof createGateway> | undefined;
 
@@ -64,7 +65,20 @@ function initialize() {
     .map((id) => id.trim());
   if (channelIds.some((id) => !/^C[A-Z0-9]+$/.test(id)))
     throw new Error('Invalid enabled channel configuration');
+  const controlsEnabled =
+    worker.kind === 'sandbox' &&
+    process.env.SLACK_CONTROLS_AND_FEEDBACK === '1';
+  const operatorIds =
+    process.env.SLACK_STOP_OPERATOR_IDS?.split(',')
+      .map((id) => id.trim())
+      .filter(Boolean) ?? [];
+  if (
+    operatorIds.some((id) => !/^[UW][A-Z0-9]+$/.test(id) || id === 'USLACKBOT')
+  )
+    throw new Error('Invalid Stop operator configuration');
   const config = {
+    controlsEnabled,
+    operatorIds,
     signingSecret: required('SLACK_SIGNING_SECRET'),
     botToken: required('SLACK_BOT_TOKEN'),
     workspaceId: required('SLACK_WORKSPACE_ID'),
@@ -110,7 +124,12 @@ function initialize() {
   const managed =
     sandboxName && managedDrive && managedSeed
       ? createManagedWorker(
-          { sandboxName, driveName: managedDrive, seedId: managedSeed },
+          {
+            sandboxName,
+            driveName: managedDrive,
+            seedId: managedSeed,
+            controlsEnabled,
+          },
           store,
         )
       : undefined;
@@ -119,6 +138,36 @@ function initialize() {
     state,
     store,
     ...(worker.kind === 'sandbox' ? { isSandboxStopped } : {}),
+    ...(controlsEnabled
+      ? {
+          inspectWorker: async (run, stop) => {
+            const exact = await inspectSandboxRun(run, stop).catch(
+              () => undefined,
+            );
+            if (exact?.state === 'exited' || exact?.state === 'stopped')
+              return exact;
+            if (
+              stop ||
+              !managed ||
+              !run.execution ||
+              run.execution.sandboxName !== sandboxName ||
+              !(await isSandboxStopped(run.execution))
+            )
+              return { state: 'unknown' };
+
+            // Only inspect a replacement after the exact original session has
+            // stopped and the existing lifecycle verifies the managed Drive.
+            const session = await managed.getSession(Date.now() + 25_000);
+            return session
+              ? inspectSandboxRun(run, false, session)
+              : { state: 'unknown' };
+          },
+          releaseRecoveredWorker: async (run) => {
+            if (!run.execution) return;
+            await store.releaseDispatchTarget(run.runId, run.execution);
+          },
+        }
+      : {}),
     ...(config.csvOutput || config.fileExchange
       ? { collectArtifact: collectRunArtifact }
       : {}),
@@ -195,6 +244,14 @@ function initialize() {
             return 'input-staging-failed';
           }
         }
+        if (
+          controlsEnabled &&
+          (await store.getRun(job.runId))?.state === 'stopping'
+        ) {
+          // No provider launch has been attempted by this dispatch.
+          await releaseReservation(true);
+          return;
+        }
         const timeoutMs = job.deadline - Date.now();
         if (timeoutMs <= 0) {
           await releaseReservation(Boolean(stagedInputs));
@@ -206,7 +263,11 @@ function initialize() {
         }
         const command = await session.runCommand({
           cmd: 'node',
-          args: ['/tmp/hydra-worker/run.mjs'],
+          args: [
+            controlsEnabled
+              ? '/tmp/hydra-worker/supervise.mjs'
+              : '/tmp/hydra-worker/run.mjs',
+          ],
           cwd: '/tmp/hydra-worker',
           env: {
             HYDRA_JOB: JSON.stringify(job),
@@ -223,9 +284,12 @@ function initialize() {
               Math.max(1, job.deadline - Date.now() + 1_000),
             ),
           });
+          const current = await store.getRun(job.runId);
+          if (current?.state === 'stopping' || current?.state === 'stopped')
+            return;
           if (
             finished.exitCode !== 0 ||
-            !(await store.getRun(job.runId))?.result ||
+            !current?.result ||
             !(await releaseReservation())
           )
             throw new Error('Worker exit was not recorded');
@@ -268,7 +332,10 @@ function initialize() {
   });
 }
 
-export async function handle(request: Request, route: 'events' | 'callback') {
+export async function handle(
+  request: Request,
+  route: 'events' | 'interactions' | 'callback',
+) {
   try {
     gateway ??= initialize();
     return await gateway[route](request);

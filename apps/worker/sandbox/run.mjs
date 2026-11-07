@@ -59,6 +59,7 @@ const retainedSourcesUnavailable = new Error(
   'Retained sources are unavailable',
 );
 const uncertainRun = new Error('Worker state requires inspection');
+const cancelledRun = new Error('Worker run was cancelled');
 const unreadablePdf = new Error('PDF text extraction failed');
 const oversizedPdfText = new Error('PDF text exceeds the test limit');
 const bin = join(import.meta.dirname, 'node_modules', '.bin');
@@ -163,14 +164,28 @@ if (
     delete process.env.HYDRA_JOB;
     delete process.env.HYDRA_MODEL;
     delete process.env.OPENROUTER_API_KEY;
-    await run(JSON.parse(HYDRA_JOB ?? 'null'), HYDRA_MODEL, OPENROUTER_API_KEY);
-  } catch {
-    console.error('Sandbox worker could not complete its callback');
-    process.exitCode = 1;
+    const stop = new AbortController();
+    const cancel = () => stop.abort(cancelledRun);
+    process.once('SIGTERM', cancel);
+    try {
+      await run(
+        JSON.parse(HYDRA_JOB ?? 'null'),
+        HYDRA_MODEL,
+        OPENROUTER_API_KEY,
+        stop.signal,
+      );
+    } finally {
+      process.removeListener('SIGTERM', cancel);
+    }
+  } catch (error) {
+    if (error !== cancelledRun) {
+      console.error('Sandbox worker could not complete its callback');
+      process.exitCode = 1;
+    }
   }
 }
 
-async function run(job, model, key) {
+async function run(job, model, key, stopSignal = new AbortController().signal) {
   if (
     job?.version !== 1 ||
     !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(job.runId) ||
@@ -228,6 +243,7 @@ async function run(job, model, key) {
     signal: AbortSignal.timeout(5000),
   });
   if (authorized.status !== 204) throw new Error('Run admission denied');
+  stopSignal.throwIfAborted();
 
   const root = join('/workspace/runs', job.runId);
   const manifest = join(root, 'result.json');
@@ -278,13 +294,20 @@ async function run(job, model, key) {
       return deliver(callback, headers, prior, job.deadline);
     }
     try {
-      const completed = await prompt(job, model, key, root, reportWorking);
+      const completed = await prompt(
+        job,
+        model,
+        key,
+        root,
+        reportWorking,
+        stopSignal,
+      );
       result.text = completed.text;
       result.session = completed.session;
       if (completed.artifact) result.artifact = completed.artifact;
       result.type = 'completed';
     } catch (error) {
-      if (error === uncertainRun) throw error;
+      if (error === uncertainRun || error === cancelledRun) throw error;
       if (error === unreadablePdf) result.inputError = 'pdf_unreadable';
       if (error === oversizedPdfText) result.inputError = 'pdf_text_too_large';
       if (error === tooManySources) result.inputError = 'too_many_sources';
@@ -310,7 +333,7 @@ async function run(job, model, key) {
       throw error;
     }
   } catch (error) {
-    if (error === uncertainRun) throw error;
+    if (error === uncertainRun || error === cancelledRun) throw error;
     console.error(
       JSON.stringify({ runId: job.runId, phase: 'drive_write_failed' }),
     );
@@ -368,7 +391,7 @@ async function deliver(callback, headers, result, deadline) {
   throw new Error('Callback was not accepted');
 }
 
-async function prompt(job, model, key, root, reportWorking) {
+async function prompt(job, model, key, root, reportWorking, stopSignal) {
   const { createAcpRuntime, createAgentRegistry, createRuntimeStore } =
     await import('acpx/runtime');
   const seedRunId = job.session?.seedRunId ?? job.runId;
@@ -468,7 +491,10 @@ async function prompt(job, model, key, root, reportWorking) {
     const timeoutMs =
       job.deadline - Date.now() - callbackReserve - (outputTool ? 6_000 : 0);
     if (timeoutMs <= 0) throw new Error('Worker deadline expired');
-    const signal = AbortSignal.timeout(timeoutMs);
+    const signal = AbortSignal.any([
+      AbortSignal.timeout(timeoutMs),
+      stopSignal,
+    ]);
     const runtime = createAcpRuntime({
       cwd: work,
       sessionStore: createRuntimeStore({ stateDir: join(scratch, 'acpx') }),
@@ -483,6 +509,7 @@ async function prompt(job, model, key, root, reportWorking) {
         PI_ACP_PI_COMMAND: launcher,
         HYDRA_MODEL: model,
         OPENROUTER_API_KEY: key,
+        HYDRA_RUN_ID: job.runId,
         ...(sources.length ? { HYDRA_INPUT_DATA: inputData } : {}),
         ...(outputTool ? { HYDRA_RESULTS: results } : {}),
         ...(job.artifactOutput ? { HYDRA_ARTIFACT_OUTPUT: '1' } : {}),
@@ -516,7 +543,11 @@ async function prompt(job, model, key, root, reportWorking) {
         timeoutMs,
       });
       const outcome = await consumeTurn(turn, reportWorking);
+      if (stopSignal.aborted) throw cancelledRun;
       if (outcome.status !== 'completed') throw new Error('Pi turn failed');
+    } catch (error) {
+      if (stopSignal.aborted) throw cancelledRun;
+      throw error;
     } finally {
       try {
         await runtime.shutdown();

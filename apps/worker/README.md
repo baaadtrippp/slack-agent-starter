@@ -26,16 +26,29 @@ npm install --prefix /tmp/hydra-worker --no-audit --no-fund --ignore-scripts \
   --save-exact acpx@0.21.1 pi-acp@0.0.34 @earendil-works/pi-coding-agent@1.5.0
 ```
 
-Copy [`sandbox/run.mjs`](sandbox/run.mjs) to `/tmp/hydra-worker/run.mjs`.
-Configure the Sandbox firewall for the gateway origin and OpenRouter. Inject the
-model key through the OpenRouter egress rule. The command receives only a
-placeholder key, the selected model and the admitted job. Keep the Sandbox's
-`NODE_EXTRA_CA_CERTS` available for Pi's TLS connection to the firewall.
+Copy [`sandbox/run.mjs`](sandbox/run.mjs),
+[`sandbox/supervise.mjs`](sandbox/supervise.mjs), and
+[`sandbox/control.mjs`](sandbox/control.mjs) into `/tmp/hydra-worker` with the
+same filenames. Configure the Sandbox firewall for the gateway origin and
+OpenRouter. Inject the model key through the OpenRouter egress rule. The command
+receives only a placeholder key, the selected model and the admitted job. Keep
+the Sandbox's `NODE_EXTRA_CA_CERTS` available for Pi's TLS connection to the
+firewall.
 
-The gateway launches the command by Sandbox name with SDK detachment enabled.
+The gateway launches `node /tmp/hydra-worker/supervise.mjs` by Sandbox name with
+SDK detachment enabled. It invokes `control.mjs` separately with a
+run-and-generation-bound `HYDRA_CONTROL` value for Stop or Status. Stop sends
+cooperative cancellation to only that run. The supervisor reports exit only
+after the worker and its marked ACP/Pi descendants are gone and a resumed
+session matches its prior committed revision. If cancellation or session
+rollback cannot be confirmed, the run remains Stopping and retains ownership. It
+does not stop the shared Sandbox.
+
 The SDK request signal bounds launch acknowledgement. The worker deadline and
-Sandbox lifetime bound execution. If delivery is uncertain, inspect the run's
-Drive result manifest and gateway record before taking manual action.
+Sandbox lifetime bound execution. Status can recover the exact bounded Drive
+result after a normal worker exit or after the gateway has independently
+confirmed that exact Sandbox session stopped. If delivery is uncertain, inspect
+the run's Drive result manifest and gateway record before taking manual action.
 
 For the [text-based PDF tracer](../../docs/spec/milestone-11.md), prepare the
 startup seed with the distribution's security-maintained Poppler tools and
