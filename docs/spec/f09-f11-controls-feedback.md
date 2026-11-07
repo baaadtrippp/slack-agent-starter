@@ -31,7 +31,9 @@
   exercise requester and operator permissions, stale and forged clicks, one
   editable status, Stop racing publication, late callbacks, and Status recovery
   without dispatching a new turn. They also cover both thumbs directions and
-  removals on the final answer, with duplicate and older deliveries.
+  removals on the final answer, with duplicate and older deliveries. If a
+  reaction arrives during final publication, a short-lived pending entry becomes
+  feedback only when that exact message is indexed as the final answer.
 - Redis tests cover exact ownership, the native session checkpoint, answer
   indexing and historical backfill. Runtime tests reject wrong Sandbox sessions
   and incomplete exit evidence. Replacement inspection uses the same managed
@@ -45,13 +47,41 @@ fallback is still an acceptance gap.
 
 ## Provider evidence
 
-Record the disposable Sandbox test separately from any paid model or Slack
-delivery. The isolation check uses two actual worker processes and a controlled
-model fixture.
+A disposable Vercel Sandbox ran the pinned acpx, pi-acp, and Pi versions
+`0.21.1`, `0.0.34`, and `1.5.0` with one writable Drive. A loopback model
+fixture supplied responses while Sandbox egress was denied.
+
+- Two real Pi runs reported progress concurrently. Cooperative Stop ended only
+  the target. Its marked processes exited and it produced no terminal callback
+  or result. The peer remained active and completed once.
+- A second check stopped a resumed turn while its peer was active. The stopped
+  turn's prior native revision and file hash matched exactly, and the peer
+  completed. A fresh provider read confirmed that the Sandbox stayed running and
+  the writable Drive stayed attached.
+- The disposable Sandbox and Drive were removed and verified absent after the
+  check. The existing Slack route remained active. Live Slack and paid model
+  evidence are separate from this provider check.
+
+The packaged worker files had these SHA-256 digests.
+
+| File            | SHA-256                                                            |
+| --------------- | ------------------------------------------------------------------ |
+| `run.mjs`       | `2862598e95ab5a24f7541794554f721d9305593bdaeae92947c223d872372bb7` |
+| `supervise.mjs` | `c6c105371047a9b920479c391509338035393e0d0970730014d62467d6fe783e` |
+| `control.mjs`   | `645f6103c3de3eb6cf37b15d640f8f2e42093952c4b4a972622dd343ebdb4c4c` |
 
 ## Live Slack acceptance
 
-Validate and apply the complete public-channel manifest during the integrated
-acceptance window. Verify that a requester can stop one run, another eligible
-member can refresh Status, and thumbs additions and removals update only final
-answers. Include the F08 clarification and ordinary reply in that window.
+1. Stage matching gateway and worker builds and preserve the current route and
+   rollback builds. Validate and apply the complete public-channel manifest to
+   the existing app in the enabled internal channel.
+2. Start work in two threads. Have the requester stop one run and another
+   internal member refresh its existing status message. Verify that ownership
+   persists through `Stopping`, the target produces no late answer, and the
+   other run finishes on the shared Sandbox.
+3. Add and remove both thumbs on the other run's final answer. Check ordered
+   feedback in gateway state and confirm that it starts no worker. Verify that
+   the input and status messages have no feedback.
+4. Exercise the F08 fallback with a file-bearing clarification and an ordinary
+   reply that resumes the exact native session. Verify the final same-thread
+   answer and artifact in the integrated candidate.

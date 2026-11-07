@@ -32,6 +32,7 @@ export async function supervise(
     controls = '/tmp/hydra-worker-control',
     workspace = '/workspace',
     worker = join(import.meta.dirname, 'run.mjs'),
+    ready = sendReady,
   } = {},
 ) {
   if (
@@ -45,7 +46,7 @@ export async function supervise(
   const child = spawn(process.execPath, [worker], {
     detached: true,
     env: { ...process.env, HYDRA_RUN_ID: job.runId },
-    stdio: 'inherit',
+    stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
   });
   if (!child.pid) throw new Error('Worker process did not start');
   const closed = new Promise((resolve, reject) => {
@@ -67,6 +68,12 @@ export async function supervise(
     await closed;
     throw error;
   }
+  let readyError;
+  try {
+    await ready(child, job);
+  } catch (error) {
+    readyError = error;
+  }
 
   const forward = () => {
     void signalExact(record, job.runId, 'SIGTERM');
@@ -85,17 +92,17 @@ export async function supervise(
     join(controls, job.runId + '.stop.json'),
     record,
   );
+  if (readyError)
+    console.error(
+      JSON.stringify({ runId: job.runId, phase: 'worker_ready_failed' }),
+    );
   const runRoot = join(workspace, 'runs', job.runId);
   const result = await readWorkerResult(
     join(runRoot, 'result.json'),
     job.runId,
     job.generation,
   );
-  const sessionSafe = stop
-    ? job.session
-      ? await verifyStoppedSession(job, result, workspace)
-      : 'uncommitted'
-    : 'committed';
+  const sessionSafe = await verifySessionState(job, result, stop, workspace);
   const exit = {
     version: 1,
     runId: job.runId,
@@ -111,6 +118,20 @@ export async function supervise(
   };
   await createExclusiveJson(join(runRoot, 'exit.json'), exit);
   return exit;
+}
+
+async function sendReady(child, job) {
+  await new Promise((resolve, reject) => {
+    child.send(
+      {
+        version: 1,
+        type: 'ready',
+        runId: job.runId,
+        generation: job.generation,
+      },
+      (error) => (error ? reject(error) : resolve()),
+    );
+  });
 }
 
 async function signalExact(record, runId, signal) {
@@ -152,7 +173,13 @@ async function markedProcessesRemain(runId) {
   return false;
 }
 
-async function verifyStoppedSession(job, result, workspace) {
+async function verifySessionState(job, result, stop, workspace) {
+  if (!job.session) return stop ? 'uncommitted' : 'committed';
+  if (result?.type !== 'completed') {
+    await verifyCurrentSession(job.session, workspace);
+    return 'restored';
+  }
+  if (!stop) return 'committed';
   try {
     await verifyCurrentSession(job.session, workspace);
     return 'restored';

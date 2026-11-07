@@ -48,6 +48,10 @@ export async function controlRun(
   };
   let status = await inspect(request, paths);
   if (request.action === 'status') return status;
+  if (status.state === 'unknown') {
+    status = await waitForRegistration(request, paths, 500);
+    if (status.state === 'unknown') return status;
+  }
   if (status.state === 'exited') {
     if (status.stopRequested) return status;
     const control = await readRegularJson(paths.control);
@@ -56,8 +60,6 @@ export async function controlRun(
     await writeStop(paths.stop, control);
     return inspect(request, paths);
   }
-  if (status.state === 'unknown') return status;
-
   const control = await readRegularJson(paths.control);
   validateControl(control, request);
   await writeStop(paths.stop, control);
@@ -90,7 +92,10 @@ async function inspect(request, paths) {
       sessionSafe: exit.sessionSafe,
       processesExited: true,
     };
-    if (exit.sessionSafe === 'committed') {
+    if (
+      exit.sessionSafe === 'committed' ||
+      (exit.sessionSafe === 'restored' && !stopRequested)
+    ) {
       const result = await readRegularJson(paths.result);
       if (
         result &&
@@ -156,6 +161,16 @@ async function waitForExit(request, paths, timeoutMs) {
     const status = await inspect(request, paths);
     if (status.state === 'exited') return status;
     await delay(100);
+  }
+  return inspect(request, paths);
+}
+
+async function waitForRegistration(request, paths, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await delay(25);
+    const status = await inspect(request, paths);
+    if (status.state !== 'unknown') return status;
   }
   return inspect(request, paths);
 }

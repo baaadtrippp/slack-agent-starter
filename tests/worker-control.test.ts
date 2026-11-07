@@ -140,21 +140,87 @@ describe('Sandbox worker control', () => {
     await rm(paths.root, { recursive: true, force: true });
   });
 
+  test('recovers a failed resumed result from a restored session', async () => {
+    const paths = await fixture();
+    const runId = randomUUID();
+    const run = join(paths.workspace, 'runs', runId);
+    const result = {
+      version: 1,
+      runId,
+      generation: 1,
+      eventId: randomUUID(),
+      sequence: 2,
+      type: 'failed',
+      text: 'Synthetic failure',
+    };
+    await mkdir(run);
+    await writeFile(join(run, 'result.json'), JSON.stringify(result));
+    await writeFile(
+      join(run, 'exit.json'),
+      JSON.stringify({
+        version: 1,
+        runId,
+        generation: 1,
+        state: 'exited',
+        stopRequested: false,
+        forced: false,
+        processesExited: true,
+        sessionSafe: 'restored',
+        resultType: 'failed',
+      }),
+    );
+    await expect(controlRun(request(runId, 'status'), paths)).resolves.toEqual(
+      expect.objectContaining({ result }),
+    );
+    await rm(paths.root, { recursive: true, force: true });
+  });
+
+  test.skipIf(process.platform !== 'linux')(
+    'registers the exact control before releasing worker admission',
+    async () => {
+      const paths = await fixture();
+      const worker = join(paths.root, 'ready-worker.mjs');
+      await writeFile(
+        worker,
+        `
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+process.once('message', async (message) => {
+  assert.equal(message.type, 'ready');
+  const path = join(process.env.HYDRA_TEST_CONTROLS, message.runId + '.json');
+  const record = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(record.pid, process.pid);
+  assert.equal(record.runId, process.env.HYDRA_RUN_ID);
+  assert.equal(record.runId, message.runId);
+  assert.equal(record.generation, message.generation);
+  process.disconnect();
+});
+`,
+      );
+      const runId = randomUUID();
+      process.env.HYDRA_TEST_CONTROLS = paths.controls;
+      const supervised = supervise(
+        { version: 1, runId, generation: 1 },
+        { ...paths, worker },
+      );
+      delete process.env.HYDRA_TEST_CONTROLS;
+      await expect(supervised).resolves.toEqual(
+        expect.objectContaining({ exitCode: 0, processesExited: true }),
+      );
+      await rm(paths.root, { recursive: true, force: true });
+    },
+  );
+
   test.skipIf(process.platform !== 'linux')(
     'deduplicates cancellation and proves its marked child exited',
     async () => {
       const paths = await fixture();
       const worker = join(paths.root, 'held-worker.mjs');
-      const quote = String.fromCharCode(39);
       await writeFile(
         worker,
-        [
-          'process.once(',
-          quote,
-          'SIGTERM',
-          quote,
-          ',()=>process.exit(0));setInterval(()=>{},1000)',
-        ].join(''),
+        "process.once('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000);",
       );
       const runId = randomUUID();
       const supervised = supervise(
@@ -184,6 +250,85 @@ describe('Sandbox worker control', () => {
       ]);
       await expect(supervised).resolves.toEqual(
         expect.objectContaining({ stopRequested: true, processesExited: true }),
+      );
+      await rm(paths.root, { recursive: true, force: true });
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
+    'proves exit when Stop interrupts the ready handshake',
+    async () => {
+      const paths = await fixture();
+      const worker = join(paths.root, 'held-before-ready.mjs');
+      await writeFile(
+        worker,
+        "process.once('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000);",
+      );
+      const runId = randomUUID();
+      const readyStarted = Promise.withResolvers<void>();
+      const supervised = supervise(
+        { version: 1, runId, generation: 1 },
+        {
+          ...paths,
+          worker,
+          ready: async () => {
+            readyStarted.resolve();
+            await delay(50);
+            throw Object.assign(new Error('Synthetic IPC failure'), {
+              code: 'EPIPE',
+            });
+          },
+        },
+      );
+      await readyStarted.promise;
+      const stopped = await controlRun(request(runId, 'cancel'), paths);
+      expect(stopped).toEqual(
+        expect.objectContaining({
+          state: 'exited',
+          stopRequested: true,
+          processesExited: true,
+        }),
+      );
+      await expect(supervised).resolves.toEqual(
+        expect.objectContaining({ state: 'exited', stopRequested: true }),
+      );
+      await rm(paths.root, { recursive: true, force: true });
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
+    'records a known exit after a ready failure without Stop',
+    async () => {
+      const paths = await fixture();
+      const worker = join(paths.root, 'exited-before-ready.mjs');
+      await writeFile(worker, 'setTimeout(()=>process.exit(0),20)');
+      const runId = randomUUID();
+      const supervised = supervise(
+        { version: 1, runId, generation: 1 },
+        {
+          ...paths,
+          worker,
+          ready: async () => {
+            await delay(50);
+            throw Object.assign(new Error('Synthetic IPC failure'), {
+              code: 'EPIPE',
+            });
+          },
+        },
+      );
+      await expect(supervised).resolves.toEqual(
+        expect.objectContaining({
+          state: 'exited',
+          stopRequested: false,
+          processesExited: true,
+          sessionSafe: 'committed',
+        }),
+      );
+      expect(await controlRun(request(runId, 'status'), paths)).toEqual(
+        expect.objectContaining({
+          state: 'exited',
+          stopRequested: false,
+        }),
       );
       await rm(paths.root, { recursive: true, force: true });
     },

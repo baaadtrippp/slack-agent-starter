@@ -12,7 +12,6 @@ import {
 } from '@chat-adapter/slack/webhook';
 import { Actions, Button, CardText, Chat, ConsoleLogger, emoji } from 'chat';
 import type { StateAdapter } from 'chat';
-import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import {
   MAX_RETAINED_INPUTS,
@@ -65,7 +64,12 @@ export type GatewayConfig = {
 export type WorkerInspection =
   | { state: 'unknown' }
   | { state: 'stopped'; completed?: WorkerResult }
-  | { state: 'exited'; result?: WorkerResult; artifactTarget?: SandboxTarget };
+  | {
+      state: 'exited';
+      result?: WorkerResult;
+      artifactTarget?: SandboxTarget;
+      sessionRestored?: true;
+    };
 
 type GatewayOptions = {
   config: GatewayConfig;
@@ -377,6 +381,15 @@ export function createGateway({
       await initializeBot();
       publishingStatus = renderStatus(run.runId);
       threadId = threadIdFor(run);
+      if (
+        config.controlsEnabled &&
+        run.kind === 'work' &&
+        result.type === 'completed'
+      ) {
+        await store
+          .openAnswerPublication(run.workspaceId, run.channelId)
+          .catch(() => {});
+      }
       const message = await bot.thread(threadId).post(result.text);
       if (
         !message.id ||
@@ -576,11 +589,14 @@ export function createGateway({
       }
       if (run.state !== 'accepted' && run.state !== 'dispatch_failed') return;
       let exited = !run.execution;
+      let sessionRestored = false;
       if (run.execution && inspectWorker) {
         const inspection = await inspectWorker(run, false).catch(
           () => undefined,
         );
         exited = inspection?.state === 'exited';
+        sessionRestored =
+          inspection?.state === 'exited' && inspection.sessionRestored === true;
         if (inspection?.state === 'exited' && inspection.result) {
           const result = inspection.result;
           if (
@@ -608,7 +624,12 @@ export function createGateway({
           return;
         }
       }
-      if (run.deadline <= now() && exited) await store.interruptRun(run, now());
+      if (
+        run.deadline <= now() &&
+        exited &&
+        (await store.interruptRun(run, now(), sessionRestored))
+      )
+        await releaseRecoveredWorker?.(run);
     } finally {
       await renderStatus(run.runId);
     }
@@ -672,13 +693,20 @@ export function createGateway({
       channelId: event.channelId,
       messageId: event.messageTs,
     };
-    let published = await store.getPublishedAnswer(answer);
-    if (!published) {
-      // Slack can deliver a click just after the post and before Redis indexes it.
-      await delay(250);
-      published = await store.getPublishedAnswer(answer);
+    const published = await store.getPublishedAnswer(answer);
+    let allowPending = false;
+    if (
+      !published &&
+      event.authorId &&
+      (await store.hasOpenAnswerPublication(event.workspaceId, event.channelId))
+    ) {
+      await initializeBot().catch(() => {});
+      allowPending = slack.botUserId === event.authorId;
     }
-    if (!published || !(await actorAllowed(event.channelId, event.userId)))
+    if (
+      (!published && !allowPending) ||
+      !(await actorAllowed(event.channelId, event.userId))
+    )
       return;
     await store.recordFeedback(
       answer,
@@ -686,6 +714,7 @@ export function createGateway({
       event.feedback === 'up' ? 'thumbsup' : 'thumbsdown',
       event.added ? 'added' : 'removed',
       event.eventTs,
+      allowPending,
     );
   }
 

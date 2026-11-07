@@ -168,12 +168,9 @@ if (
     const cancel = () => stop.abort(cancelledRun);
     process.once('SIGTERM', cancel);
     try {
-      await run(
-        JSON.parse(HYDRA_JOB ?? 'null'),
-        HYDRA_MODEL,
-        OPENROUTER_API_KEY,
-        stop.signal,
-      );
+      const job = JSON.parse(HYDRA_JOB ?? 'null');
+      await waitForSupervisor(job, stop.signal);
+      await run(job, HYDRA_MODEL, OPENROUTER_API_KEY, stop.signal);
     } finally {
       process.removeListener('SIGTERM', cancel);
     }
@@ -183,6 +180,42 @@ if (
       process.exitCode = 1;
     }
   }
+}
+
+async function waitForSupervisor(job, stopSignal) {
+  if (typeof process.send !== 'function') return;
+  stopSignal.throwIfAborted();
+  let timer;
+  const abort = () => rejectReady(cancelledRun);
+  let rejectReady = () => {};
+  const stopped = new Promise((_, reject) => {
+    rejectReady = reject;
+    stopSignal.addEventListener('abort', abort, { once: true });
+  });
+  let message;
+  try {
+    message = await Promise.race([
+      new Promise((resolve) => process.once('message', resolve)),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Worker supervisor did not become ready')),
+          5_000,
+        );
+      }),
+      stopped,
+    ]);
+  } finally {
+    clearTimeout(timer);
+    stopSignal.removeEventListener('abort', abort);
+    if (process.connected) process.disconnect();
+  }
+  if (
+    message?.version !== 1 ||
+    message.type !== 'ready' ||
+    message.runId !== job?.runId ||
+    message.generation !== job?.generation
+  )
+    throw new Error('Invalid worker supervisor handshake');
 }
 
 async function run(job, model, key, stopSignal = new AbortController().signal) {

@@ -82,10 +82,16 @@ export async function inspectSandboxRun(
     )
       return { state: 'stopped', completed: result };
   }
-  if (!stop && !stopRequested && sessionSafe === 'committed')
+  if (
+    !stop &&
+    !stopRequested &&
+    (sessionSafe === 'committed' ||
+      (sessionSafe === 'restored' && (!result || result.type === 'failed')))
+  )
     return {
       state: 'exited',
       ...(result ? { result } : {}),
+      ...(sessionSafe === 'restored' ? { sessionRestored: true } : {}),
       ...(recoverySession
         ? {
             artifactTarget: {

@@ -667,25 +667,19 @@ describe.skipIf(!redisUrl)(
       expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(2);
     });
 
-    it('rechecks a reaction delivered between the Slack post and answer indexing', async () => {
+    it('reconciles early feedback only when its exact message is indexed as the answer', async () => {
       const { gateway, run, job } = await startControlled(vi.fn());
+      vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
+        'UBOT1',
+      );
       const posted = Promise.withResolvers<void>();
       const index = Promise.withResolvers<void>();
-      const missed = Promise.withResolvers<void>();
       const complete = gateway.store.completePublication.bind(gateway.store);
-      const lookup = gateway.store.getPublishedAnswer.bind(gateway.store);
       vi.spyOn(gateway.store, 'completePublication').mockImplementation(
         async (...args) => {
           posted.resolve();
           await index.promise;
           return complete(...args);
-        },
-      );
-      vi.spyOn(gateway.store, 'getPublishedAnswer').mockImplementation(
-        async (ref) => {
-          const published = await lookup(ref);
-          if (!published) missed.resolve();
-          return published;
         },
       );
 
@@ -695,38 +689,38 @@ describe.skipIf(!redisUrl)(
       ).toBe(202);
       const publication = gateway.tasks.shift()!();
       await posted.promise;
-      expect(
-        (
-          await gateway.events(
-            signed(
-              {
-                type: 'event_callback',
-                team_id: run.workspaceId,
-                event_id: 'EvEarlyReaction',
-                is_ext_shared_channel: false,
-                event: {
-                  type: 'reaction_added',
-                  user: 'UOTHER1',
-                  reaction: '+1',
-                  item: {
-                    type: 'message',
-                    channel: run.channelId,
-                    ts: answerTs,
-                  },
-                  event_ts: '1800000003.000001',
-                },
-              },
-              controlNow,
-            ),
-          )
-        ).status,
-      ).toBe(200);
-      const feedback = gateway.tasks.shift()!();
-      await missed.promise;
+      const react = (ts: string, type: string, eventTs: string) =>
+        signed(
+          {
+            type: 'event_callback',
+            team_id: run.workspaceId,
+            event_id: `Ev${randomUUID()}`,
+            is_ext_shared_channel: false,
+            event: {
+              type,
+              user: 'UOTHER1',
+              item_user: 'UBOT1',
+              reaction: '+1',
+              item: { type: 'message', channel: run.channelId, ts },
+              event_ts: eventTs,
+            },
+          },
+          controlNow,
+        );
+      for (const request of [
+        react(statusTs, 'reaction_added', '1800000003.000003'),
+        react(answerTs, 'reaction_removed', '1800000003.000002'),
+        react(answerTs, 'reaction_added', '1800000003.000001'),
+      ])
+        expect((await gateway.events(request)).status).toBe(200);
+      await gateway.flush();
+      expect((await gateway.store.getRun(run.runId))?.feedback).toBeUndefined();
       index.resolve();
-      await Promise.all([publication, feedback]);
-      expect((await gateway.store.getRun(run.runId))?.feedback).toMatchObject({
-        UOTHER1: { thumbsup: { active: true } },
+      await publication;
+      expect((await gateway.store.getRun(run.runId))?.feedback).toEqual({
+        UOTHER1: {
+          thumbsup: { active: false, eventTs: '1800000003.000002' },
+        },
       });
       expect(gateway.dispatch).toHaveBeenCalledTimes(1);
     });

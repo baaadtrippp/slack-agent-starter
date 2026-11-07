@@ -20,6 +20,7 @@ const controlValueSchema = z
   .strict();
 
 const actionRawSchema = z.looseObject({
+  type: z.literal('button'),
   action_ts: slackMessageTs,
 });
 
@@ -27,7 +28,7 @@ const reactionEnvelopeSchema = z.looseObject({
   type: z.literal('event_callback'),
   team_id: slackId,
   event_id: z.string().min(1),
-  is_ext_shared_channel: z.literal(false),
+  is_ext_shared_channel: z.literal(false).optional(),
   event: z.looseObject({
     type: z.enum(['reaction_added', 'reaction_removed']),
     user: z.string().regex(/^[UW][A-Z0-9]+$/),
@@ -92,6 +93,7 @@ export type SlackControlAction = SlackControlValue & {
 
 export type SlackFeedbackReaction = {
   added: boolean;
+  authorId?: string;
   channelId: string;
   eventId: string;
   eventTs: string;
@@ -173,6 +175,7 @@ export function parseSlackFeedbackReaction(
     return;
   return {
     added: event.type === 'reaction_added',
+    ...(event.item_user ? { authorId: event.item_user } : {}),
     workspaceId: parsed.data.team_id,
     channelId: event.item.channel,
     userId: event.user,
@@ -192,10 +195,17 @@ export async function verifySlackActorAndChannel(options: {
   userId: string;
   workspaceId: string;
 }) {
-  if (!options.enabledChannelIds.includes(options.channelId)) return false;
+  if (
+    options.userId === 'USLACKBOT' ||
+    !options.enabledChannelIds.includes(options.channelId)
+  )
+    return false;
+  const signal = AbortSignal.timeout(5_000);
+  const fetchSlack = options.fetch ?? fetch;
   const apiOptions = {
     token: options.botToken,
-    ...(options.fetch ? { fetch: options.fetch } : {}),
+    fetch: ((input, init) =>
+      fetchSlack(input, { ...init, signal })) satisfies SlackFetch,
   };
   async function actorIsMember() {
     let cursor: string | undefined;

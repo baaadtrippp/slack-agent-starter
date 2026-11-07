@@ -130,19 +130,29 @@ export interface RunStore {
     completedSession?: WorkerSession,
   ): Promise<'confirmed' | 'duplicate' | 'conflict'>;
   getPublishedAnswer(reference: AnswerRef): Promise<RunRecord | null>;
+  openAnswerPublication(workspaceId: string, channelId: string): Promise<void>;
+  hasOpenAnswerPublication(
+    workspaceId: string,
+    channelId: string,
+  ): Promise<boolean>;
   recordFeedback(
     reference: AnswerRef,
     reactorId: string,
     reaction: FeedbackReaction,
     action: 'added' | 'removed',
     eventTs: string,
+    allowPending?: boolean,
   ): Promise<'recorded' | 'duplicate' | 'stale' | 'conflict'>;
   recordDispatchTarget(
     job: WorkerJob,
     target: SandboxTarget,
     managed?: boolean,
   ): Promise<'recorded' | 'conflict' | 'stopping' | 'unavailable'>;
-  interruptRun(run: RunRecord, now: number): Promise<boolean>;
+  interruptRun(
+    run: RunRecord,
+    now: number,
+    sessionRestored?: boolean,
+  ): Promise<boolean>;
 }
 
 const ADMIT_SCRIPT = `
@@ -239,8 +249,13 @@ if run.result.session and not owns then return 0 end
 run.state = run.result.type == 'failed' and 'worker_failed' or 'completed'
 run.messageId = ARGV[1]
 run.statusVersion = (run.statusVersion or 0) + 1
+if indexable then
+  local pending = redis.call('GET', KEYS[5])
+  if pending then run.feedback = cjson.decode(pending) end
+  redis.call('SET', KEYS[4], run.runId)
+  redis.call('DEL', KEYS[5])
+end
 redis.call('SET', KEYS[1], cjson.encode(run))
-if indexable then redis.call('SET', KEYS[4], run.runId) end
 if owns then
   if run.result.type == 'completed' and run.result.session then
     local saved = redis.call('GET', KEYS[3])
@@ -327,16 +342,26 @@ return redis.call('SET', KEYS[2], run.runId, 'NX') and 1 or 0
 
 const RECORD_FEEDBACK_SCRIPT = `
 local answerRunId = redis.call('GET', KEYS[1])
-if not answerRunId then return 'conflict' end
-local encoded = redis.call('GET', ARGV[1] .. answerRunId)
-if not encoded then return 'conflict' end
-local run = cjson.decode(encoded)
-if run.runId ~= answerRunId or run.state ~= 'completed' or
-   run.kind ~= 'work' or not run.result or run.result.type ~= 'completed' or
-   run.workspaceId ~= ARGV[2] or run.channelId ~= ARGV[3] or
-   run.messageId ~= ARGV[4] then return 'conflict' end
-run.feedback = run.feedback or {}
-local reactor = run.feedback[ARGV[5]] or {}
+local run
+local feedback
+local pendingTtl
+if answerRunId then
+  local encoded = redis.call('GET', ARGV[1] .. answerRunId)
+  if not encoded then return 'conflict' end
+  run = cjson.decode(encoded)
+  if run.runId ~= answerRunId or run.state ~= 'completed' or
+     run.kind ~= 'work' or not run.result or run.result.type ~= 'completed' or
+     run.workspaceId ~= ARGV[2] or run.channelId ~= ARGV[3] or
+     run.messageId ~= ARGV[4] then return 'conflict' end
+  feedback = run.feedback or {}
+else
+  if ARGV[9] ~= '1' then return 'conflict' end
+  pendingTtl = redis.call('PTTL', KEYS[2])
+  if pendingTtl < 1 then return 'conflict' end
+  local pending = redis.call('GET', KEYS[3])
+  feedback = pending and cjson.decode(pending) or {}
+end
+local reactor = feedback[ARGV[5]] or {}
 local previous = reactor[ARGV[6]]
 local active = ARGV[7] == 'added'
 if previous then
@@ -346,8 +371,13 @@ if previous then
   end
 end
 reactor[ARGV[6]] = {active = active, eventTs = ARGV[8]}
-run.feedback[ARGV[5]] = reactor
-redis.call('SET', ARGV[1] .. answerRunId, cjson.encode(run))
+feedback[ARGV[5]] = reactor
+if run then
+  run.feedback = feedback
+  redis.call('SET', ARGV[1] .. answerRunId, cjson.encode(run))
+else
+  redis.call('SET', KEYS[3], cjson.encode(feedback), 'PX', pendingTtl)
+end
 return 'recorded'
 `;
 
@@ -476,7 +506,7 @@ if current.state == 'interrupted' then return owner and 0 or 1 end
 if owner ~= current.runId then return 0 end
 if current.kind ~= 'work' or
    (current.state ~= 'accepted' and current.state ~= 'dispatch_failed') or
-   (current.session and current.execution) or current.result or
+   (current.session and current.execution and (ARGV[3] ~= '1' or not current.controls)) or current.result or
    current.deadline > tonumber(ARGV[2]) then return 0 end
 current.state = 'interrupted'
 current.statusVersion = (current.statusVersion or 0) + 1
@@ -598,6 +628,14 @@ export class RedisRunStore implements RunStore {
 
   private answerKey(reference: AnswerRef): string {
     return `${this.namespace}:answer:${reference.workspaceId}:${reference.channelId}:${reference.messageId}`;
+  }
+
+  private answerPublicationKey(workspaceId: string, channelId: string) {
+    return `${this.namespace}:answer-publication:${workspaceId}:${channelId}`;
+  }
+
+  private pendingFeedbackKey(reference: AnswerRef) {
+    return this.answerKey(reference) + ':pending';
   }
 
   private runPrefix(): string {
@@ -841,6 +879,11 @@ export class RedisRunStore implements RunStore {
     run: RunRecord,
     messageId: string,
   ): Promise<boolean> {
+    const answer = {
+      workspaceId: run.workspaceId,
+      channelId: run.channelId,
+      messageId,
+    };
     return (
       Number(
         await this.execute((client) =>
@@ -849,11 +892,8 @@ export class RedisRunStore implements RunStore {
               this.runKey(run.runId),
               this.ownerKey(run.workspaceId, run.channelId, run.threadTs),
               this.sessionKey(run.conversationId),
-              this.answerKey({
-                workspaceId: run.workspaceId,
-                channelId: run.channelId,
-                messageId,
-              }),
+              this.answerKey(answer),
+              this.pendingFeedbackKey(answer),
             ],
             arguments: [messageId],
           }),
@@ -1023,16 +1063,37 @@ export class RedisRunStore implements RunStore {
     return run;
   }
 
+  async openAnswerPublication(workspaceId: string, channelId: string) {
+    await this.execute((client) =>
+      client.set(this.answerPublicationKey(workspaceId, channelId), '1', {
+        EX: 30,
+      }),
+    );
+  }
+
+  async hasOpenAnswerPublication(workspaceId: string, channelId: string) {
+    return (
+      (await this.execute((client) =>
+        client.exists(this.answerPublicationKey(workspaceId, channelId)),
+      )) === 1
+    );
+  }
+
   async recordFeedback(
     reference: AnswerRef,
     reactorId: string,
     reaction: FeedbackReaction,
     action: 'added' | 'removed',
     eventTs: string,
+    allowPending = false,
   ): Promise<'recorded' | 'duplicate' | 'stale' | 'conflict'> {
     return (await this.execute((client) =>
       client.eval(RECORD_FEEDBACK_SCRIPT, {
-        keys: [this.answerKey(reference)],
+        keys: [
+          this.answerKey(reference),
+          this.answerPublicationKey(reference.workspaceId, reference.channelId),
+          this.pendingFeedbackKey(reference),
+        ],
         arguments: [
           this.runPrefix(),
           reference.workspaceId,
@@ -1042,6 +1103,7 @@ export class RedisRunStore implements RunStore {
           reaction,
           action,
           eventTs,
+          allowPending ? '1' : '0',
         ],
       }),
     )) as 'recorded' | 'duplicate' | 'stale' | 'conflict';
@@ -1160,7 +1222,11 @@ export class RedisRunStore implements RunStore {
     )) as 'claimed' | 'active' | 'unenrolled' | 'stopping';
   }
 
-  async interruptRun(run: RunRecord, now: number): Promise<boolean> {
+  async interruptRun(
+    run: RunRecord,
+    now: number,
+    sessionRestored = false,
+  ): Promise<boolean> {
     return (
       Number(
         await this.execute((client) =>
@@ -1169,7 +1235,11 @@ export class RedisRunStore implements RunStore {
               this.runKey(run.runId),
               this.ownerKey(run.workspaceId, run.channelId, run.threadTs),
             ],
-            arguments: [JSON.stringify(run), String(now)],
+            arguments: [
+              JSON.stringify(run),
+              String(now),
+              sessionRestored ? '1' : '0',
+            ],
           }),
         ),
       ) === 1

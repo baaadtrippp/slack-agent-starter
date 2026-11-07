@@ -136,16 +136,17 @@ describe('Slack controls and feedback boundary', () => {
     });
   });
 
+  it('decodes the documented event without an outer sharing flag for live channel verification', () => {
+    const { is_ext_shared_channel, ...payload } = reaction();
+    expect(is_ext_shared_channel).toBe(false);
+    expect(parseSlackFeedbackReaction(payload)).toMatchObject({
+      feedback: 'up',
+      channelId: 'CTEST1',
+    });
+  });
+
   it.each([
     ['shared channel', reaction({ is_ext_shared_channel: true })],
-    [
-      'unknown sharing',
-      (() => {
-        const value: Record<string, unknown> = reaction();
-        delete value.is_ext_shared_channel;
-        return value;
-      })(),
-    ],
     [
       'unrelated emoji',
       reaction({ event: { ...reaction().event, reaction: 'eyes' } }),

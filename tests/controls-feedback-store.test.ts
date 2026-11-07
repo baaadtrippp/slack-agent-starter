@@ -252,6 +252,28 @@ describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
     expect((await store.getRun(historical.runId))?.state).toBe('accepted');
   });
 
+  it('requires a restored-session proof to release an expired bound resumed run', async () => {
+    const run = await admitControlledRun({
+      deadline: Date.now() - 1,
+      session: {
+        seedRunId: randomUUID(),
+        nativeId: randomUUID(),
+        adapterId: randomUUID(),
+        revision: 4,
+      },
+    });
+    expect(await store.recordDispatchTarget(makeJob(run), makeTarget())).toBe(
+      'recorded',
+    );
+    const observed = (await store.getRun(run.runId))!;
+    expect(await store.interruptRun(observed, Date.now())).toBe(false);
+    expect(await store.interruptRun(observed, Date.now(), true)).toBe(true);
+    expect(await store.getRun(run.runId)).toMatchObject({
+      state: 'interrupted',
+      session: run.session,
+    });
+  });
+
   it('backfills exact historical final-answer references idempotently', async () => {
     const run = makeRun();
     const messageId = nextTimestamp();
