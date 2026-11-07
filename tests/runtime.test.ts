@@ -66,14 +66,19 @@ describe('Sandbox run inspection', () => {
       sessionSafe: 'uncommitted',
     };
     const runCommand = vi.fn();
+    const forced = { ...proof, forced: true, targetPgid: 123 };
     const proofs = [
-      { ...proof, generation: 2 },
-      { ...proof, processesExited: false },
-      { ...proof, stopRequested: false },
-      { ...proof, sessionSafe: 'restored' },
-      proof,
-    ];
-    for (const [index, evidence] of proofs.entries()) {
+      [{ ...proof, generation: 2 }, 'unknown'],
+      [{ ...proof, processesExited: false }, 'unknown'],
+      [{ ...proof, stopRequested: false }, 'unknown'],
+      [{ ...proof, sessionSafe: 'restored' }, 'unknown'],
+      [{ ...proof, forced: true }, 'unknown'],
+      [{ ...forced, targetPgid: 1 }, 'unknown'],
+      [{ ...forced, stopRequested: false }, 'unknown'],
+      [proof, 'stopped'],
+      [forced, 'stopped'],
+    ] as const;
+    for (const [evidence, state] of proofs) {
       sandboxGet.mockResolvedValueOnce({
         currentSession: () => ({
           status: 'running',
@@ -85,9 +90,7 @@ describe('Sandbox run inspection', () => {
         exitCode: 0,
         stdout: async () => JSON.stringify(evidence),
       });
-      expect(await inspectSandboxRun(run, true)).toEqual({
-        state: index === proofs.length - 1 ? 'stopped' : 'unknown',
-      });
+      expect(await inspectSandboxRun(run, true)).toEqual({ state });
     }
     expect(runCommand).toHaveBeenLastCalledWith(
       expect.objectContaining({

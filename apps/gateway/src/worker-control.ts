@@ -5,16 +5,24 @@ import { workerResultSchema } from '../../../packages/contracts/src/index.js';
 import type { WorkerInspection } from './gateway.js';
 import type { RunRecord } from './store.js';
 
-const proofSchema = z.object({
-  version: z.literal(1),
-  runId: z.uuid(),
-  generation: z.int().positive(),
-  state: z.literal('exited'),
-  processesExited: z.literal(true),
-  stopRequested: z.boolean(),
-  sessionSafe: z.enum(['committed', 'restored', 'uncommitted']),
-  result: workerResultSchema.optional(),
-});
+const proofSchema = z
+  .object({
+    version: z.literal(1),
+    runId: z.uuid(),
+    generation: z.int().positive(),
+    state: z.literal('exited'),
+    processesExited: z.literal(true),
+    stopRequested: z.boolean(),
+    forced: z.boolean().optional(),
+    targetPgid: z.int().min(2).optional(),
+    sessionSafe: z.enum(['committed', 'restored', 'uncommitted']),
+    result: workerResultSchema.optional(),
+  })
+  .refine(({ forced, stopRequested, targetPgid }) =>
+    forced
+      ? stopRequested && targetPgid !== undefined
+      : targetPgid === undefined,
+  );
 
 /** Inspects or cancels one run in its recorded, still-running Sandbox session. */
 export async function inspectSandboxRun(

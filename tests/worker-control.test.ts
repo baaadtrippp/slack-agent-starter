@@ -15,7 +15,11 @@ import { describe, expect, test } from 'vitest';
 // @ts-expect-error The copied Sandbox script has no declaration file.
 import { controlRun } from '../apps/worker/sandbox/control.mjs';
 // @ts-expect-error The copied Sandbox script has no declaration file.
-import { supervise } from '../apps/worker/sandbox/supervise.mjs';
+import * as workerRun from '../apps/worker/sandbox/run.mjs';
+// @ts-expect-error The copied Sandbox script has no declaration file.
+import * as workerSupervisor from '../apps/worker/sandbox/supervise.mjs';
+
+const { supervise, verifyGroupMembership } = workerSupervisor;
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'hydra-control-'));
@@ -46,6 +50,66 @@ describe('Sandbox worker control', () => {
     );
     expect(source).toContain("process.on('SIGTERM', cancel)");
     expect(source).not.toContain("process.once('SIGTERM', cancel)");
+  });
+
+  test('accepts only exact marked process-group membership', () => {
+    const runId = randomUUID();
+    const record = { pid: 11, pgid: 11, sessionId: 11 };
+    const marker = `A=1\0HYDRA_RUN_ID=${runId}\0B=2\0`;
+    const leader = {
+      pid: 11,
+      pgid: 11,
+      sessionId: 11,
+      environment: marker,
+    };
+
+    expect(() =>
+      verifyGroupMembership(record, runId, [
+        leader,
+        { pid: 12, pgid: 11, sessionId: 11, environment: marker },
+        {
+          pid: 21,
+          pgid: 21,
+          sessionId: 21,
+          environment: 'HYDRA_RUN_ID=peer\0',
+        },
+      ]),
+    ).not.toThrow();
+
+    expect(() =>
+      verifyGroupMembership(record, runId, [
+        {
+          ...leader,
+          environment: `HYDRA_RUN_ID=${runId}-prefix\0`,
+        },
+      ]),
+    ).toThrow('unmarked process');
+
+    expect(() =>
+      verifyGroupMembership(record, runId, [
+        leader,
+        { pid: 12, pgid: 11, sessionId: 11, environment: 'A=1\0' },
+      ]),
+    ).toThrow('unmarked process');
+
+    expect(() =>
+      verifyGroupMembership(record, runId, [
+        leader,
+        { pid: 21, pgid: 21, sessionId: 21, environment: marker },
+      ]),
+    ).toThrow('escaped its isolated group');
+
+    expect(() =>
+      verifyGroupMembership(record, runId, [
+        leader,
+        {
+          pid: 22,
+          pgid: 22,
+          sessionId: 11,
+          environment: 'A=1\0',
+        },
+      ]),
+    ).toThrow('escaped its isolated group');
   });
 
   test('recovers only a normal committed result', async () => {
@@ -460,6 +524,163 @@ process.once('message', () => {
       ).resolves.toEqual(
         expect.objectContaining({ processesExited: true, exitCode: 0 }),
       );
+      await rm(paths.root, { recursive: true, force: true });
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
+    'forces only a registered stuck process group',
+    async () => {
+      const paths = await fixture();
+      const runId = randomUUID();
+      const worker = join(paths.root, 'stuck-worker.mjs');
+      await writeFile(
+        worker,
+        "process.on('SIGTERM', () => {}); process.on('message', () => process.disconnect()); setInterval(() => {}, 1000);",
+      );
+      const supervised = supervise(
+        { version: 1, runId, generation: 1 },
+        {
+          ...paths,
+          worker,
+          cooperativeGraceMs: 100,
+          proveGroup: () => {},
+        },
+      );
+      let status;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        status = await controlRun(request(runId, 'status'), paths);
+        if (status.state === 'running') break;
+        await delay(20);
+      }
+      expect(status?.state).toBe('running');
+      await expect(
+        controlRun(request(runId, 'cancel'), paths),
+      ).resolves.toEqual(
+        expect.objectContaining({
+          state: 'exited',
+          forced: true,
+          targetPgid: expect.any(Number),
+          processesExited: true,
+          sessionSafe: 'uncommitted',
+        }),
+      );
+      await expect(supervised).resolves.toEqual(
+        expect.objectContaining({ forced: true, stopRequested: true }),
+      );
+      await rm(paths.root, { recursive: true, force: true });
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
+    'restores exact checkpoint bytes after a forced resumed Stop',
+    async () => {
+      const paths = await fixture();
+      const runId = randomUUID();
+      const seedRunId = randomUUID();
+      const nativeId = randomUUID();
+      const adapterId = randomUUID();
+      const seed = join(paths.workspace, 'runs', seedRunId);
+      const sessions = join(seed, 'pi-sessions');
+      const adapter = join(seed, 'pi-acp');
+      const transcript = join(sessions, 'session.jsonl');
+      const mutated = join(paths.root, 'mutated');
+      const scratch = join('/tmp/hydra-worker-state', seedRunId);
+      const source = Buffer.from(
+        JSON.stringify({ type: 'session', id: nativeId }) + '\n',
+      );
+      const job = {
+        version: 1,
+        runId,
+        generation: 1,
+        input: {},
+        session: {
+          seedRunId,
+          nativeId,
+          adapterId,
+          revision: 1,
+        },
+      };
+      await mkdir(sessions, { recursive: true });
+      await mkdir(adapter);
+      await mkdir(scratch, { recursive: true });
+      await writeFile(transcript, source);
+      await writeFile(
+        join(seed, 'result.json'),
+        JSON.stringify({
+          version: 1,
+          runId: seedRunId,
+          generation: 1,
+          eventId: randomUUID(),
+          sequence: 2,
+          type: 'completed',
+          text: 'Seed',
+          session: job.session,
+        }),
+      );
+      await writeFile(
+        join(adapter, 'session-map.json'),
+        JSON.stringify({
+          sessions: {
+            [adapterId]: {
+              sessionId: adapterId,
+              cwd: join(seed, 'work'),
+              sessionFile: join(scratch, 'agent', 'sessions', 'session.jsonl'),
+            },
+          },
+        }),
+      );
+      const before = {
+        file: 'session.jsonl',
+        nativeId,
+        adapterId,
+        records: [{ type: 'session', id: nativeId }],
+        source: source.toString('utf8'),
+        sourceBytes: source,
+      };
+      await workerRun.writeRollbackOwner(scratch, job);
+      await workerRun.writeRollbackCheckpoint(scratch, job, before);
+      const worker = join(paths.root, 'mutating-stuck-worker.mjs');
+      await writeFile(
+        worker,
+        `
+import { writeFile } from 'node:fs/promises';
+process.on('SIGTERM', () => {});
+process.on('message', async () => {
+  await writeFile(process.env.HYDRA_TEST_TRANSCRIPT, process.env.HYDRA_TEST_MUTATION);
+  await writeFile(process.env.HYDRA_TEST_MUTATED, '1');
+  process.disconnect();
+});
+setInterval(() => {}, 1000);
+`,
+      );
+      process.env.HYDRA_TEST_TRANSCRIPT = transcript;
+      process.env.HYDRA_TEST_MUTATION =
+        JSON.stringify({ type: 'session', id: nativeId, changed: true }) + '\n';
+      process.env.HYDRA_TEST_MUTATED = mutated;
+      const supervised = supervise(job, {
+        ...paths,
+        worker,
+        cooperativeGraceMs: 100,
+        proveGroup: () => {},
+      });
+      delete process.env.HYDRA_TEST_TRANSCRIPT;
+      delete process.env.HYDRA_TEST_MUTATION;
+      delete process.env.HYDRA_TEST_MUTATED;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        if (await readFile(mutated).catch(() => undefined)) break;
+        await delay(20);
+      }
+      await expect(
+        controlRun(request(runId, 'cancel'), paths),
+      ).resolves.toEqual(
+        expect.objectContaining({ forced: true, sessionSafe: 'restored' }),
+      );
+      await expect(supervised).resolves.toEqual(
+        expect.objectContaining({ forced: true, sessionSafe: 'restored' }),
+      );
+      await expect(readFile(transcript)).resolves.toEqual(source);
+      await expect(readFile(scratch)).rejects.toThrow();
       await rm(paths.root, { recursive: true, force: true });
     },
   );

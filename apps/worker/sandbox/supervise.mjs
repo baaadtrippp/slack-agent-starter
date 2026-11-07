@@ -1,20 +1,24 @@
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import {
   constants,
   link,
   mkdir,
   open,
   readFile,
+  realpath,
   readdir,
   rename,
   rm,
 } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { readControlRecord } from './control.mjs';
 
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+const checksum = /^[0-9a-f]{64}$/;
 const publishingRecord = new Error('Worker record is being published');
 
 if (
@@ -36,13 +40,16 @@ export async function supervise(
     workspace = '/workspace',
     worker = join(import.meta.dirname, 'run.mjs'),
     ready = sendReady,
-    readIdentity = processStartTicks,
+    readIdentity = processIdentity,
+    proveGroup = proveExactGroup,
     descendantGraceMs = 2_000,
+    cooperativeGraceMs = 4_000,
   } = {},
 ) {
   if (
     job?.version !== 1 ||
     !uuid.test(job.runId) ||
+    (job.session !== undefined && !uuid.test(job.session?.seedRunId ?? '')) ||
     !Number.isSafeInteger(job.generation) ||
     job.generation < 1
   )
@@ -61,7 +68,7 @@ export async function supervise(
   let captured;
   try {
     captured = await Promise.race([
-      readIdentity(child.pid).then((startTicks) => ({ startTicks })),
+      readIdentity(child.pid).then((identity) => ({ identity })),
       closed.then((outcome) => ({ outcome })),
     ]);
   } catch (error) {
@@ -80,13 +87,30 @@ export async function supervise(
       workspace,
       descendantGraceMs,
     });
+  const identity = captured.identity;
+  if (
+    identity.state === 'Z' ||
+    identity.ppid !== process.pid ||
+    identity.pgid !== child.pid ||
+    identity.sessionId !== child.pid
+  ) {
+    try {
+      process.kill(child.pid, 'SIGTERM');
+    } catch (error) {
+      if (error?.code !== 'ESRCH') throw error;
+    }
+    await closed;
+    throw new Error('Worker process group was not isolated');
+  }
   const record = {
     version: 1,
     runId: job.runId,
     generation: job.generation,
     controlId: randomUUID(),
     pid: child.pid,
-    startTicks: captured.startTicks,
+    startTicks: identity.startTicks,
+    pgid: identity.pgid,
+    sessionId: identity.sessionId,
   };
   try {
     await createExclusiveJson(join(controls, job.runId + '.json'), record);
@@ -95,6 +119,19 @@ export async function supervise(
     await closed;
     throw error;
   }
+  const stopMonitor = monitorStop(
+    record,
+    controls,
+    closed,
+    job.runId,
+    cooperativeGraceMs,
+    proveGroup,
+  );
+  void stopMonitor.catch(() => {
+    console.error(
+      JSON.stringify({ runId: job.runId, phase: 'worker_fallback_refused' }),
+    );
+  });
   let readyError;
   try {
     await ready(child, job);
@@ -112,6 +149,7 @@ export async function supervise(
   } finally {
     process.removeListener('SIGTERM', forward);
   }
+  const escalation = await stopMonitor.catch(() => ({}));
 
   return finishSupervision(job, {
     record,
@@ -120,14 +158,31 @@ export async function supervise(
     controls,
     workspace,
     descendantGraceMs,
+    escalation,
   });
 }
 
 async function finishSupervision(
   job,
-  { record, outcome, readyError, controls, workspace, descendantGraceMs },
+  {
+    record,
+    outcome,
+    readyError,
+    controls,
+    workspace,
+    descendantGraceMs,
+    escalation,
+  },
 ) {
-  if (!(await waitForMarkedProcessesExit(job.runId, descendantGraceMs)))
+  const forced = escalation?.forced === true;
+  if (
+    !(await waitForRunProcessesExit(
+      record,
+      job.runId,
+      descendantGraceMs,
+      forced,
+    ))
+  )
     throw new Error('Worker descendants remain active');
   const stop = record
     ? await readMatchingJson(join(controls, job.runId + '.stop.json'), record)
@@ -142,15 +197,19 @@ async function finishSupervision(
     job.runId,
     job.generation,
   );
-  const sessionSafe = await verifySessionState(job, result, stop, workspace);
+  const sessionSafe = stop
+    ? await verifyStoppedSessionState(job, result, workspace)
+    : await verifySessionState(job, result, stop, workspace);
+  if (stop) await removeOwnedScratch(job);
   const exit = {
     version: 1,
     runId: job.runId,
     generation: job.generation,
     state: 'exited',
     stopRequested: Boolean(stop),
-    forced: false,
+    forced,
     processesExited: true,
+    ...(forced ? { targetPgid: escalation.targetPgid } : {}),
     sessionSafe,
     ...(result ? { resultType: result.type } : {}),
     exitCode: outcome.code,
@@ -174,10 +233,112 @@ async function sendReady(child, job) {
   });
 }
 
-async function signalExact(record, runId, signal) {
+async function monitorStop(
+  record,
+  controls,
+  closed,
+  runId,
+  graceMs,
+  proveGroup,
+) {
+  let childClosed = false;
+  void closed.then(
+    () => {
+      childClosed = true;
+    },
+    () => {
+      childClosed = true;
+    },
+  );
+  while (!childClosed) {
+    const stop = await readControlRecord(join(controls, runId + '.stop.json'));
+    if (stop) {
+      validateMatchingRecord(stop, record);
+      await signalExact(record, runId, 'SIGTERM');
+      if (await waitForRunProcessesExit(record, runId, graceMs)) return {};
+      try {
+        proveGroup(record, runId);
+        process.kill(-record.pgid, 'SIGKILL');
+        return { forced: true, targetPgid: record.pgid };
+      } catch (error) {
+        if (error?.code !== 'ESRCH')
+          console.error(
+            JSON.stringify({
+              runId,
+              phase: 'worker_fallback_refused',
+              reason: error?.message,
+            }),
+          );
+        return {};
+      }
+    }
+    await Promise.race([closed, delay(25)]);
+  }
+  return {};
+}
+
+function proveExactGroup(record, runId) {
+  verifyExactLeader(record);
+  verifyGroupMembership(record, runId, liveProcessSnapshot(record));
+  verifyExactLeader(record);
+}
+
+function verifyExactLeader(record) {
+  const leader = processIdentitySync(record.pid);
   if (
-    (await processStartTicks(record.pid).catch(() => undefined)) !==
-      record.startTicks ||
+    leader.state === 'Z' ||
+    leader.ppid !== process.pid ||
+    leader.startTicks !== record.startTicks ||
+    leader.pgid !== record.pgid ||
+    leader.sessionId !== record.sessionId ||
+    leader.pgid !== record.pid ||
+    leader.sessionId !== record.pid
+  )
+    throw new Error('Worker process group identity changed');
+}
+
+/** Rejects mixed groups and marked processes outside the registered group. */
+export function verifyGroupMembership(record, runId, processes) {
+  let leaderMarked = false;
+  for (const { pid, pgid, sessionId, environment } of processes) {
+    const marked = hasRunMarker(environment, runId);
+    const inGroup = pgid === record.pgid && sessionId === record.sessionId;
+    if (inGroup && !marked)
+      throw new Error('Worker group contains an unmarked process');
+    if ((marked || sessionId === record.sessionId) && !inGroup)
+      throw new Error('Worker process escaped its isolated group');
+    if (pid === record.pid && inGroup && marked) leaderMarked = true;
+  }
+  if (!leaderMarked) throw new Error('Worker leader marker is missing');
+}
+
+function* liveProcessSnapshot(record) {
+  for (const entry of readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    let identity;
+    try {
+      identity = processIdentitySync(pid);
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'ESRCH') continue;
+      throw error;
+    }
+    if (identity.state === 'Z') continue;
+    const environment = processEnvironmentSync(
+      pid,
+      identity.startTicks,
+      record,
+    );
+    yield { ...identity, pid, environment };
+  }
+}
+
+async function signalExact(record, runId, signal) {
+  const identity = await processIdentity(record.pid).catch(() => undefined);
+  if (
+    identity?.startTicks !== record.startTicks ||
+    identity.pgid !== record.pgid ||
+    identity.sessionId !== record.sessionId ||
     !(await markedProcess(record.pid, runId))
   )
     return;
@@ -188,39 +349,330 @@ async function signalExact(record, runId, signal) {
   }
 }
 
-async function processStartTicks(pid) {
+async function processIdentity(pid) {
   const stat = await readFile('/proc/' + pid + '/stat', 'utf8');
+  return parseProcessIdentity(stat);
+}
+
+function processIdentitySync(pid) {
+  return parseProcessIdentity(readFileSync('/proc/' + pid + '/stat', 'utf8'));
+}
+
+function parseProcessIdentity(stat) {
   const fields = stat.slice(stat.lastIndexOf(') ') + 2).split(' ');
-  const ticks = fields[19];
-  if (!/^\d+$/.test(ticks)) throw new Error('Invalid worker process identity');
-  return ticks;
+  const [state, ppid, pgid, sessionId] = fields;
+  const startTicks = fields[19];
+  if (
+    !state ||
+    !/^\d+$/.test(ppid) ||
+    !/^\d+$/.test(pgid) ||
+    !/^\d+$/.test(sessionId) ||
+    !/^\d+$/.test(startTicks)
+  )
+    throw new Error('Invalid worker process identity');
+  return {
+    state,
+    ppid: Number(ppid),
+    pgid: Number(pgid),
+    sessionId: Number(sessionId),
+    startTicks,
+  };
+}
+
+function hasRunMarker(environment, runId) {
+  return environment?.split('\0').includes('HYDRA_RUN_ID=' + runId) ?? false;
 }
 
 async function markedProcess(pid, runId) {
-  const environment = await readFile('/proc/' + pid + '/environ').catch(
+  const environment = await readFile('/proc/' + pid + '/environ', 'utf8').catch(
     () => undefined,
   );
-  return Boolean(
-    environment?.includes(Buffer.from('HYDRA_RUN_ID=' + runId + '\0')),
-  );
+  return hasRunMarker(environment, runId);
 }
 
-async function markedProcessesRemain(runId) {
+function processEnvironmentSync(pid, startTicks, record) {
+  const path = '/proc/' + pid;
+  try {
+    return readFileSync(path + '/environ', 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ESRCH') return;
+    if (error?.code === 'EACCES' || error?.code === 'EPERM') {
+      try {
+        const current = processIdentitySync(pid);
+        if (current.startTicks !== startTicks || current.state === 'Z') return;
+        // An unrelated process that predates the run cannot be its descendant.
+        if (
+          current.sessionId !== record.sessionId &&
+          (BigInt(current.startTicks) < BigInt(record.startTicks) ||
+            (typeof process.getuid === 'function' &&
+              statSync(path).uid !== process.getuid()))
+        )
+          return;
+      } catch (identityError) {
+        if (identityError?.code === 'ENOENT' || identityError?.code === 'ESRCH')
+          return;
+        throw identityError;
+      }
+    }
+    throw error;
+  }
+}
+
+async function runProcessesRemain(record, runId, forced) {
+  if (forced) {
+    for (const process of liveProcessSnapshot(record)) {
+      if (
+        process.sessionId === record.sessionId ||
+        hasRunMarker(process.environment, runId)
+      )
+        return true;
+    }
+    return false;
+  }
   for (const entry of await readdir('/proc')) {
-    if (/^\d+$/.test(entry) && (await markedProcess(Number(entry), runId)))
-      return true;
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    const identity = await processIdentity(pid).catch(() => undefined);
+    if (!identity || identity.state === 'Z') continue;
+    if (await markedProcess(pid, runId)) return true;
+    if (record && identity.sessionId === record.sessionId) return true;
   }
   return false;
 }
 
-async function waitForMarkedProcessesExit(runId, graceMs) {
+async function waitForRunProcessesExit(record, runId, graceMs, forced) {
   const deadline = Date.now() + graceMs;
-  while (await markedProcessesRemain(runId)) {
+  while (await runProcessesRemain(record, runId, forced)) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) return false;
     await delay(Math.min(50, remaining));
   }
   return true;
+}
+
+async function verifyStoppedSessionState(job, result, workspace) {
+  if (!job.session) return 'uncommitted';
+  if (result?.type === 'completed') {
+    try {
+      await verifyCommittedSession(job, result, workspace);
+      return 'committed';
+    } catch {
+      // A partial result cannot outrank the authenticated checkpoint.
+    }
+  }
+  const rollback = await readRollbackCheckpoint(job);
+  if (!rollback) {
+    await verifyCurrentSession(job.session, workspace);
+    await verifyAdapterEntry(job.session, workspace);
+    return 'restored';
+  }
+  if (
+    !(await currentSessionMatchesCheckpoint(job.session, rollback, workspace))
+  )
+    await restoreCheckpoint(job, rollback, workspace);
+  if (
+    !(await currentSessionMatchesCheckpoint(job.session, rollback, workspace))
+  )
+    throw new Error('Native rollback verification failed');
+  await verifyAdapterEntry(job.session, workspace);
+  return 'restored';
+}
+
+async function readRollbackCheckpoint(job) {
+  const scratch = join(
+    '/tmp/hydra-worker-state',
+    job.session?.seedRunId ?? job.runId,
+  );
+  const owner = await readRegularJson(join(scratch, 'rollback-owner.json'));
+  if (!owner) {
+    try {
+      const directory = await open(
+        scratch,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      await directory.close();
+    } catch (error) {
+      if (error?.code === 'ENOENT') return undefined;
+      throw error;
+    }
+    throw new Error('Missing rollback ownership');
+  }
+  validateRollbackOwner(owner, job);
+  const checkpoint = await readRegularJson(join(scratch, 'rollback.json'));
+  if (!checkpoint) return undefined;
+  validateRollbackOwner(checkpoint, job);
+  const session = job.session;
+  if (
+    checkpoint.nativeId !== session.nativeId ||
+    checkpoint.adapterId !== session.adapterId ||
+    checkpoint.revision !== session.revision ||
+    typeof checkpoint.file !== 'string' ||
+    !checkpoint.file ||
+    isAbsolute(checkpoint.file) ||
+    !Number.isSafeInteger(checkpoint.size) ||
+    checkpoint.size < 1 ||
+    !checksum.test(checkpoint.sha256 ?? '')
+  )
+    throw new Error('Invalid native rollback checkpoint');
+  const source = await readCheckpoint(
+    join(scratch, 'rollback.jsonl'),
+    checkpoint.size,
+  );
+  if (createHash('sha256').update(source).digest('hex') !== checkpoint.sha256)
+    throw new Error('Native rollback checkpoint changed');
+  verifyCheckpointSource(source, checkpoint);
+  return { checkpoint, source };
+}
+
+async function currentSessionMatchesCheckpoint(session, rollback, workspace) {
+  try {
+    const { file, source } = await verifyCurrentSession(session, workspace);
+    return (
+      file === rollback.checkpoint.file &&
+      source.length === rollback.source.length &&
+      createHash('sha256').update(source).digest('hex') ===
+        rollback.checkpoint.sha256
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function restoreCheckpoint(job, rollback, workspace) {
+  const sessions = resolve(
+    workspace,
+    'runs',
+    job.session.seedRunId,
+    'pi-sessions',
+  );
+  const target = resolve(sessions, rollback.checkpoint.file);
+  if (target === sessions || !target.startsWith(sessions + sep))
+    throw new Error('Invalid native rollback path');
+  const sessionsPath = await realpath(sessions);
+  const parentPath = await realpath(dirname(target));
+  if (sessionsPath !== sessions || parentPath !== dirname(target))
+    throw new Error('Native rollback parent escaped');
+  const current = await open(
+    target,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const stat = await current.stat();
+    if (!stat.isFile() || stat.nlink !== 1)
+      throw new Error('Invalid native rollback target');
+  } finally {
+    await current.close();
+  }
+  const temporary = target + '.' + job.runId + '.rollback';
+  let file;
+  try {
+    file = await open(temporary, 'wx', 0o600);
+    await file.writeFile(rollback.source);
+    await file.sync();
+    await file.close();
+    file = undefined;
+    await rename(temporary, target);
+    await syncDirectory(dirname(target));
+  } finally {
+    await file?.close().catch(() => {});
+    await rm(temporary, { force: true });
+  }
+}
+
+function validateRollbackOwner(value, job) {
+  if (
+    value?.version !== 1 ||
+    value.runId !== job.runId ||
+    value.generation !== job.generation ||
+    value.seedRunId !== (job.session?.seedRunId ?? job.runId)
+  )
+    throw new Error('Invalid rollback ownership');
+}
+
+async function readCheckpoint(path, expectedSize) {
+  const file = await open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size !== expectedSize)
+      throw new Error('Invalid native rollback data');
+    const source = await file.readFile();
+    if (source.length !== stat.size)
+      throw new Error('Native rollback data changed while reading');
+    return source;
+  } finally {
+    await file.close();
+  }
+}
+
+function verifyCheckpointSource(source, checkpoint) {
+  const text = source.toString('utf8');
+  if (!Buffer.from(text).equals(source))
+    throw new Error('Native rollback data is not exact UTF-8');
+  const records = text
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  if (
+    records[0]?.type !== 'session' ||
+    records[0].id !== checkpoint.nativeId ||
+    records.length !== checkpoint.revision
+  )
+    throw new Error('Native rollback contents changed');
+}
+
+async function verifyAdapterEntry(session, workspace) {
+  const adapter = join(
+    workspace,
+    'runs',
+    session.seedRunId,
+    'pi-acp',
+    'session-map.json',
+  );
+  const map = await readRegularJson(adapter);
+  const entry = map?.sessions?.[session.adapterId];
+  const { file } = await verifyCurrentSession(session, workspace);
+  const expectedFile = join(
+    '/tmp/hydra-worker-state',
+    session.seedRunId,
+    'agent',
+    'sessions',
+    file,
+  );
+  const expectedWork = join(workspace, 'runs', session.seedRunId, 'work');
+  if (
+    entry?.sessionId !== session.adapterId ||
+    entry.cwd !== expectedWork ||
+    entry.sessionFile !== expectedFile
+  )
+    throw new Error('Adapter session changed during forced Stop');
+}
+
+async function removeOwnedScratch(job) {
+  const scratch = join(
+    '/tmp/hydra-worker-state',
+    job.session?.seedRunId ?? job.runId,
+  );
+  const owner = await readRegularJson(join(scratch, 'rollback-owner.json'));
+  if (!owner) {
+    try {
+      const directory = await open(
+        scratch,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      await directory.close();
+    } catch (error) {
+      if (error?.code === 'ENOENT') return;
+      throw error;
+    }
+    throw new Error('Missing rollback ownership');
+  }
+  validateRollbackOwner(owner, job);
+  if ((await realpath(scratch)) !== scratch)
+    throw new Error('Rollback scratch identity changed');
+  await rm(scratch, { recursive: true });
 }
 
 async function verifySessionState(job, result, stop, workspace) {
@@ -256,7 +708,7 @@ async function verifyCommittedSession(job, result, workspace) {
       session.hasRetainedSources !== true)
   )
     throw new Error('Completed session identity changed');
-  const file = await verifyCurrentSession(session, workspace);
+  const { file } = await verifyCurrentSession(session, workspace);
   const adapter = join(
     workspace,
     'runs',
@@ -283,13 +735,34 @@ async function verifyCommittedSession(job, result, workspace) {
 }
 
 async function verifyCurrentSession(session, workspace) {
-  const sessions = join(workspace, 'runs', session.seedRunId, 'pi-sessions');
+  const sessions = resolve(workspace, 'runs', session.seedRunId, 'pi-sessions');
+  if ((await realpath(sessions)) !== sessions)
+    throw new Error('Native session directory changed');
   const files = (await readdir(sessions, { recursive: true })).filter((file) =>
     file.endsWith('.jsonl'),
   );
   if (files.length !== 1) throw new Error('Missing exact native session');
-  const source = await readFile(join(sessions, files[0]), 'utf8');
+  const file = files[0];
+  const path = join(sessions, file);
+  if ((await realpath(dirname(path))) !== dirname(path))
+    throw new Error('Native session parent changed');
+  const handle = await open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  let source;
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size < 1)
+      throw new Error('Invalid native session file');
+    source = await handle.readFile();
+    if (source.length !== stat.size)
+      throw new Error('Native session changed while reading');
+  } finally {
+    await handle.close();
+  }
   const records = source
+    .toString('utf8')
     .trim()
     .split('\n')
     .map((line) => JSON.parse(line));
@@ -299,7 +772,7 @@ async function verifyCurrentSession(session, workspace) {
     records.length !== session.revision
   )
     throw new Error('Native session was not restored');
-  return files[0];
+  return { file, source };
 }
 
 async function readWorkerResult(path, runId, generation) {
@@ -315,8 +788,13 @@ async function readWorkerResult(path, runId, generation) {
 }
 
 async function readMatchingJson(path, record) {
-  const value = await readRegularJson(path);
+  const value = await readControlRecord(path);
   if (!value) return undefined;
+  validateMatchingRecord(value, record);
+  return value;
+}
+
+function validateMatchingRecord(value, record) {
   if (
     value.version !== 1 ||
     value.runId !== record.runId ||
@@ -324,7 +802,6 @@ async function readMatchingJson(path, record) {
     value.controlId !== record.controlId
   )
     throw new Error('Worker control identity changed');
-  return value;
 }
 
 async function readRegularJson(path) {

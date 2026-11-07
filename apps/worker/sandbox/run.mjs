@@ -457,6 +457,8 @@ async function prompt(job, model, key, root, reportWorking, stopSignal) {
   await mkdir(dirname(scratch), { recursive: true, mode: 0o700 });
   await mkdir(scratch, { mode: 0o700 });
   try {
+    const supervised = process.env.HYDRA_RUN_ID === job.runId;
+    if (supervised) await writeRollbackOwner(scratch, job);
     if (job.session)
       before = await verifySavedSession(
         job.session,
@@ -465,6 +467,8 @@ async function prompt(job, model, key, root, reportWorking, stopSignal) {
         scratch,
         work,
       );
+    if (supervised && before)
+      await writeRollbackCheckpoint(scratch, job, before);
     const retained = job.session
       ? await loadRetainedInputs(
           sessionRoot,
@@ -673,7 +677,10 @@ async function prompt(job, model, key, root, reportWorking, stopSignal) {
       const path = join(sessions, before.file);
       const temporary = `${path}.${job.runId}.tmp`;
       try {
-        await writeFile(temporary, before.source, { mode: 0o600, flag: 'wx' });
+        await writeFile(temporary, before.sourceBytes, {
+          mode: 0o600,
+          flag: 'wx',
+        });
         await rename(temporary, path);
       } catch {
         throw uncertainRun;
@@ -1083,6 +1090,73 @@ function messageText(message) {
     .join('');
 }
 
+export async function writeRollbackOwner(scratch, job) {
+  const owner = {
+    version: 1,
+    runId: job.runId,
+    generation: job.generation,
+    seedRunId: job.session?.seedRunId ?? job.runId,
+  };
+  await writeSyncedAtomic(
+    join(scratch, 'rollback-owner.json'),
+    JSON.stringify(owner),
+  );
+}
+
+export async function writeRollbackCheckpoint(scratch, job, before) {
+  const bytes = before.sourceBytes;
+  const owner = {
+    version: 1,
+    runId: job.runId,
+    generation: job.generation,
+    seedRunId: job.session.seedRunId,
+  };
+  await writeSyncedAtomic(join(scratch, 'rollback.jsonl'), bytes);
+  await writeSyncedAtomic(
+    join(scratch, 'rollback.json'),
+    JSON.stringify({
+      ...owner,
+      nativeId: before.nativeId,
+      adapterId: before.adapterId,
+      revision: before.records.length,
+      file: before.file,
+      size: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    }),
+  );
+}
+
+async function writeSyncedAtomic(path, value) {
+  const temporary = path + '.' + randomUUID() + '.tmp';
+  let published = false;
+  try {
+    const file = await open(
+      temporary,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      0o600,
+    );
+    try {
+      await file.writeFile(value);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await rename(temporary, path);
+    published = true;
+    const directory = await open(
+      dirname(path),
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+  } finally {
+    if (!published) await rm(temporary, { force: true }).catch(() => {});
+  }
+}
+
 export async function verifySavedSession(
   reference,
   sessions,
@@ -1127,7 +1201,10 @@ export async function verifySavedSession(
 async function readNativeSession(sessions) {
   const files = await Array.fromAsync(glob('**/*.jsonl', { cwd: sessions }));
   if (files.length !== 1) throw new Error('Missing exact native session');
-  const source = await readFile(join(sessions, files[0]), 'utf8');
+  const sourceBytes = await readFile(join(sessions, files[0]));
+  const source = sourceBytes.toString('utf8');
+  if (!sourceBytes.length || !Buffer.from(source).equals(sourceBytes))
+    throw new Error('Native session is not exact UTF-8');
   const records = source
     .trim()
     .split('\n')
@@ -1135,5 +1212,5 @@ async function readNativeSession(sessions) {
   const nativeId = records[0]?.type === 'session' ? records[0].id : undefined;
   if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(nativeId ?? ''))
     throw new Error('Invalid native session ID');
-  return { file: files[0], nativeId, records, source };
+  return { file: files[0], nativeId, records, source, sourceBytes };
 }

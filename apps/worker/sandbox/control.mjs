@@ -1,11 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import { constants, link, mkdir, open, readFile, rm } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import {
+  constants,
+  link,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rm,
+} from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
-const publishingRecord = new Error('Worker record is being published');
 
 if (
   process.argv[1] &&
@@ -48,17 +56,17 @@ export async function controlRun(
   }
   if (status.state === 'exited') {
     if (status.stopRequested) return status;
-    const control = await readRegularJson(paths.control);
+    const control = await readControlRecord(paths.control);
     if (!control) return status;
     validateControl(control, request);
     await writeStop(paths.stop, control);
     return inspect(request, paths);
   }
-  const control = await readRegularJson(paths.control);
+  const control = await readControlRecord(paths.control);
   validateControl(control, request);
   await writeStop(paths.stop, control);
   await signalExact(control, request.runId, 'SIGTERM');
-  status = await waitForExit(request, paths, 4_000);
+  status = await waitForExit(request, paths, 10_000);
   return status;
 }
 
@@ -68,9 +76,9 @@ async function inspect(request, paths) {
     validateExit(exit, request);
     let stopRequested = exit.stopRequested;
     if (!stopRequested) {
-      const stop = await readRegularJson(paths.stop);
+      const stop = await readControlRecord(paths.stop);
       if (stop) {
-        const control = await readRegularJson(paths.control);
+        const control = await readControlRecord(paths.control);
         validateControl(control, request);
         validateStop(stop, control);
         stopRequested = true;
@@ -82,7 +90,8 @@ async function inspect(request, paths) {
       generation: request.generation,
       state: 'exited',
       stopRequested,
-      forced: false,
+      forced: exit.forced,
+      ...(exit.forced ? { targetPgid: exit.targetPgid } : {}),
       sessionSafe: exit.sessionSafe,
       processesExited: true,
     };
@@ -123,10 +132,10 @@ async function inspect(request, paths) {
       ...(result ? { result } : {}),
     };
   }
-  const control = await readRegularJson(paths.control);
+  const control = await readControlRecord(paths.control);
   if (!control) return baseStatus(request, 'unknown', false);
   validateControl(control, request);
-  const stop = await readRegularJson(paths.stop);
+  const stop = await readControlRecord(paths.stop);
   if (stop) validateStop(stop, control);
   const running =
     (await processStartTicks(control.pid).catch(() => undefined)) ===
@@ -196,12 +205,15 @@ async function markedProcess(pid, runId) {
     () => undefined,
   );
   return Boolean(
-    environment?.includes(Buffer.from('HYDRA_RUN_ID=' + runId + '\0')),
+    environment
+      ?.toString()
+      .split('\0')
+      .includes('HYDRA_RUN_ID=' + runId),
   );
 }
 
 async function writeStop(path, control) {
-  const existing = await readRegularJson(path);
+  const existing = await readControlRecord(path);
   if (existing) {
     validateStop(existing, control);
     return;
@@ -216,7 +228,7 @@ async function writeStop(path, control) {
     });
   } catch (error) {
     if (error?.code !== 'EEXIST') throw error;
-    validateStop(await readRegularJson(path), control);
+    validateStop(await readControlRecord(path), control);
   }
 }
 
@@ -228,7 +240,9 @@ function validateControl(control, request) {
     !uuid.test(control.controlId) ||
     !Number.isSafeInteger(control.pid) ||
     control.pid < 2 ||
-    !/^\d+$/.test(control.startTicks)
+    !/^\d+$/.test(control.startTicks) ||
+    ((control.pgid !== undefined || control.sessionId !== undefined) &&
+      (control.pgid !== control.pid || control.sessionId !== control.pid))
   )
     throw new Error('Invalid worker control record');
 }
@@ -253,25 +267,24 @@ function validateExit(exit, request) {
     exit.processesExited !== true ||
     !['committed', 'restored', 'uncommitted'].includes(exit.sessionSafe) ||
     typeof exit.stopRequested !== 'boolean' ||
-    exit.forced !== false ||
+    typeof exit.forced !== 'boolean' ||
+    (exit.forced
+      ? !exit.stopRequested ||
+        !Number.isSafeInteger(exit.targetPgid) ||
+        exit.targetPgid < 2
+      : exit.targetPgid !== undefined) ||
     (exit.resultType !== undefined &&
       !['completed', 'failed'].includes(exit.resultType))
   )
     throw new Error('Invalid worker exit proof');
 }
 
-async function readRegularJson(path) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      return await readRegularJsonOnce(path);
-    } catch (error) {
-      if (error !== publishingRecord || attempt === 4) throw error;
-      await delay(10);
-    }
-  }
+/** Reads an exact private control record while its synced temp link may remain. */
+export function readControlRecord(path) {
+  return readRegularJson(path, true);
 }
 
-async function readRegularJsonOnce(path) {
+async function readRegularJson(path, controlRecord = false) {
   let file;
   try {
     file = await open(
@@ -284,12 +297,16 @@ async function readRegularJsonOnce(path) {
   }
   try {
     const stat = await file.stat();
-    if (stat.isFile() && stat.nlink === 2) throw publishingRecord;
     if (
       !stat.isFile() ||
-      stat.nlink !== 1 ||
       stat.size < 1 ||
-      stat.size > 32 * 1024
+      stat.size > 32 * 1024 ||
+      (stat.nlink !== 1 &&
+        !(
+          controlRecord &&
+          stat.nlink === 2 &&
+          (await hasPublishingLink(path, file, stat))
+        ))
     )
       throw new Error('Invalid worker record');
     const source = await file.readFile('utf8');
@@ -299,6 +316,29 @@ async function readRegularJsonOnce(path) {
   } finally {
     await file.close();
   }
+}
+
+async function hasPublishingLink(path, file, stat) {
+  // The final hard link already refers to a closed, synced inode. Only a
+  // sibling temporary name from the exclusive publisher may explain link two.
+  const directory = dirname(path);
+  const prefix = basename(path) + '.';
+  for (const name of await readdir(directory)) {
+    if (
+      !name.startsWith(prefix) ||
+      !name.endsWith('.tmp') ||
+      !uuid.test(name.slice(prefix.length, -4))
+    )
+      continue;
+    const candidate = await lstat(join(directory, name)).catch(() => undefined);
+    if (
+      candidate?.isFile() &&
+      candidate.dev === stat.dev &&
+      candidate.ino === stat.ino
+    )
+      return true;
+  }
+  return (await file.stat()).nlink === 1;
 }
 
 async function createExclusiveJson(path, value) {

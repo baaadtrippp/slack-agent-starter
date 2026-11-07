@@ -25,6 +25,25 @@
   Status, thumbs, and the F08 regression belong to integrated acceptance with
   matching gateway and worker builds.
 
+## Forced Stop follow-up
+
+- **Outcome.** A run that cannot stop cooperatively can still reach Stopped. Its
+  peer continues, and a resumed thread keeps its last committed native
+  checkpoint if the stopped turn left an incomplete transcript.
+- **Scope.** F09, AC03, AC07, and AC10. This follows the accepted O02 controls.
+  Slack routing, shared storage policy, and live acceptance stay outside this
+  worker follow-up.
+- **Path.** Preserve the exact verified checkpoint before a resumed turn can
+  write. After a bounded cooperative attempt, use the supervisor's recorded
+  child identity to target only its isolated process group. Prove exit before
+  restoring the checkpoint or releasing ownership. Escalation requires the
+  original supervised group leader. If process identity, exit, or checkpoint
+  integrity cannot be verified, retain ownership.
+- **Checks.** Verify group membership, forced exit, exact restoration, and
+  duplicate Stop with deterministic fixtures. Exercise the real process verifier
+  and a still-running peer in a disposable Sandbox using the packaged worker.
+  Require a full CodeRabbit review of the tested PR revision before merge.
+
 ## Deterministic evidence
 
 - Signed gateway tests use local Redis with Slack and Sandbox mocked. They
@@ -42,8 +61,13 @@
 If a resumed turn fully saves a completed checkpoint before exiting after Stop
 wins, the gateway keeps that verified revision of the same native session and
 suppresses its Slack answer. If a stop leaves the session's safety unconfirmed,
-the gateway keeps ownership and displays `Stopping`. The forced process-group
-fallback is still an acceptance gap.
+the gateway keeps ownership and displays `Stopping`.
+
+Forced-stop regressions verify exact marker and group membership, refuse mixed
+and escaped groups, and reject incomplete gateway proofs. Synthetic worker
+fixtures exercise the force and checkpoint-restore paths with the group
+membership check supplied separately. The provider check below runs the actual
+process verifier.
 
 ## Provider evidence
 
@@ -69,6 +93,28 @@ The packaged worker files had these SHA-256 digests.
 | `run.mjs`       | `4ac39ecfc548d58500761dc0114a97adaaa1b9aa752343e7a9169cd5423ae956` |
 | `supervise.mjs` | `f5de343d7f2941981fe10c9bac43f7f079eda2aa3ac17318450e54e95025a5d5` |
 | `control.mjs`   | `7ee89c20b95d8164b135c17b9171b5b1a12d8ab93e65057dd3c9ae9e5e8ca4f6` |
+
+### Forced Stop in a disposable Sandbox
+
+The packaged worker used the same pinned Pi runtime and loopback fixture. A test
+wrapper held each target active through cooperative Stop. The supervisor then
+terminated the target's recorded isolated process group. In both initial and
+resumed cases, the exact group and its marked processes were gone, the target
+produced no terminal callback or result, and the peer remained active and
+completed.
+
+For the resumed target, the transcript differed from the committed checkpoint
+before Stop. After exit, the transcript matched the prior revision and SHA-256
+exactly. The seed result and adapter routing fields matched. The leased adapter
+entry's ordinary `updatedAt` timestamp advanced. The Sandbox remained running
+with its writable Drive attached. Both disposable resources were removed and
+verified absent after testing.
+
+| File            | SHA-256                                                            |
+| --------------- | ------------------------------------------------------------------ |
+| `run.mjs`       | `6937d0ccf99676ac25a710c22d2e235f013305e99b75083eea46bd8e96261d92` |
+| `supervise.mjs` | `e9739ae3c3fc75317b6570efa0a10b0920a65a4952a509a7f8ec5343f8435471` |
+| `control.mjs`   | `ab4becc52b6d155ce9d59007a2f47d6f3f6bff919efdeb03f02b567c5fea1960` |
 
 ## Live Slack acceptance
 
