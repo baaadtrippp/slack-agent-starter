@@ -217,6 +217,7 @@ function initialize() {
       ? { collectArtifact: collectRunArtifact }
       : {}),
     dispatch: async (job, stagedInputs) => {
+      if (job.memory && !managed) return 'worker-unavailable';
       if (worker.kind === 'sandbox') {
         const session = await (
           managed

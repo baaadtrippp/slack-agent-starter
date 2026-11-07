@@ -33,6 +33,9 @@ export const slackAttachmentSchema = z
   })
   .strict();
 
+export const SHARED_NOTE_BYTE_LIMIT = 512;
+export const SHARED_NOTE_SAVED = 'Saved to this channel’s shared notes.';
+
 export const MAX_SLACK_INPUT_FILES = 5;
 export const MAX_RETAINED_INPUTS = 12;
 export const INPUT_BYTE_LIMIT = 16 * 1024;
@@ -143,6 +146,7 @@ export const workerJobSchema = z
       })
       .strict(),
     session: workerSessionSchema.optional(),
+    memory: z.enum(['save', 'read']).optional(),
     csvOutput: z.literal(true).optional(),
     artifactOutput: z.literal(true).optional(),
     deadline: z.number().int().positive(),
@@ -151,6 +155,17 @@ export const workerJobSchema = z
   })
   .strict()
   .refine(({ csvOutput, artifactOutput }) => !(csvOutput && artifactOutput))
+  .refine(
+    ({ input, memory, csvOutput, artifactOutput }) =>
+      memory !== 'save' ||
+      (!input.threadContext &&
+        !input.attachments &&
+        !input.sources &&
+        !csvOutput &&
+        !artifactOutput &&
+        Buffer.byteLength(input.text) <= SHARED_NOTE_BYTE_LIMIT &&
+        !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(input.text)),
+  )
   .refine(({ input, session }) => {
     const messages = input.threadContext?.messages;
     return (
@@ -181,6 +196,8 @@ export const workerResultSchema = z
         'pdf_text_too_large',
         'too_many_sources',
         'retained_sources_unavailable',
+        'shared_notes_full',
+        'shared_notes_unavailable',
       ])
       .optional(),
     artifact: z

@@ -16,6 +16,8 @@ import { z } from 'zod';
 import {
   MAX_RETAINED_INPUTS,
   MAX_SLACK_INPUT_FILES,
+  SHARED_NOTE_BYTE_LIMIT,
+  SHARED_NOTE_SAVED,
   WORKER_FAILURE_REPLY,
   workerCallbackSchema,
   workerResultSchema,
@@ -118,6 +120,7 @@ function statusText(run: RunRecord) {
         ? 'Working…'
         : 'Starting: worker startup is unconfirmed. The outcome is uncertain; ask the operator to inspect this run.';
     case 'interrupted':
+      if (run.memory === 'save') return SHARED_NOTE_UNCONFIRMED_REPLY;
       return run.controls
         ? 'Failed: work ended without a confirmed result. Mention me again to try a fresh run.'
         : 'Failed: the worker environment stopped without a confirmed result. Mention me again to try a fresh run.';
@@ -144,6 +147,13 @@ const PDF_TEXT_TOO_LARGE_REPLY =
   'The PDF contains more than 16 KiB of text for this test. Mention me again with a shorter PDF.';
 const RETAINED_SOURCES_UNAVAILABLE_REPLY =
   'I could not reopen an earlier file or link in this thread. Start a new message in the channel, mention me there, and include the files and links you still need.';
+
+const SHARED_NOTE_UNCONFIRMED_REPLY =
+  'I could not confirm the shared note save. Check the channel’s shared notes before resending it.';
+const SHARED_NOTE_FULL_REPLY =
+  'This channel’s shared notes are full. The existing notes are still available.';
+const SHARED_NOTES_UNAVAILABLE_REPLY =
+  'I could not open this channel’s shared notes. Please try again later.';
 
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_EVENT_BYTES = 256 * 1024;
@@ -301,7 +311,7 @@ export function createGateway({
       (active || run.state === 'stopping' || run.state === 'publishing')
         ? [
             Actions([
-              ...(active
+              ...(active && run.memory !== 'save'
                 ? [
                     Button({
                       id: STOP_ACTION_ID,
@@ -385,6 +395,7 @@ export function createGateway({
       if (
         config.controlsEnabled &&
         run.kind === 'work' &&
+        run.memory !== 'save' &&
         result.type === 'completed'
       ) {
         await store
@@ -529,6 +540,20 @@ export function createGateway({
   function validateResult(run: RunRecord, result: WorkerResult) {
     if (result.type === 'failed') {
       if (result.session || result.artifact) return 400;
+      if (run.memory === 'save') {
+        result.text =
+          result.inputError === 'shared_notes_full'
+            ? SHARED_NOTE_FULL_REPLY
+            : SHARED_NOTE_UNCONFIRMED_REPLY;
+        return;
+      }
+      if (
+        run.memory === 'read' &&
+        result.inputError === 'shared_notes_unavailable'
+      ) {
+        result.text = SHARED_NOTES_UNAVAILABLE_REPLY;
+        return;
+      }
       result.text =
         result.inputError === 'pdf_unreadable'
           ? PDF_UNREADABLE_REPLY
@@ -544,6 +569,15 @@ export function createGateway({
       return;
     }
     if (result.inputError) return 400;
+    if (run.memory === 'save') {
+      if (
+        result.session ||
+        result.artifact ||
+        result.text !== SHARED_NOTE_SAVED
+      )
+        return 409;
+      return;
+    }
     const expected = run.session;
     const received = result.session;
     if (
@@ -628,7 +662,11 @@ export function createGateway({
       if (
         run.deadline <= now() &&
         exited &&
-        (await store.interruptRun(run, now(), sessionRestored))
+        (await store.interruptRun(
+          run,
+          now(),
+          sessionRestored || run.memory === 'save',
+        ))
       )
         await releaseRecoveredWorker?.(run);
     } finally {
@@ -655,7 +693,9 @@ export function createGateway({
         current?.state === 'interrupted' &&
         (await store.interruptRun(current, now()))
       )
-        return RECOVERED_REPLY;
+        return previous.memory === 'save'
+          ? SHARED_NOTE_UNCONFIRMED_REPLY + ' This message was not submitted.'
+          : RECOVERED_REPLY;
       if (
         current &&
         ['completed', 'worker_failed', 'stopped'].includes(current.state) &&
@@ -767,8 +807,9 @@ export function createGateway({
         run.threadTs !== action.threadTs ||
         run.statusMessageId !== action.messageTs ||
         (action.actionId === STOP_ACTION_ID &&
-          run.senderId !== action.userId &&
-          !config.operatorIds?.includes(action.userId)) ||
+          (run.memory === 'save' ||
+            (run.senderId !== action.userId &&
+              !config.operatorIds?.includes(action.userId)))) ||
         !(await actorAllowed(action.channelId, action.userId).catch(
           () => false,
         ))
@@ -920,6 +961,21 @@ export function createGateway({
     if (message && !message.isMention)
       return new Response(null, { status: 200 });
 
+    const currentText = input.text.trimStart();
+    const leadingMention = mention
+      ? /^<@([UW][A-Z0-9]+)>\s+/.exec(currentText)
+      : null;
+    const command =
+      !mention || leadingMention
+        ? /^(remember for this channel:|use shared notes:)([\s\S]*)$/i.exec(
+            currentText.slice(leadingMention?.[0].length ?? 0),
+          )
+        : null;
+    const memory = command
+      ? command[1]!.toLowerCase() === 'remember for this channel:'
+        ? 'save'
+        : 'read'
+      : undefined;
     const callbackToken = randomBytes(32).toString('hex');
     const candidate: RunRecord = {
       runId: randomUUID(),
@@ -937,6 +993,7 @@ export function createGateway({
       callbackHash: digest(callbackToken),
       kind: 'work',
       state: 'accepted',
+      ...(memory ? { memory } : {}),
       ...(config.controlsEnabled && inspectWorker ? { controls: true } : {}),
     };
     let admission;
@@ -1001,9 +1058,46 @@ export function createGateway({
             );
           return;
         }
-        const links = config.publicUrlInput
-          ? currentMessageLinks(input.text)
-          : [];
+        let text = input.text;
+        if (command) {
+          const allowed = await actorAllowed(run.channelId, run.senderId).catch(
+            () => false,
+          );
+          if (leadingMention && allowed) await initializeBot();
+          if (
+            !allowed ||
+            (leadingMention && leadingMention[1] !== slack.botUserId)
+          ) {
+            await publishNotice(
+              run,
+              'failed',
+              'Shared notes are available to internal members of this enabled channel.',
+            );
+            return;
+          }
+          text = command[2]!.trim();
+          if (memory === 'save') text = unescapeSlackText(text).trim();
+          if (
+            !text ||
+            (memory === 'save' &&
+              (Buffer.byteLength(text) > SHARED_NOTE_BYTE_LIMIT ||
+                /[\p{Cc}\p{Zl}\p{Zp}]/u.test(text)))
+          ) {
+            await publishNotice(
+              run,
+              'failed',
+              memory === 'save'
+                ? 'Put the note on one line after “remember for this channel:”, up to 512 UTF-8 bytes.'
+                : 'Put your question after “use shared notes:”.',
+            );
+            return;
+          }
+        }
+        const saving = memory === 'save';
+        const links =
+          !saving && config.publicUrlInput
+            ? currentMessageLinks(input.text)
+            : [];
         const publicUrl = links[0];
         if (links.length > 1) {
           await publishNotice(
@@ -1014,7 +1108,8 @@ export function createGateway({
           return;
         }
 
-        const files = fileInputEnabled && hasFiles ? attachedFiles : [];
+        const files =
+          !saving && fileInputEnabled && hasFiles ? attachedFiles : [];
         if (files.length > MAX_SLACK_INPUT_FILES) {
           await publishNotice(
             run,
@@ -1057,7 +1152,12 @@ export function createGateway({
         }
 
         let threadContext: WorkerJob['input']['threadContext'];
-        if (mention && !run.session && run.threadTs !== run.messageTs) {
+        if (
+          !saving &&
+          mention &&
+          !run.session &&
+          run.threadTs !== run.messageTs
+        ) {
           threadContext = await loadThreadContext(run, config.botToken).catch(
             () => undefined,
           );
@@ -1085,7 +1185,9 @@ export function createGateway({
           );
         }
 
-        const attachments = slackAttachmentMetadata(attachedFiles);
+        const attachments = saving
+          ? undefined
+          : slackAttachmentMetadata(attachedFiles);
         acknowledgement = acknowledge(run);
         const job: WorkerJob = {
           version: 1,
@@ -1093,8 +1195,8 @@ export function createGateway({
           conversationId: run.conversationId,
           generation: run.generation,
           input: {
-            text: input.text.trim()
-              ? input.text
+            text: text.trim()
+              ? text
               : 'Use the attached files for this thread.',
             senderId: run.senderId,
             workspaceId: run.workspaceId,
@@ -1106,9 +1208,10 @@ export function createGateway({
             ...(sources.length ? { sources } : {}),
           },
           ...(run.session ? { session: run.session } : {}),
-          ...(config.fileExchange
+          ...(memory ? { memory } : {}),
+          ...(!saving && config.fileExchange
             ? { artifactOutput: true }
-            : config.csvOutput
+            : !saving && config.csvOutput
               ? { csvOutput: true }
               : {}),
           deadline: run.deadline,
@@ -1208,6 +1311,16 @@ export function createGateway({
         Number(url.searchParams.get('generation')),
       );
       if (auth instanceof Response) return auth;
+      const memory = url.searchParams.get('memory') ?? undefined;
+      if (
+        auth.memory !== memory ||
+        (memory &&
+          (!channelEnabled(auth.workspaceId, auth.channelId) ||
+            url.searchParams.get('workspaceId') !== auth.workspaceId ||
+            url.searchParams.get('channelId') !== auth.channelId ||
+            url.searchParams.get('messageTs') !== auth.messageTs))
+      )
+        return new Response(null, { status: 409 });
       return new Response(null, {
         status:
           auth.state === 'accepted' || auth.state === 'dispatch_failed'

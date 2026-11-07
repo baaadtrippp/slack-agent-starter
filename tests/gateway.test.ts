@@ -30,6 +30,7 @@ import { RedisRunStore } from '../apps/gateway/src/store.js';
 import type { RunRecord, SandboxTarget } from '../apps/gateway/src/store.js';
 import { createFakeWorker } from '../apps/worker/src/fake-worker.js';
 import {
+  SHARED_NOTE_SAVED,
   WORKER_FAILURE_REPLY,
   workerJobSchema,
 } from '../packages/contracts/src/index.js';
@@ -356,6 +357,209 @@ describe.skipIf(!redisUrl)(
       for await (const keys of client.scanIterator({ MATCH: `${namespace}:*` }))
         if (keys.length > 0) await client.del(keys);
       await redis.disconnect();
+    });
+
+    it('admits an explicit shared note from an ordinary member only once', async () => {
+      mockControlAccess();
+      vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
+        'UBOT1',
+      );
+      const gateway = harness();
+      const event = envelope();
+      event.event.text =
+        '<@UBOT1> remember for this channel: The badge is purple.';
+      await gateway.events(signed(event));
+      await gateway.events(signed(event));
+      await gateway.events(signed({ ...event, event_id: 'EvAnotherDelivery' }));
+      await gateway.flush();
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+      expect(gateway.dispatch.mock.calls[0]?.[0]).toMatchObject({
+        memory: 'save',
+        input: {
+          text: 'The badge is purple.',
+          workspaceId: 'TTEST1',
+          channelId: 'CTEST1',
+        },
+      });
+    });
+
+    it('binds shared notes to the admitted scope and publishes a save only after the worker result', async () => {
+      mockControlAccess();
+      vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
+        'UBOT1',
+      );
+      const gateway = harness(createMockState(), true);
+      const event = envelope();
+      event.event.text =
+        '<@UBOT1> remember for this channel: The badge is purple.';
+      await gateway.events(signed(event));
+      await gateway.flush();
+      const save = workerJobSchema.parse(gateway.dispatch.mock.calls[0]![0]);
+      expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
+
+      function admission(channelId: string) {
+        const url = new URL(save.callbackUrl);
+        for (const [key, value] of Object.entries({
+          runId: save.runId,
+          generation: '1',
+          memory: 'save',
+          workspaceId: save.input.workspaceId,
+          channelId,
+          messageTs: save.input.messageTs,
+        }))
+          url.searchParams.set(key, value);
+        return new Request(url, {
+          headers: { authorization: 'Bearer ' + save.callbackToken },
+        });
+      }
+      expect((await gateway.callback(admission('CTEST2'))).status).toBe(409);
+      expect((await gateway.callback(admission('CTEST1'))).status).toBe(204);
+      const fake = result(save);
+      expect(
+        (await gateway.callback(callback(fake, save.callbackToken))).status,
+      ).toBe(409);
+      const saved = { ...fake, text: SHARED_NOTE_SAVED };
+      expect(
+        (await gateway.callback(callback(saved, save.callbackToken))).status,
+      ).toBe(202);
+      expect(
+        (await gateway.callback(callback(saved, save.callbackToken))).status,
+      ).toBe(204);
+      await gateway.flush();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
+      expect(await gateway.owner(event.event.ts)).toBeNull();
+
+      const reader = envelope();
+      reader.event.user = 'UOTHER1';
+      reader.event.text = '<@UBOT1> use shared notes: What color is the badge?';
+      await gateway.events(signed(reader));
+      await gateway.flush();
+      const read = workerJobSchema.parse(gateway.dispatch.mock.calls[1]![0]);
+      expect(read).toMatchObject({
+        memory: 'read',
+        input: {
+          text: 'What color is the badge?',
+          senderId: 'UOTHER1',
+          threadTs: reader.event.ts,
+        },
+      });
+      expect(read.session).toBeUndefined();
+      expect(read.input.threadContext).toBeUndefined();
+      expect(read.conversationId).not.toBe(save.conversationId);
+    });
+
+    it.each(['remember for this channel:', 'use shared notes:'])(
+      'refuses %s in a disabled channel or from an external or nonmember actor',
+      async (command) => {
+        mockControlAccess();
+        vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
+          'UBOT1',
+        );
+        const gateway = harness();
+        for (const { user, channel } of [
+          { user: 'UTEST1', channel: 'CTEST2' },
+          { user: 'UEXTERNAL', channel: 'CTEST1' },
+          { user: 'UNONMEMBER', channel: 'CTEST1' },
+        ]) {
+          const event = envelope();
+          Object.assign(event.event, {
+            user,
+            channel,
+            text: '<@UBOT1> ' + command + ' Synthetic text',
+          });
+          await gateway.events(signed(event));
+          await gateway.flush();
+        }
+        expect(gateway.dispatch).not.toHaveBeenCalled();
+      },
+    );
+
+    it('uses only current text when an ordinary activated reply saves a note', async () => {
+      const gateway = harness(createMockState(), true, undefined, {
+        fileExchange: true,
+        publicUrlInput: true,
+      });
+      const root = envelope();
+      await gateway.events(signed(root));
+      await gateway.flush();
+      const initial = gateway.dispatch.mock.calls[0]![0];
+      const session = {
+        seedRunId: initial.runId,
+        nativeId: randomUUID(),
+        adapterId: randomUUID(),
+        revision: 1,
+      };
+      expect(
+        (
+          await gateway.callback(
+            callback({ ...result(initial), session }, initial.callbackToken),
+          )
+        ).status,
+      ).toBe(202);
+      await gateway.flush();
+
+      mockControlAccess();
+      const reply = threadReply(root.event.ts);
+      const note = 'The badge is documented at https://example.test/fixture.';
+      await gateway.events(
+        signed({
+          ...reply,
+          event: {
+            ...reply.event,
+            text: 'remember for this channel: ' + note,
+            files: [
+              { id: 'FTEST1', name: 'attachment.txt', mimetype: 'text/plain' },
+            ],
+            ts: '1800000002.000002',
+          },
+        }),
+      );
+      await gateway.flush();
+      const [save, staged] = gateway.dispatch.mock.calls[1]!;
+      expect(save).toMatchObject({
+        memory: 'save',
+        session,
+        input: { text: note },
+      });
+      expect(save.input.attachments).toBeUndefined();
+      expect(save.input.sources).toBeUndefined();
+      expect(save.input.threadContext).toBeUndefined();
+      expect(staged).toBeUndefined();
+      expect(save.artifactOutput).toBeUndefined();
+    });
+
+    it('keeps earlier instructions and busy replies out of shared-note admission', async () => {
+      vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
+        'UBOT1',
+      );
+      const gateway = harness(createMockState(), true);
+      const root = envelope();
+      const event = envelope();
+      event.event.text = '<@UBOT1> Could you remember the earlier note?';
+      historyFetch.mockResolvedValue(
+        Response.json({
+          ok: true,
+          messages: [
+            historyMessage(
+              root.event.ts,
+              'remember for this channel: History text',
+            ),
+          ],
+        }),
+      );
+      await gateway.events(
+        signed({
+          ...event,
+          event: { ...event.event, thread_ts: root.event.ts },
+        }),
+      );
+      await gateway.flush();
+      expect(gateway.dispatch.mock.calls[0]?.[0].memory).toBeUndefined();
+      const busy = threadReply(root.event.ts);
+      busy.event.text = 'remember for this channel: Busy note';
+      await gateway.events(signed(busy));
+      await gateway.flush();
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
     });
 
     async function startControlled(

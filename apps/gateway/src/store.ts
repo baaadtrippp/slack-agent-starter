@@ -68,6 +68,7 @@ export type RunRecord = {
     | 'stopping'
     | 'stopped';
   controls?: true;
+  memory?: WorkerJob['memory'];
   session?: WorkerSession;
   result?: WorkerResult;
   execution?: SandboxTarget;
@@ -242,7 +243,7 @@ local encoded = redis.call('GET', KEYS[1])
 if not encoded then return 0 end
 local run = cjson.decode(encoded)
 if run.state ~= 'publishing' then return 0 end
-local indexable = run.kind == 'work' and run.result.type == 'completed'
+local indexable = run.kind == 'work' and run.memory ~= 'save' and run.result.type == 'completed'
 local answerOwner = indexable and redis.call('GET', KEYS[4])
 if answerOwner and answerOwner ~= run.runId then return 0 end
 local owns = redis.call('GET', KEYS[2]) == run.runId
@@ -277,7 +278,7 @@ if not encoded then return 'conflict' end
 local run = cjson.decode(encoded)
 if run.runId ~= ARGV[1] or run.generation ~= tonumber(ARGV[2]) or
    not run.statusMessageId or run.statusMessageId ~= ARGV[3] or
-   run.kind ~= 'work' or not run.controls then return 'conflict' end
+   run.kind ~= 'work' or not run.controls or run.memory == 'save' then return 'conflict' end
 if run.state == 'stopping' or run.state == 'stopped' then return 'duplicate' end
 if run.state == 'publishing' or run.state == 'completed' or
    run.state == 'worker_failed' or run.state == 'publication_uncertain' or
@@ -334,7 +335,7 @@ const BACKFILL_ANSWER_SCRIPT = `
 local encoded = redis.call('GET', KEYS[1])
 if not encoded then return 0 end
 local run = cjson.decode(encoded)
-if run.kind ~= 'work' or run.state ~= 'completed' or
+if run.kind ~= 'work' or run.memory == 'save' or run.state ~= 'completed' or
    not run.result or run.result.type ~= 'completed' or
    run.workspaceId ~= ARGV[1] or run.channelId ~= ARGV[2] or
    run.messageId ~= ARGV[3] or run.runId ~= ARGV[4] then return 0 end
