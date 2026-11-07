@@ -542,6 +542,72 @@ describe.skipIf(!redisUrl)(
       },
     );
 
+    it.each([
+      ['save', true, 'remember for this channel:'],
+      ['save', false, 'remember for this channel:'],
+      ['read', true, 'use shared notes:'],
+      ['read', false, 'use shared notes:'],
+      [undefined, true, 'remember for this channel:'],
+    ])(
+      'deduplicates %s across Slack deliveries (reply first: %s)',
+      async (memory, replyFirst, prefix) => {
+        const gateway = harness(createMockState(), true);
+        const root = envelope();
+        await gateway.events(signed(root));
+        await gateway.flush();
+        const first = gateway.dispatch.mock.calls[0]![0];
+        const session = {
+          seedRunId: first.runId,
+          nativeId: randomUUID(),
+          adapterId: randomUUID(),
+          revision: 1,
+        };
+        await gateway.callback(
+          callback({ ...result(first), session }, first.callbackToken),
+        );
+        await gateway.flush();
+
+        mockControlAccess();
+        // Slack's signed installation context is available before the
+        // gateway has initialized the bot's identity.
+        vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get')
+          .mockReturnValueOnce(undefined)
+          .mockReturnValue('UBOT1');
+        const reply = {
+          ...threadReply(root.event.ts),
+          authorizations: [
+            { team_id: 'TTEST1', user_id: 'UBOT1', is_bot: true },
+          ],
+        };
+        const requestText = 'The synthetic badge is purple.';
+        reply.event.ts = '1800000002.000002';
+        reply.event.text =
+          '<@' +
+          (memory ? 'UBOT1' : 'UOTHER1') +
+          '> ' +
+          prefix +
+          ' ' +
+          requestText;
+        const mention = {
+          ...reply,
+          event_id: 'Ev' + randomUUID(),
+          event: { ...reply.event, type: 'app_mention' },
+        };
+        for (const delivery of replyFirst
+          ? [reply, mention]
+          : [mention, reply]) {
+          await gateway.events(signed(delivery));
+          await gateway.flush();
+        }
+        expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+        const command = gateway.dispatch.mock.calls[1]![0];
+        expect(command.memory).toBe(memory);
+        expect(command.input.text).toBe(
+          memory ? requestText : reply.event.text,
+        );
+      },
+    );
+
     it('keeps earlier instructions and busy replies out of shared-note admission', async () => {
       vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
         'UBOT1',

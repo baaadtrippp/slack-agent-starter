@@ -165,6 +165,16 @@ const threadReplyEnvelope = z.object({
   team_id: z.string(),
   event_id: z.string(),
   is_ext_shared_channel: z.literal(false),
+  authorizations: z
+    .array(
+      z.object({
+        team_id: z.string(),
+        user_id: z.string(),
+        is_bot: z.boolean(),
+      }),
+    )
+    .optional()
+    .catch(undefined),
   event: z.looseObject({
     type: z.literal('message'),
     channel_type: z.literal('channel'),
@@ -186,6 +196,10 @@ function parseThreadReply(raw: unknown) {
     teamId: envelope.team_id,
     channelId: event.channel,
     isExtSharedChannel: envelope.is_ext_shared_channel,
+    authorizedBotId: envelope.authorizations?.find(
+      (authorization) =>
+        authorization.is_bot && authorization.team_id === envelope.team_id,
+    )?.user_id,
     userId: event.user,
     eventId: envelope.event_id,
     ts: event.ts,
@@ -906,14 +920,21 @@ export function createGateway({
     if (!input) return new Response(null, { status: 200 });
 
     const currentText = input.text.trimStart();
-    const leadingMention = mention
-      ? /^<@([UW][A-Z0-9]+)>\s+/.exec(currentText)
-      : null;
+    const leadingMention = currentText.match(/^<@([UW][A-Z0-9]+)>\s+/);
+    const botUserId =
+      slack.botUserId ??
+      ('authorizedBotId' in input ? input.authorizedBotId : undefined);
+    // The same Slack message can arrive as a reply and a mention. Classify
+    // the command before either event can claim the logical message.
+    const botMention =
+      leadingMention && (mention || leadingMention[1] === botUserId)
+        ? leadingMention
+        : null;
     const command =
-      !mention || leadingMention
-        ? /^(remember for this channel:|use shared notes:)([\s\S]*)$/i.exec(
-            currentText.slice(leadingMention?.[0].length ?? 0),
-          )
+      !mention || botMention
+        ? currentText
+            .slice(botMention?.[0].length ?? 0)
+            .match(/^(remember for this channel:|use shared notes:)([\s\S]*)$/i)
         : null;
     const memory = command
       ? command[1]!.toLowerCase() === 'remember for this channel:'
@@ -1065,11 +1086,8 @@ export function createGateway({
           const allowed = await actorAllowed(run.channelId, run.senderId).catch(
             () => false,
           );
-          if (leadingMention && allowed) await initializeBot();
-          if (
-            !allowed ||
-            (leadingMention && leadingMention[1] !== slack.botUserId)
-          ) {
+          if (botMention && allowed) await initializeBot();
+          if (!allowed || (botMention && botMention[1] !== slack.botUserId)) {
             await publishNotice(
               run,
               'failed',
