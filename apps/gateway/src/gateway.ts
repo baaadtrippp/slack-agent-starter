@@ -905,6 +905,23 @@ export function createGateway({
           : undefined;
     if (!input) return new Response(null, { status: 200 });
 
+    const currentText = input.text.trimStart();
+    const leadingMention = mention
+      ? /^<@([UW][A-Z0-9]+)>\s+/.exec(currentText)
+      : null;
+    const command =
+      !mention || leadingMention
+        ? /^(remember for this channel:|use shared notes:)([\s\S]*)$/i.exec(
+            currentText.slice(leadingMention?.[0].length ?? 0),
+          )
+        : null;
+    const memory = command
+      ? command[1]!.toLowerCase() === 'remember for this channel:'
+        ? 'save'
+        : 'read'
+      : undefined;
+    const saving = memory === 'save';
+
     const rawEvent = input.raw;
     const attachedFiles = rawEvent?.files;
     const hasFiles = Array.isArray(attachedFiles) && attachedFiles.length > 0;
@@ -917,7 +934,9 @@ export function createGateway({
     };
     const fileInputEnabled = Object.values(enabledFiles).some(Boolean);
     const fileShare =
-      fileInputEnabled && rawEvent?.subtype === 'file_share' && hasFiles;
+      (fileInputEnabled || saving) &&
+      rawEvent?.subtype === 'file_share' &&
+      hasFiles;
     if (
       input.teamId !== config.workspaceId ||
       !config.channelIds.includes(input.channelId) ||
@@ -936,7 +955,7 @@ export function createGateway({
       rawEvent.bot_id ||
       rawEvent.bot_profile ||
       (rawEvent.subtype !== undefined && !fileShare) ||
-      (!mention && !fileInputEnabled && hasFiles) ||
+      (!mention && !saving && !fileInputEnabled && hasFiles) ||
       (rawEvent.user_team !== undefined &&
         rawEvent.user_team !== config.workspaceId) ||
       (rawEvent.team !== undefined && rawEvent.team !== config.workspaceId) ||
@@ -959,21 +978,6 @@ export function createGateway({
     if (message && !message.isMention)
       return new Response(null, { status: 200 });
 
-    const currentText = input.text.trimStart();
-    const leadingMention = mention
-      ? /^<@([UW][A-Z0-9]+)>\s+/.exec(currentText)
-      : null;
-    const command =
-      !mention || leadingMention
-        ? /^(remember for this channel:|use shared notes:)([\s\S]*)$/i.exec(
-            currentText.slice(leadingMention?.[0].length ?? 0),
-          )
-        : null;
-    const memory = command
-      ? command[1]!.toLowerCase() === 'remember for this channel:'
-        ? 'save'
-        : 'read'
-      : undefined;
     const callbackToken = randomBytes(32).toString('hex');
     const candidate: RunRecord = {
       runId: randomUUID(),
@@ -1091,7 +1095,6 @@ export function createGateway({
             return;
           }
         }
-        const saving = memory === 'save';
         const links =
           !saving && config.publicUrlInput
             ? currentMessageLinks(input.text)

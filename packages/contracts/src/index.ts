@@ -163,6 +163,7 @@ export const workerJobSchema = z
         !input.sources &&
         !csvOutput &&
         !artifactOutput &&
+        input.text === input.text.trim() &&
         Buffer.byteLength(input.text) <= SHARED_NOTE_BYTE_LIMIT &&
         !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(input.text)),
   )

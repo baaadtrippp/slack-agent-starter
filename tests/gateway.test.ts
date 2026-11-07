@@ -474,59 +474,73 @@ describe.skipIf(!redisUrl)(
       },
     );
 
-    it('uses only current text when an ordinary activated reply saves a note', async () => {
-      const gateway = harness(createMockState(), true, undefined, {
-        fileExchange: true,
-        publicUrlInput: true,
-      });
-      const root = envelope();
-      await gateway.events(signed(root));
-      await gateway.flush();
-      const initial = gateway.dispatch.mock.calls[0]![0];
-      const session = {
-        seedRunId: initial.runId,
-        nativeId: randomUUID(),
-        adapterId: randomUUID(),
-        revision: 1,
-      };
-      expect(
-        (
-          await gateway.callback(
-            callback({ ...result(initial), session }, initial.callbackToken),
-          )
-        ).status,
-      ).toBe(202);
-      await gateway.flush();
+    it.each([false, true])(
+      'saves only current text from an ordinary file-share reply (file exchange: %s)',
+      async (fileExchange) => {
+        const gateway = harness(createMockState(), true, undefined, {
+          fileExchange,
+          publicUrlInput: true,
+        });
+        const root = envelope();
+        await gateway.events(signed(root));
+        await gateway.flush();
+        const initial = gateway.dispatch.mock.calls[0]![0];
+        const session = {
+          seedRunId: initial.runId,
+          nativeId: randomUUID(),
+          adapterId: randomUUID(),
+          revision: 1,
+        };
+        expect(
+          (
+            await gateway.callback(
+              callback({ ...result(initial), session }, initial.callbackToken),
+            )
+          ).status,
+        ).toBe(202);
+        await gateway.flush();
 
-      mockControlAccess();
-      const reply = threadReply(root.event.ts);
-      const note = 'The badge is documented at https://example.test/fixture.';
-      await gateway.events(
-        signed({
-          ...reply,
-          event: {
-            ...reply.event,
-            text: 'remember for this channel: ' + note,
-            files: [
-              { id: 'FTEST1', name: 'attachment.txt', mimetype: 'text/plain' },
-            ],
-            ts: '1800000002.000002',
-          },
-        }),
-      );
-      await gateway.flush();
-      const [save, staged] = gateway.dispatch.mock.calls[1]!;
-      expect(save).toMatchObject({
-        memory: 'save',
-        session,
-        input: { text: note },
-      });
-      expect(save.input.attachments).toBeUndefined();
-      expect(save.input.sources).toBeUndefined();
-      expect(save.input.threadContext).toBeUndefined();
-      expect(staged).toBeUndefined();
-      expect(save.artifactOutput).toBeUndefined();
-    });
+        mockControlAccess();
+        const reply = threadReply(root.event.ts);
+        const note = 'The badge is documented at https://example.test/fixture.';
+        await gateway.events(
+          signed({
+            ...reply,
+            event: {
+              ...reply.event,
+              text: 'remember for this channel: ' + note,
+              subtype: 'file_share',
+              files: [
+                {
+                  id: 'FTEST1',
+                  name: 'attachment.txt',
+                  mimetype: 'text/plain',
+                },
+              ],
+              ts: '1800000002.000002',
+            },
+          }),
+        );
+        await gateway.flush();
+        const [save, staged] = gateway.dispatch.mock.calls[1]!;
+        expect(save).toMatchObject({
+          memory: 'save',
+          session,
+          input: { text: note },
+        });
+        expect(save.input.attachments).toBeUndefined();
+        expect(save.input.sources).toBeUndefined();
+        expect(save.input.threadContext).toBeUndefined();
+        expect(staged).toBeUndefined();
+        expect(save.artifactOutput).toBeUndefined();
+        expect(
+          workerJobSchema.safeParse({
+            ...save,
+            input: { ...save.input, text: ' ' + note },
+          }).success,
+        ).toBe(false);
+      },
+    );
 
     it('keeps earlier instructions and busy replies out of shared-note admission', async () => {
       vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(

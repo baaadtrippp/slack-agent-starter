@@ -534,9 +534,16 @@ process.once('message', () => {
       const paths = await fixture();
       const runId = randomUUID();
       const worker = join(paths.root, 'stuck-worker.mjs');
+      const ready = join(paths.root, 'signal-handler-ready');
       await writeFile(
         worker,
-        "process.on('SIGTERM', () => {}); process.on('message', () => process.disconnect()); setInterval(() => {}, 1000);",
+        `
+import { writeFileSync } from 'node:fs';
+process.on('SIGTERM', () => {});
+process.on('message', () => process.disconnect());
+writeFileSync(${JSON.stringify(ready)}, '1');
+setInterval(() => {}, 1000);
+`,
       );
       const supervised = supervise(
         { version: 1, runId, generation: 1 },
@@ -550,10 +557,16 @@ process.once('message', () => {
       let status;
       for (let attempt = 0; attempt < 50; attempt += 1) {
         status = await controlRun(request(runId, 'status'), paths);
-        if (status.state === 'running') break;
+        // The supervisor registers the group before the child handles signals.
+        if (
+          status.state === 'running' &&
+          (await readFile(ready, 'utf8').catch(() => undefined)) === '1'
+        )
+          break;
         await delay(20);
       }
       expect(status?.state).toBe('running');
+      expect(await readFile(ready, 'utf8')).toBe('1');
       await expect(
         controlRun(request(runId, 'cancel'), paths),
       ).resolves.toEqual(
