@@ -7,13 +7,14 @@ type ManagedWorkerConfig = {
   sandboxName: string;
   driveName: string;
   seedId: string;
+  controlsEnabled?: boolean;
 };
 
 export function createManagedWorker(
   config: ManagedWorkerConfig,
   store: RedisRunStore,
 ) {
-  const { sandboxName, driveName, seedId } = config;
+  const { sandboxName, driveName, seedId, controlsEnabled } = config;
   const target = (session: Session) => ({
     sandboxName,
     sessionId: session.sessionId,
@@ -59,7 +60,10 @@ export function createManagedWorker(
       cmd: 'bash',
       args: [
         '-c',
-        'set -eu; mountpoint -q /workspace; cd /tmp/hydra-worker; test -x node_modules/.bin/pi; test -x node_modules/.bin/pi-acp; node --check run.mjs',
+        'set -eu; mountpoint -q /workspace; cd /tmp/hydra-worker; test -x node_modules/.bin/pi; test -x node_modules/.bin/pi-acp; node --check run.mjs' +
+          (controlsEnabled
+            ? '; node --check supervise.mjs; node --check control.mjs'
+            : ''),
       ],
       timeoutMs: 3_000,
       signal,

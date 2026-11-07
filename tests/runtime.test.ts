@@ -3,6 +3,8 @@ import { createHash, createHmac, randomUUID } from 'node:crypto';
 import net from 'node:net';
 import { createRedisState } from '@chat-adapter/state-redis';
 import { afterAll, describe, expect, it, vi } from 'vitest';
+import type { RunRecord } from '../apps/gateway/src/store.js';
+import type { Session } from '../apps/gateway/node_modules/@vercel/sandbox/dist/index.js';
 import type { WorkerJob } from '../packages/contracts/src/index.js';
 
 const { background, sandboxGet, driveGet, fetchPublicText } = vi.hoisted(
@@ -24,6 +26,154 @@ vi.mock('../apps/gateway/node_modules/@vercel/sandbox/dist/index.js', () => ({
 vi.mock('../apps/gateway/src/public-url.js', () => ({ fetchPublicText }));
 
 const redisUrl = process.env.TEST_REDIS_URL;
+
+describe('Sandbox run inspection', () => {
+  const run = {
+    runId: '00000000-0000-4000-8000-000000000001',
+    generation: 1,
+    execution: { sandboxName: 'test-worker', sessionId: 'exact-session' },
+  } satisfies Pick<RunRecord, 'runId' | 'generation' | 'execution'>;
+
+  it('never sends an action to a different or stopped Sandbox session', async () => {
+    const { inspectSandboxRun } =
+      await import('../apps/gateway/src/worker-control.js');
+    const runCommand = vi.fn();
+    for (const [status, sessionId] of [
+      ['running', 'replacement-session'],
+      ['stopped', 'exact-session'],
+    ]) {
+      sandboxGet.mockResolvedValueOnce({
+        currentSession: () => ({ status, sessionId, runCommand }),
+      });
+      expect(await inspectSandboxRun(run, true)).toEqual({ state: 'unknown' });
+    }
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(sandboxGet).toHaveBeenLastCalledWith(
+      expect.objectContaining({ name: 'test-worker', resume: false }),
+    );
+  });
+
+  it('requires exact exit and session proof before confirming cancellation', async () => {
+    const { inspectSandboxRun } =
+      await import('../apps/gateway/src/worker-control.js');
+    const proof = {
+      version: 1,
+      runId: run.runId,
+      generation: run.generation,
+      state: 'exited',
+      processesExited: true,
+      stopRequested: true,
+      sessionSafe: 'uncommitted',
+    };
+    const runCommand = vi.fn();
+    const forced = { ...proof, forced: true, targetPgid: 123 };
+    const proofs = [
+      [{ ...proof, generation: 2 }, 'unknown'],
+      [{ ...proof, processesExited: false }, 'unknown'],
+      [{ ...proof, stopRequested: false }, 'unknown'],
+      [{ ...proof, sessionSafe: 'restored' }, 'unknown'],
+      [{ ...proof, forced: true }, 'unknown'],
+      [{ ...forced, targetPgid: 1 }, 'unknown'],
+      [{ ...forced, stopRequested: false }, 'unknown'],
+      [proof, 'stopped'],
+      [forced, 'stopped'],
+    ] as const;
+    for (const [evidence, state] of proofs) {
+      sandboxGet.mockResolvedValueOnce({
+        currentSession: () => ({
+          status: 'running',
+          sessionId: run.execution.sessionId,
+          runCommand,
+        }),
+      });
+      runCommand.mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: async () => JSON.stringify(evidence),
+      });
+      expect(await inspectSandboxRun(run, true)).toEqual({ state });
+    }
+    expect(runCommand).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        args: ['/tmp/hydra-worker/control.mjs'],
+        env: {
+          HYDRA_CONTROL: JSON.stringify({
+            version: 1,
+            runId: run.runId,
+            generation: run.generation,
+            action: 'cancel',
+          }),
+        },
+      }),
+    );
+  });
+
+  it('can read a durable result from a verified replacement without sending it Stop', async () => {
+    const { inspectSandboxRun } =
+      await import('../apps/gateway/src/worker-control.js');
+    const result = {
+      version: 1,
+      runId: run.runId,
+      generation: 1,
+      eventId: randomUUID(),
+      sequence: 2,
+      type: 'completed',
+      text: 'Synthetic answer',
+    };
+    const runCommand = vi.fn().mockResolvedValue({
+      exitCode: 0,
+      stdout: async () =>
+        JSON.stringify({
+          version: 1,
+          runId: run.runId,
+          generation: 1,
+          state: 'exited',
+          processesExited: true,
+          stopRequested: false,
+          sessionSafe: 'committed',
+          result,
+        }),
+    });
+    const replacement = {
+      status: 'running',
+      sessionId: 'replacement',
+      runCommand,
+    } as unknown as Session;
+    expect(await inspectSandboxRun(run, true, replacement)).toEqual({
+      state: 'stopped',
+    });
+    expect(runCommand).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        env: {
+          HYDRA_CONTROL: JSON.stringify({
+            version: 1,
+            runId: run.runId,
+            generation: 1,
+            action: 'status',
+            environmentStopped: true,
+          }),
+        },
+      }),
+    );
+    expect(await inspectSandboxRun(run, false, replacement)).toEqual({
+      state: 'exited',
+      result,
+      artifactTarget: { sandboxName: 'test-worker', sessionId: 'replacement' },
+    });
+    expect(runCommand).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        env: {
+          HYDRA_CONTROL: JSON.stringify({
+            version: 1,
+            runId: run.runId,
+            generation: run.generation,
+            action: 'status',
+            environmentStopped: true,
+          }),
+        },
+      }),
+    );
+  });
+});
 
 describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
   let server: net.Server | undefined;
@@ -738,6 +888,15 @@ async function cleanupRuntimeRun(
     `slack-agent:m1:message:TTEST1:CTEST1:${event.ts}`,
     `slack-agent:m1:owner:TTEST1:CTEST1:${event.ts}`,
   ];
-  if (runId) keys.push(`slack-agent:m1:run:${runId}`);
+  if (runId) {
+    const runKey = `slack-agent:m1:run:${runId}`;
+    const encoded = await client.get(runKey);
+    const run = encoded ? (JSON.parse(encoded) as RunRecord) : undefined;
+    if (run?.messageId) {
+      const index = `slack-agent:m1:answer:${run.workspaceId}:${run.channelId}:${run.messageId}`;
+      if ((await client.get(index)) === runId) keys.push(index);
+    }
+    keys.push(runKey);
+  }
   await client.del(keys);
 }

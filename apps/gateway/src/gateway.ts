@@ -10,7 +10,7 @@ import {
   parseSlackWebhookBody,
   verifySlackSignature,
 } from '@chat-adapter/slack/webhook';
-import { Chat, ConsoleLogger, emoji } from 'chat';
+import { Actions, Button, CardText, Chat, ConsoleLogger, emoji } from 'chat';
 import type { StateAdapter } from 'chat';
 import { z } from 'zod';
 import {
@@ -27,6 +27,15 @@ import type {
   WorkerResult,
 } from '../../../packages/contracts/src/index.js';
 import { fetchPublicText } from './public-url.js';
+import {
+  encodeControlValue,
+  parseSlackFeedbackReaction,
+  parseVerifiedSlackControl,
+  STATUS_ACTION_ID,
+  STOP_ACTION_ID,
+  verifySlackActorAndChannel,
+} from './slack-controls.js';
+import type { SlackFeedbackReaction } from './slack-controls.js';
 import { downloadSlackFile, selectSlackFileKind } from './slack-file.js';
 import {
   loadThreadContext,
@@ -48,7 +57,20 @@ export type GatewayConfig = {
   pngInput?: boolean;
   csvOutput?: boolean;
   publicUrlInput?: boolean;
+  controlsEnabled?: boolean;
+  operatorIds?: string[];
 };
+
+export type WorkerInspection =
+  | { state: 'unknown' }
+  | { state: 'stopped'; completed?: WorkerResult }
+  | {
+      state: 'exited';
+      result?: WorkerResult;
+      artifactTarget?: SandboxTarget;
+      artifactBytes?: Buffer;
+      sessionRestored?: true;
+    };
 
 type GatewayOptions = {
   config: GatewayConfig;
@@ -64,6 +86,8 @@ type GatewayOptions = {
     format?: ArtifactFormat,
   ) => Promise<Buffer>;
   isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>;
+  inspectWorker?: (run: RunRecord, stop: boolean) => Promise<WorkerInspection>;
+  releaseRecoveredWorker?: (run: RunRecord) => Promise<void>;
   schedule: (task: () => Promise<void>) => void;
   now?: () => number;
 };
@@ -75,6 +99,10 @@ export const STARTING_STATUS = 'Starting…';
 
 function statusText(run: RunRecord) {
   switch (run.state) {
+    case 'stopping':
+      return 'Stopping…';
+    case 'stopped':
+      return 'Stopped. You can send another request in this thread.';
     case 'publishing':
       return 'Finishing: publishing the result…';
     case 'completed':
@@ -90,7 +118,9 @@ function statusText(run: RunRecord) {
         ? 'Working…'
         : 'Starting: worker startup is unconfirmed. The outcome is uncertain; ask the operator to inspect this run.';
     case 'interrupted':
-      return 'Failed: the worker environment stopped without a confirmed result. Mention me again to try a fresh run.';
+      return run.controls
+        ? 'Failed: work ended without a confirmed result. Mention me again to try a fresh run.'
+        : 'Failed: the worker environment stopped without a confirmed result. Mention me again to try a fresh run.';
     default:
       return run.progress ? 'Working…' : STARTING_STATUS;
   }
@@ -118,6 +148,7 @@ const RETAINED_SOURCES_UNAVAILABLE_REPLY =
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_EVENT_BYTES = 256 * 1024;
 const RUN_DURATION_MS = 60_000;
+const CONTROL_FRESHNESS_MS = 300_000;
 
 const threadReplyEnvelope = z.object({
   type: z.literal('event_callback'),
@@ -161,6 +192,8 @@ export function createGateway({
   dispatch,
   collectArtifact,
   isSandboxStopped,
+  inspectWorker,
+  releaseRecoveredWorker,
   schedule,
   now = Date.now,
 }: GatewayOptions) {
@@ -247,6 +280,45 @@ export function createGateway({
     }
   }
 
+  function statusMessage(run: RunRecord) {
+    const active = run.state === 'accepted' || run.state === 'dispatch_failed';
+    const expired = run.deadline <= now();
+    const text =
+      run.controls && expired && active
+        ? 'The run deadline passed. Its outcome is unconfirmed. Use Status to check again.'
+        : run.controls && expired && run.state === 'publishing'
+          ? 'Finishing: result delivery is unconfirmed.'
+          : statusText(run);
+    if (!run.controls) return text;
+    const value = encodeControlValue({
+      version: 1,
+      runId: run.runId,
+      generation: run.generation,
+    });
+    const children = [
+      CardText(text),
+      ...(config.controlsEnabled &&
+      (active || run.state === 'stopping' || run.state === 'publishing')
+        ? [
+            Actions([
+              ...(active
+                ? [
+                    Button({
+                      id: STOP_ACTION_ID,
+                      label: 'Stop',
+                      style: 'danger',
+                      value,
+                    }),
+                  ]
+                : []),
+              Button({ id: STATUS_ACTION_ID, label: 'Status', value }),
+            ]),
+          ]
+        : []),
+    ];
+    return { type: 'card' as const, children };
+  }
+
   async function renderStatus(runId: string) {
     const token = randomUUID();
     try {
@@ -264,7 +336,7 @@ export function createGateway({
                 await slack.editMessage(
                   threadIdFor(current),
                   current.statusMessageId,
-                  statusText(current),
+                  statusMessage(current),
                 );
                 break;
               } catch {
@@ -310,6 +382,15 @@ export function createGateway({
       await initializeBot();
       publishingStatus = renderStatus(run.runId);
       threadId = threadIdFor(run);
+      if (
+        config.controlsEnabled &&
+        run.kind === 'work' &&
+        result.type === 'completed'
+      ) {
+        await store
+          .openAnswerPublication(run.workspaceId, run.channelId)
+          .catch(() => {});
+      }
       const message = await bot.thread(threadId).post(result.text);
       if (
         !message.id ||
@@ -428,16 +509,162 @@ export function createGateway({
     return true;
   }
 
-  async function recoverInterruptedRun(run: RunRecord) {
-    if (!isSandboxStopped || !run.blockedBy) return false;
+  async function confirmStop(run: RunRecord, rendering?: Promise<void>) {
+    const inspection = run.execution
+      ? await inspectWorker?.(run, true).catch(() => undefined)
+      : undefined;
+    const stopped =
+      !run.execution ||
+      inspection?.state === 'stopped' ||
+      (!run.session &&
+        (await isSandboxStopped?.(run.execution).catch(() => false)));
+    await rendering;
+    if (!stopped) return;
+    const completed =
+      inspection?.state === 'stopped' ? inspection.completed : undefined;
+    if (completed && validateResult(run, completed)) return;
+    await store.confirmStopped(run, completed?.session);
+  }
+
+  function validateResult(run: RunRecord, result: WorkerResult) {
+    if (result.type === 'failed') {
+      if (result.session || result.artifact) return 400;
+      result.text =
+        result.inputError === 'pdf_unreadable'
+          ? PDF_UNREADABLE_REPLY
+          : result.inputError === 'pdf_text_too_large'
+            ? PDF_TEXT_TOO_LARGE_REPLY
+            : result.inputError === 'too_many_sources'
+              ? 'This thread has reached its ' +
+                MAX_RETAINED_INPUTS +
+                '-source limit. Start a new thread to add more files or links.'
+              : result.inputError === 'retained_sources_unavailable'
+                ? RETAINED_SOURCES_UNAVAILABLE_REPLY
+                : WORKER_FAILURE_REPLY;
+      return;
+    }
+    if (result.inputError) return 400;
+    const expected = run.session;
+    const received = result.session;
+    if (
+      (!received && (expected || config.threadResume)) ||
+      (received && received.seedRunId !== (expected?.seedRunId ?? run.runId)) ||
+      (received &&
+        expected &&
+        (received.nativeId !== expected.nativeId ||
+          received.adapterId !== expected.adapterId ||
+          received.revision <= expected.revision ||
+          (expected.hasRetainedSources && !received.hasRetainedSources)))
+    )
+      return 409;
+  }
+
+  async function readArtifact(
+    run: Pick<RunRecord, 'runId' | 'execution'>,
+    result: WorkerResult,
+  ) {
+    if (!result.artifact || !run.execution || !collectArtifact) return;
+    const bytes = await collectArtifact(
+      run.runId,
+      run.execution,
+      result.artifact.format,
+    ).catch(() => undefined);
+    return bytes && digest(bytes) === result.artifact.sha256
+      ? bytes
+      : undefined;
+  }
+
+  function supportsArtifact(result: WorkerResult) {
+    return (
+      result.artifact &&
+      (config.fileExchange ||
+        (config.csvOutput && (result.artifact.format ?? 'csv') === 'csv'))
+    );
+  }
+
+  async function reconcileStatus(run: RunRecord, rendering?: Promise<void>) {
+    try {
+      if (run.state === 'stopping') {
+        await confirmStop(run, rendering);
+        return;
+      }
+      if (run.state !== 'accepted' && run.state !== 'dispatch_failed') return;
+      let exited = !run.execution;
+      let sessionRestored = false;
+      if (run.execution && inspectWorker) {
+        const inspection = await inspectWorker(run, false).catch(
+          () => undefined,
+        );
+        exited = inspection?.state === 'exited';
+        sessionRestored =
+          inspection?.state === 'exited' && inspection.sessionRestored === true;
+        if (inspection?.state === 'exited' && inspection.result) {
+          const result = inspection.result;
+          if (
+            result.runId !== run.runId ||
+            result.generation !== run.generation ||
+            validateResult(run, result)
+          )
+            return;
+          const bytes = inspection.artifactTarget
+            ? inspection.artifactBytes
+            : supportsArtifact(result)
+              ? await readArtifact(run, result)
+              : undefined;
+          const artifact =
+            bytes && digest(bytes) === result.artifact?.sha256
+              ? bytes
+              : undefined;
+          if ((await store.claimSavedResult(run, result)) === 'claimed') {
+            try {
+              await publish(run, result, artifact);
+            } finally {
+              await releaseRecoveredWorker?.(run);
+            }
+          }
+          return;
+        }
+      }
+      if (
+        run.deadline <= now() &&
+        exited &&
+        (await store.interruptRun(run, now(), sessionRestored))
+      )
+        await releaseRecoveredWorker?.(run);
+    } finally {
+      await renderStatus(run.runId);
+    }
+  }
+
+  async function recoverInterruptedRun(
+    run: RunRecord,
+  ): Promise<string | false> {
+    if (!run.blockedBy) return false;
     const previous = await store.getRun(run.blockedBy);
     if (
-      !previous?.execution ||
+      !previous ||
       previous.workspaceId !== run.workspaceId ||
       previous.channelId !== run.channelId ||
       previous.threadTs !== run.threadTs
     )
       return false;
+    if (previous.controls && config.controlsEnabled) {
+      if (previous.deadline <= now()) await reconcileStatus(previous);
+      const current = await store.getRun(previous.runId);
+      if (
+        current?.state === 'interrupted' &&
+        (await store.interruptRun(current, now()))
+      )
+        return RECOVERED_REPLY;
+      if (
+        current &&
+        ['completed', 'worker_failed', 'stopped'].includes(current.state) &&
+        (await store.isThreadAvailable(current))
+      )
+        return 'The previous run ended. This message was not submitted. Please resend it.';
+      return false;
+    }
+    if (!isSandboxStopped || !previous.execution) return false;
     if (previous.state !== 'interrupted') {
       if (
         previous.session ||
@@ -452,7 +679,135 @@ export function createGateway({
       .interruptRun(previous, now())
       .catch(() => store.interruptRun(previous, now()));
     if (recovered) await renderStatus(previous.runId);
-    return recovered;
+    return recovered && RECOVERED_REPLY;
+  }
+
+  function channelEnabled(workspaceId: string, channelId: string) {
+    return (
+      workspaceId === config.workspaceId &&
+      config.channelIds.includes(channelId)
+    );
+  }
+
+  async function actorAllowed(channelId: string, userId: string) {
+    return verifySlackActorAndChannel({
+      botToken: config.botToken,
+      workspaceId: config.workspaceId,
+      enabledChannelIds: config.channelIds,
+      channelId,
+      userId,
+    });
+  }
+
+  async function feedback(event: SlackFeedbackReaction) {
+    const answer = {
+      workspaceId: event.workspaceId,
+      channelId: event.channelId,
+      messageId: event.messageTs,
+    };
+    const published = await store.getPublishedAnswer(answer);
+    let allowPending = false;
+    if (
+      !published &&
+      event.authorId &&
+      (await store.hasOpenAnswerPublication(event.workspaceId, event.channelId))
+    ) {
+      await initializeBot().catch(() => {});
+      allowPending = slack.botUserId === event.authorId;
+    }
+    if (
+      (!published && !allowPending) ||
+      !(await actorAllowed(event.channelId, event.userId))
+    )
+      return;
+    await store.recordFeedback(
+      answer,
+      event.userId,
+      event.feedback === 'up' ? 'thumbsup' : 'thumbsdown',
+      event.added ? 'added' : 'removed',
+      event.eventTs,
+      allowPending,
+    );
+  }
+
+  async function interactions(request: Request): Promise<Response> {
+    if (request.method !== 'POST') return new Response(null, { status: 405 });
+    const body = await request.text();
+    if (Buffer.byteLength(body) > MAX_BODY_BYTES)
+      return new Response(null, { status: 413 });
+    try {
+      await verifySlackSignature(body, request.headers, {
+        signingSecret: config.signingSecret,
+        now,
+      });
+    } catch {
+      return new Response(null, { status: 401 });
+    }
+    const action = parseVerifiedSlackControl(
+      body,
+      request.headers.get('content-type'),
+    );
+    if (
+      !config.controlsEnabled ||
+      !action ||
+      action.actionTs < action.messageTs ||
+      Math.abs(now() - Number(action.actionTs) * 1_000) >
+        CONTROL_FRESHNESS_MS ||
+      !channelEnabled(action.workspaceId, action.channelId)
+    )
+      return new Response(null, { status: 200 });
+    schedule(async () => {
+      const run = await store.getRun(action.runId);
+      if (
+        !run?.controls ||
+        run.kind !== 'work' ||
+        run.generation !== action.generation ||
+        run.workspaceId !== action.workspaceId ||
+        run.channelId !== action.channelId ||
+        run.threadTs !== action.threadTs ||
+        run.statusMessageId !== action.messageTs ||
+        (action.actionId === STOP_ACTION_ID &&
+          run.senderId !== action.userId &&
+          !config.operatorIds?.includes(action.userId)) ||
+        !(await actorAllowed(action.channelId, action.userId).catch(
+          () => false,
+        ))
+      )
+        return;
+      if (action.actionId === STATUS_ACTION_ID) {
+        await reconcileStatus(run);
+        return;
+      }
+      const outcome = await store.requestStop({
+        runId: run.runId,
+        generation: run.generation,
+        statusMessageId: action.messageTs,
+      });
+      if (outcome === 'requested') {
+        const current = await store.getRun(run.runId);
+        if (current) {
+          const rendering = renderStatus(run.runId);
+          await reconcileStatus(current, rendering);
+        }
+      } else if (outcome !== 'conflict') {
+        await renderStatus(run.runId);
+      }
+    });
+    return new Response(null, { status: 200 });
+  }
+
+  async function busyMessage(run: RunRecord) {
+    if (!config.controlsEnabled || !run.blockedBy) return BUSY_REPLY;
+    const active = await store.getRun(run.blockedBy);
+    if (
+      !active?.controls ||
+      !active.statusMessageId ||
+      !['accepted', 'dispatch_failed', 'stopping', 'publishing'].includes(
+        active.state,
+      )
+    )
+      return BUSY_REPLY;
+    return 'This thread has an unfinished run. Your message was not submitted. Use Status on the current run’s status message and resend your message after the run ends.';
   }
 
   async function events(request: Request): Promise<Response> {
@@ -478,6 +833,30 @@ export function createGateway({
     }
     if (payload.kind === 'url_verification')
       return Response.json({ challenge: payload.challenge });
+    if (config.controlsEnabled && payload.kind === 'unsupported') {
+      const reaction = parseSlackFeedbackReaction(payload.raw);
+      if (reaction) {
+        if (!channelEnabled(reaction.workspaceId, reaction.channelId))
+          return new Response(null, { status: 200 });
+        // A transient lookup or Redis failure leaves the delivery retryable.
+        // Bound the entire receipt so Slack gets a response within its deadline.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const status = await Promise.race([
+            feedback(reaction).then(
+              () => 200,
+              () => 503,
+            ),
+            new Promise<number>((resolve) => {
+              timer = setTimeout(() => resolve(503), 2_200);
+            }),
+          ]);
+          return new Response(null, { status });
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+    }
     const mention = payload.kind === 'app_mention';
     const input =
       payload.kind === 'app_mention'
@@ -558,6 +937,7 @@ export function createGateway({
       callbackHash: digest(callbackToken),
       kind: 'work',
       state: 'accepted',
+      ...(config.controlsEnabled && inspectWorker ? { controls: true } : {}),
     };
     let admission;
     try {
@@ -604,13 +984,13 @@ export function createGateway({
                 phase: 'recovery_unavailable',
               }),
             );
-            return false;
+            return false as const;
           });
           if (
             !(await publishNotice(
               run,
               'completed',
-              recovered ? RECOVERED_REPLY : BUSY_REPLY,
+              recovered || (await busyMessage(run)),
             ))
           )
             console.error(
@@ -765,6 +1145,10 @@ export function createGateway({
         await renderStatus(run.runId);
       } finally {
         await acknowledgement;
+        if (run.controls) {
+          const current = await store.getRun(run.runId);
+          if (current?.state === 'stopping') await reconcileStatus(current);
+        }
       }
     });
     return new Response(null, { status: 200 });
@@ -800,7 +1184,8 @@ export function createGateway({
       if (
         run.state !== 'completed' &&
         run.state !== 'worker_failed' &&
-        run.state !== 'interrupted'
+        run.state !== 'interrupted' &&
+        run.state !== 'stopped'
       )
         console.error(
           JSON.stringify({
@@ -851,49 +1236,17 @@ export function createGateway({
       schedule(() => renderStatus(run.runId));
       return new Response(null, { status: 204 });
     }
-    if (result.type === 'failed') {
-      if (result.session || result.artifact)
-        return new Response(null, { status: 400 });
-      result.text =
-        result.inputError === 'pdf_unreadable'
-          ? PDF_UNREADABLE_REPLY
-          : result.inputError === 'pdf_text_too_large'
-            ? PDF_TEXT_TOO_LARGE_REPLY
-            : result.inputError === 'too_many_sources'
-              ? 'This thread has reached its ' +
-                MAX_RETAINED_INPUTS +
-                '-source limit. Start a new thread to add more files or links.'
-              : result.inputError === 'retained_sources_unavailable'
-                ? RETAINED_SOURCES_UNAVAILABLE_REPLY
-                : WORKER_FAILURE_REPLY;
-    } else if (result.inputError) {
-      return new Response(null, { status: 400 });
-    }
     const run = await authenticate(request, result.runId, result.generation);
     if (run instanceof Response) return run;
-    if (result.type === 'completed') {
-      const expected = run.session;
-      const received = result.session;
-      if (
-        (!received && (expected || config.threadResume)) ||
-        (received &&
-          received.seedRunId !== (expected?.seedRunId ?? run.runId)) ||
-        (received &&
-          expected &&
-          (received.nativeId !== expected.nativeId ||
-            received.adapterId !== expected.adapterId ||
-            received.revision <= expected.revision ||
-            (expected.hasRetainedSources && !received.hasRetainedSources)))
-      )
-        return new Response(null, { status: 409 });
-    }
+    if (run.state === 'stopping' || run.state === 'stopped')
+      return new Response(null, { status: 409 });
+    const invalid = validateResult(run, result);
+    if (invalid) return new Response(null, { status: invalid });
     const claimAt = now();
     let artifact: Buffer | undefined;
     let artifactLease: string | undefined;
     if (
-      result.artifact &&
-      (config.fileExchange ||
-        (config.csvOutput && (result.artifact.format ?? 'csv') === 'csv')) &&
+      supportsArtifact(result) &&
       collectArtifact &&
       run.execution &&
       result.session &&
@@ -908,12 +1261,7 @@ export function createGateway({
       if (!reserved) return new Response(null, { status: 503 });
 
       // Collect before the worker can exit and release its Sandbox reservation.
-      const bytes = await collectArtifact(
-        run.runId,
-        run.execution,
-        result.artifact.format,
-      ).catch(() => undefined);
-      if (bytes && digest(bytes) === result.artifact.sha256) artifact = bytes;
+      artifact = await readArtifact(run, result);
     }
     let claim;
     try {
@@ -944,7 +1292,7 @@ export function createGateway({
     return new Response(null, { status: 202 });
   }
 
-  return { events, callback };
+  return { events, interactions, callback };
 }
 
 function currentMessageLinks(text: string) {
