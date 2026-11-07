@@ -662,11 +662,7 @@ export function createGateway({
       if (
         run.deadline <= now() &&
         exited &&
-        (await store.interruptRun(
-          run,
-          now(),
-          sessionRestored || run.memory === 'save',
-        ))
+        (await store.interruptRun(run, now(), sessionRestored))
       )
         await releaseRecoveredWorker?.(run);
     } finally {
@@ -686,6 +682,10 @@ export function createGateway({
       previous.threadTs !== run.threadTs
     )
       return false;
+    const saving = previous.memory === 'save';
+    const recoveryReply = saving
+      ? SHARED_NOTE_UNCONFIRMED_REPLY + ' This message was not submitted.'
+      : RECOVERED_REPLY;
     if (previous.controls && config.controlsEnabled) {
       if (previous.deadline <= now()) await reconcileStatus(previous);
       const current = await store.getRun(previous.runId);
@@ -693,9 +693,7 @@ export function createGateway({
         current?.state === 'interrupted' &&
         (await store.interruptRun(current, now()))
       )
-        return previous.memory === 'save'
-          ? SHARED_NOTE_UNCONFIRMED_REPLY + ' This message was not submitted.'
-          : RECOVERED_REPLY;
+        return recoveryReply;
       if (
         current &&
         ['completed', 'worker_failed', 'stopped'].includes(current.state) &&
@@ -707,7 +705,7 @@ export function createGateway({
     if (!isSandboxStopped || !previous.execution) return false;
     if (previous.state !== 'interrupted') {
       if (
-        previous.session ||
+        (previous.session && !saving) ||
         previous.deadline > now() ||
         (previous.state !== 'accepted' && previous.state !== 'dispatch_failed')
       )
@@ -719,7 +717,7 @@ export function createGateway({
       .interruptRun(previous, now())
       .catch(() => store.interruptRun(previous, now()));
     if (recovered) await renderStatus(previous.runId);
-    return recovered && RECOVERED_REPLY;
+    return recovered && recoveryReply;
   }
 
   function channelEnabled(workspaceId: string, channelId: string) {

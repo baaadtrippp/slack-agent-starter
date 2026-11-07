@@ -3103,6 +3103,63 @@ describe.skipIf(!redisUrl)(
       );
     });
 
+    it('recovers an interrupted save in an activated thread when controls are off', async () => {
+      const stopped = vi.fn().mockResolvedValue(true);
+      const gateway = harness(createMockState(), true, stopped);
+      const original = envelope();
+      await gateway.events(signed(original));
+      await gateway.flush();
+      const first = gateway.dispatch.mock.calls[0]![0];
+      const session = {
+        seedRunId: first.runId,
+        nativeId: randomUUID(),
+        adapterId: randomUUID(),
+        revision: 1,
+      };
+      await gateway.callback(
+        callback({ ...result(first), session }, first.callbackToken),
+      );
+      await gateway.flush();
+
+      mockControlAccess();
+      const target = {
+        sandboxName: 'synthetic-worker',
+        sessionId: 'synthetic-session',
+      };
+      gateway.dispatch.mockImplementationOnce(async (job) => {
+        expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+          'recorded',
+        );
+        throw new Error('Synthetic dispatch acknowledgement loss');
+      });
+      const save = threadReply(original.event.ts);
+      save.event.ts = '1800000002.000001';
+      save.event.text = 'remember for this channel: The badge is purple.';
+      await gateway.events(signed(save));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[1]![0];
+      expect(job).toMatchObject({ memory: 'save', session });
+
+      gateway.clock.now = job.deadline;
+      const recover = threadReply(original.event.ts);
+      recover.event.ts = '1800000002.000002';
+      await gateway.events(signed(recover, gateway.clock.now));
+      await gateway.flush();
+      expect(stopped).toHaveBeenCalledExactlyOnceWith(target);
+      expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+      expect(await gateway.owner(original.event.ts)).toBeNull();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
+        'slack:CTEST1:' + original.event.ts,
+        expect.stringContaining('I could not confirm the shared note save.'),
+      );
+
+      const next = threadReply(original.event.ts);
+      next.event.ts = '1800000002.000003';
+      await gateway.events(signed(next, gateway.clock.now));
+      await gateway.flush();
+      expect(gateway.dispatch.mock.calls[2]?.[0].session).toEqual(session);
+    });
+
     it('releases an expired first turn only after stop proof, without replaying either event', async () => {
       const target = {
         sandboxName: 'synthetic-worker',

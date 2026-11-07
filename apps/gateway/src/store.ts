@@ -494,7 +494,8 @@ local current = cjson.decode(encoded)
 local old = cjson.decode(ARGV[1])
 if current.runId ~= old.runId or current.eventId ~= old.eventId or current.generation ~= old.generation or
    current.workspaceId ~= old.workspaceId or current.channelId ~= old.channelId or
-   current.threadTs ~= old.threadTs or current.controls ~= old.controls then return 0 end
+   current.threadTs ~= old.threadTs or current.controls ~= old.controls or
+   current.memory ~= old.memory then return 0 end
 if current.execution or old.execution then
   if not current.execution or not old.execution or
      current.execution.sandboxName ~= old.execution.sandboxName or
@@ -508,7 +509,8 @@ if current.state == 'interrupted' then return owner and 0 or 1 end
 if owner ~= current.runId then return 0 end
 if current.kind ~= 'work' or
    (current.state ~= 'accepted' and current.state ~= 'dispatch_failed') or
-   (current.session and current.execution and (ARGV[3] ~= '1' or not current.controls)) or current.result or
+   (current.session and current.execution and current.memory ~= 'save' and
+    (ARGV[3] ~= '1' or not current.controls)) or current.result or
    current.deadline > tonumber(ARGV[2]) then return 0 end
 current.state = 'interrupted'
 current.statusVersion = (current.statusVersion or 0) + 1
