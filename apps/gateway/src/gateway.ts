@@ -165,16 +165,6 @@ const threadReplyEnvelope = z.object({
   team_id: z.string(),
   event_id: z.string(),
   is_ext_shared_channel: z.literal(false),
-  authorizations: z
-    .array(
-      z.object({
-        team_id: z.string(),
-        user_id: z.string(),
-        is_bot: z.boolean(),
-      }),
-    )
-    .optional()
-    .catch(undefined),
   event: z.looseObject({
     type: z.literal('message'),
     channel_type: z.literal('channel'),
@@ -184,6 +174,16 @@ const threadReplyEnvelope = z.object({
     thread_ts: z.string(),
     text: z.string().default(''),
   }),
+});
+
+const eventAuthorizations = z.object({
+  authorizations: z.array(
+    z.object({
+      team_id: z.string(),
+      user_id: z.string(),
+      is_bot: z.boolean(),
+    }),
+  ),
 });
 
 function parseThreadReply(raw: unknown) {
@@ -196,10 +196,6 @@ function parseThreadReply(raw: unknown) {
     teamId: envelope.team_id,
     channelId: event.channel,
     isExtSharedChannel: envelope.is_ext_shared_channel,
-    authorizedBotId: envelope.authorizations?.find(
-      (authorization) =>
-        authorization.is_bot && authorization.team_id === envelope.team_id,
-    )?.user_id,
     userId: event.user,
     eventId: envelope.event_id,
     ts: event.ts,
@@ -921,15 +917,21 @@ export function createGateway({
 
     const currentText = input.text.trimStart();
     const leadingMention = currentText.match(/^<@([UW][A-Z0-9]+)>\s+/);
+    // The same Slack message can arrive as a reply and a mention. On a cold
+    // gateway, the signed envelope identifies the installed bot before admission.
     const botUserId =
       slack.botUserId ??
-      ('authorizedBotId' in input ? input.authorizedBotId : undefined);
-    // The same Slack message can arrive as a reply and a mention. Classify
-    // the command before either event can claim the logical message.
+      (leadingMention
+        ? eventAuthorizations
+            .safeParse(mention ? JSON.parse(body) : payload.raw)
+            .data?.authorizations.find(
+              (authorization) =>
+                authorization.is_bot &&
+                authorization.team_id === config.workspaceId,
+            )?.user_id
+        : undefined);
     const botMention =
-      leadingMention && (mention || leadingMention[1] === botUserId)
-        ? leadingMention
-        : null;
+      leadingMention && leadingMention[1] === botUserId ? leadingMention : null;
     const command =
       !mention || botMention
         ? currentText

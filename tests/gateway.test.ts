@@ -548,6 +548,7 @@ describe.skipIf(!redisUrl)(
       ['read', true, 'use shared notes:'],
       ['read', false, 'use shared notes:'],
       [undefined, true, 'remember for this channel:'],
+      [undefined, false, 'remember for this channel:'],
     ])(
       'deduplicates %s across Slack deliveries (reply first: %s)',
       async (memory, replyFirst, prefix) => {
@@ -579,7 +580,9 @@ describe.skipIf(!redisUrl)(
             { team_id: 'TTEST1', user_id: 'UBOT1', is_bot: true },
           ],
         };
-        const requestText = 'The synthetic badge is purple.';
+        const requestText = memory
+          ? 'The synthetic badge is purple.'
+          : 'Discuss this with <@UBOT1>.';
         reply.event.ts = '1800000002.000002';
         reply.event.text =
           '<@' +
