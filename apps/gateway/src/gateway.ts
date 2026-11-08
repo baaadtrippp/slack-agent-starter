@@ -81,7 +81,9 @@ type GatewayOptions = {
   dispatch: (
     job: WorkerJob,
     stagedInputs?: Buffer[],
-  ) => Promise<void | 'worker-unavailable' | 'input-staging-failed'>;
+  ) => Promise<
+    void | 'worker-unavailable' | 'input-staging-failed' | 'input-storage-full'
+  >;
   collectArtifact?: (
     runId: string,
     target: SandboxTarget,
@@ -137,6 +139,14 @@ export const WORKER_UNAVAILABLE_REPLY =
 
 const INPUT_STAGING_FAILURE_REPLY =
   'The inputs could not be staged. Resend the message with its files and links to retry.';
+const INPUT_STORAGE_FULL_REPLY =
+  'Workspace storage is full. Your request was not submitted. Ask an operator to free space, then resend your message.';
+const WORKER_STORAGE_FULL_REPLY =
+  'Workspace storage is full. Ask an operator to free space, then retry.';
+const SHARED_NOTE_STORAGE_FULL_REPLY =
+  'Workspace storage is full. Check the channel’s shared notes before resending your request.';
+const WORKER_QUOTA_REPLY =
+  'The model provider is out of quota or rate-limited. Try again after the provider limit clears.';
 const UNSUPPORTED_FILE_REPLY =
   'Attach a supported Slack-hosted UTF-8 text, Markdown, source, JSON, CSV, text-based PDF, or enabled image file.';
 const THREAD_CONTEXT_UNAVAILABLE_REPLY =
@@ -553,6 +563,17 @@ export function createGateway({
   function validateResult(run: RunRecord, result: WorkerResult) {
     if (result.type === 'failed') {
       if (result.session || result.artifact) return 400;
+      if (result.failureCategory === 'provider_quota') {
+        result.text = WORKER_QUOTA_REPLY;
+        return;
+      }
+      if (result.failureCategory === 'drive_full') {
+        result.text =
+          run.memory === 'save'
+            ? SHARED_NOTE_STORAGE_FULL_REPLY
+            : WORKER_STORAGE_FULL_REPLY;
+        return;
+      }
       if (run.memory === 'save') {
         result.text =
           result.inputError === 'shared_notes_full'
@@ -581,7 +602,7 @@ export function createGateway({
                 : WORKER_FAILURE_REPLY;
       return;
     }
-    if (result.inputError) return 400;
+    if (result.inputError || result.failureCategory) return 400;
     if (run.memory === 'save') {
       if (
         result.session ||
@@ -1264,9 +1285,11 @@ export function createGateway({
         const notice =
           dispatchOutcome === 'worker-unavailable'
             ? WORKER_UNAVAILABLE_REPLY
-            : dispatchOutcome === 'input-staging-failed'
-              ? INPUT_STAGING_FAILURE_REPLY
-              : undefined;
+            : dispatchOutcome === 'input-storage-full'
+              ? INPUT_STORAGE_FULL_REPLY
+              : dispatchOutcome === 'input-staging-failed'
+                ? INPUT_STAGING_FAILURE_REPLY
+                : undefined;
         if (notice && !(await publishNotice(run, 'failed', notice)))
           console.error(
             JSON.stringify({

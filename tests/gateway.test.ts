@@ -122,6 +122,7 @@ function harness(
     releaseRecoveredWorker?: (run: RunRecord) => Promise<void>;
     operatorIds?: string[];
   },
+  storeNamespace = `${namespace}:${randomUUID()}`,
 ) {
   const clock = { now: initialTime };
   const tasks: Array<() => Promise<void>> = [];
@@ -133,7 +134,6 @@ function harness(
       ) => Promise<void | 'worker-unavailable'>
     >()
     .mockResolvedValue();
-  const storeNamespace = `${namespace}:${randomUUID()}`;
   const store = new RedisRunStore(redis.getClient(), storeNamespace);
   if (!progressUi)
     vi.spyOn(store, 'claimStatusCreation').mockResolvedValue(false);
@@ -180,6 +180,7 @@ function harness(
   }
   return {
     ...gateway,
+    storeNamespace,
     store,
     admit,
     dispatch,
@@ -2479,22 +2480,35 @@ describe.skipIf(!redisUrl)(
     );
 
     it.each([
-      [undefined, WORKER_FAILURE_REPLY],
+      [undefined, undefined, WORKER_FAILURE_REPLY],
+      [
+        undefined,
+        'provider_quota',
+        'The model provider is out of quota or rate-limited. Try again after the provider limit clears.',
+      ],
+      [
+        undefined,
+        'drive_full',
+        'Workspace storage is full. Ask an operator to free space, then retry.',
+      ],
       [
         'pdf_unreadable',
+        undefined,
         'I could not extract readable text from this PDF. Mention me again with a small text-based PDF.',
       ],
       [
         'pdf_text_too_large',
+        undefined,
         'The PDF contains more than 16 KiB of text for this test. Mention me again with a shorter PDF.',
       ],
       [
         'retained_sources_unavailable',
+        undefined,
         'I could not reopen an earlier file or link in this thread. Start a new message in the channel, mention me there, and include the files and links you still need.',
       ],
     ] as const)(
-      'posts a safe failure once for %s',
-      async (inputError, notice) => {
+      'posts a safe failure once for %s / %s',
+      async (inputError, failureCategory, notice) => {
         const gateway = harness();
         const body = envelope();
         await gateway.events(signed(body));
@@ -2504,6 +2518,7 @@ describe.skipIf(!redisUrl)(
           ...result(job),
           type: 'failed',
           inputError,
+          failureCategory,
           text: 'private provider error',
         } as const;
         expect(
@@ -2526,8 +2541,8 @@ describe.skipIf(!redisUrl)(
       },
     );
 
-    it('activates only after a real session result and routes one ordinary turn with that exact reference', async () => {
-      const gateway = harness(createMockState(), true, undefined, {
+    it('activates only after a real session result and resumes that exact session after a gateway restart', async () => {
+      let gateway = harness(createMockState(), true, undefined, {
         publicUrlInput: true,
       });
       const mention = envelope();
@@ -2569,6 +2584,16 @@ describe.skipIf(!redisUrl)(
       await gateway.flush();
       expect(gateway.dispatch).toHaveBeenCalledTimes(1);
 
+      gateway = harness(
+        createMockState(),
+        true,
+        undefined,
+        { publicUrlInput: true },
+        undefined,
+        false,
+        undefined,
+        gateway.storeNamespace,
+      );
       const next = threadReply(mention.event.ts);
       next.event.text = 'Continue using the earlier answer.';
       const duplicate = {
@@ -2583,9 +2608,9 @@ describe.skipIf(!redisUrl)(
       await gateway.events(signed(next));
       await gateway.events(signed(duplicate));
       await gateway.flush();
-      expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
       expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
-      const followup = gateway.dispatch.mock.calls[1]![0];
+      const followup = gateway.dispatch.mock.calls[0]![0];
       expect(followup).toMatchObject({
         conversationId: seed.conversationId,
         session,
@@ -2650,17 +2675,17 @@ describe.skipIf(!redisUrl)(
         signed({ ...duplicate, event_id: `Ev${randomUUID()}` }),
       );
       await gateway.flush();
-      expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
       expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(2);
 
       const later = threadReply(mention.event.ts);
       await gateway.events(signed(later));
       await gateway.flush();
-      expect(gateway.dispatch.mock.calls[2]![0].session).toEqual(updated);
+      expect(gateway.dispatch.mock.calls[1]![0].session).toEqual(updated);
 
       await gateway.events(signed(envelope()));
       await gateway.flush();
-      expect(gateway.dispatch.mock.calls[3]![0].session).toBeUndefined();
+      expect(gateway.dispatch.mock.calls[2]![0].session).toBeUndefined();
     });
 
     it('rejects ineligible ordinary events and reports a busy thread while its first run is active', async () => {

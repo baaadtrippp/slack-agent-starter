@@ -11,6 +11,16 @@ import { RedisRunStore } from './store.js';
 import type { SandboxTarget } from './store.js';
 import { inspectSandboxRun } from './worker-control.js';
 
+// The provider's domain allowlist remains the IPv4 egress boundary. Verify
+// IPv6 is disabled, then start the entire worker tree without privilege to
+// restore it. The managed image and staged files use uid/gid 1000.
+const MANAGED_WORKER_LAUNCH = [
+  'set -eu',
+  'sysctl -qw net.ipv6.conf.default.disable_ipv6=1 net.ipv6.conf.all.disable_ipv6=1',
+  'for setting in /proc/sys/net/ipv6/conf/*/disable_ipv6; do read -r disabled < "$setting"; test "$disabled" = 1; done',
+  'exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs -- node "$1"',
+].join('; ');
+
 let gateway: ReturnType<typeof createGateway> | undefined;
 
 function required(name: string) {
@@ -286,10 +296,17 @@ function initialize() {
                 count: stagedInputs.length,
               }),
             );
-          } catch {
+          } catch (error) {
             await releaseReservation(true);
             await stopIfIdle();
-            return 'input-staging-failed';
+            const storageFull =
+              error instanceof Error &&
+              (('code' in error &&
+                (error.code === 'ENOSPC' || error.code === 'EDQUOT')) ||
+                ('response' in error &&
+                  error.response instanceof Response &&
+                  error.response.status === 507));
+            return storageFull ? 'input-storage-full' : 'input-staging-failed';
           }
         }
         if (
@@ -309,13 +326,18 @@ function initialize() {
           }
           throw new Error('Worker deadline expired');
         }
+        const entry = controlsEnabled
+          ? '/tmp/hydra-worker/supervise.mjs'
+          : '/tmp/hydra-worker/run.mjs';
+        const launch = managed
+          ? {
+              cmd: 'bash',
+              args: ['-c', MANAGED_WORKER_LAUNCH, 'hydra-worker', entry],
+              sudo: true,
+            }
+          : { cmd: 'node', args: [entry] };
         const command = await session.runCommand({
-          cmd: 'node',
-          args: [
-            controlsEnabled
-              ? '/tmp/hydra-worker/supervise.mjs'
-              : '/tmp/hydra-worker/run.mjs',
-          ],
+          ...launch,
           cwd: '/tmp/hydra-worker',
           env: {
             HYDRA_JOB: JSON.stringify(job),

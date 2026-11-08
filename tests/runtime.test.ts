@@ -454,10 +454,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           status: condition === 'stopped' ? 'stopped' : 'running',
           sessionId,
           sourceSnapshotId: seedId,
-          runCommand: (command: { cmd: string }) =>
-            command.cmd === 'bash'
-              ? readiness(command)
-              : sessionRunCommand(command),
+          runCommand: (command: { detached?: boolean }) =>
+            command.detached ? sessionRunCommand(command) : readiness(command),
           stop: sessionStop,
         }),
       });
@@ -505,6 +503,19 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
             execution: target,
           });
           expect(sessionRunCommand).toHaveBeenCalledTimes(1);
+          if (managed)
+            expect(sessionRunCommand).toHaveBeenCalledWith(
+              expect.objectContaining({
+                cmd: 'bash',
+                sudo: true,
+                args: [
+                  '-c',
+                  expect.stringContaining('--no-new-privs'),
+                  'hydra-worker',
+                  '/tmp/hydra-worker/run.mjs',
+                ],
+              }),
+            );
           expect(commandWait).toHaveBeenCalledTimes(startResponseLost ? 0 : 1);
           expect(await store.claimIdleStop(target, operationId)).toBe(
             managed
@@ -552,6 +563,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
     'staged PNG with all file types enabled',
     'staged PDF with CSV enabled',
     'write failed',
+    'Drive full with a filesystem code',
+    'Drive full with a storage response',
     'expired during staging',
   ] as const;
 
@@ -632,6 +645,14 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       let staged = false;
       const writeFiles = vi.fn().mockImplementation(async () => {
         if (outcome === 'write failed') throw new Error('Synthetic fault');
+        if (outcome === 'Drive full with a filesystem code')
+          throw Object.assign(new Error('Private storage path'), {
+            code: 'ENOSPC',
+          });
+        if (outcome === 'Drive full with a storage response')
+          throw Object.assign(new Error('Private provider details'), {
+            response: new Response(null, { status: 507 }),
+          });
         if (outcome === 'expired during staging')
           vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
         staged = true;
@@ -753,7 +774,9 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           });
           expect(postMessage).toHaveBeenLastCalledWith(
             `slack:CTEST1:${event.ts}`,
-            'The inputs could not be staged. Resend the message with its files and links to retry.',
+            outcome.startsWith('Drive full')
+              ? 'Workspace storage is full. Your request was not submitted. Ask an operator to free space, then resend your message.'
+              : 'The inputs could not be staged. Resend the message with its files and links to retry.',
           );
         }
       } finally {

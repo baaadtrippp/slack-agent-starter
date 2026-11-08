@@ -60,7 +60,7 @@ export function createManagedWorker(
       cmd: 'bash',
       args: [
         '-c',
-        'set -eu; mountpoint -q /workspace; cd /tmp/hydra-worker; test -x node_modules/.bin/pi; test -x node_modules/.bin/pi-acp; command -v flock >/dev/null; node --check run.mjs; node --check shared-notes.mjs' +
+        'set -eu; mountpoint -q /workspace; cd /tmp/hydra-worker; test -x node_modules/.bin/pi; test -x node_modules/.bin/pi-acp; command -v flock >/dev/null; command -v sysctl >/dev/null; command -v setpriv >/dev/null; node --check run.mjs; node --check shared-notes.mjs' +
           (controlsEnabled
             ? '; node --check supervise.mjs; node --check control.mjs'
             : ''),
