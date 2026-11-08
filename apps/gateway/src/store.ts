@@ -118,7 +118,8 @@ export interface RunStore {
   claimSavedResult(
     observed: RunRecord,
     result: WorkerResult,
-  ): Promise<'claimed' | 'duplicate' | 'conflict'>;
+    artifactTarget?: SandboxTarget,
+  ): Promise<'claimed' | 'duplicate' | 'conflict' | 'retry'>;
   claimUnsubmitted(run: RunRecord, result: WorkerResult): Promise<boolean>;
   completePublication(run: RunRecord, messageId: string): Promise<boolean>;
   recordArtifactPublication(
@@ -982,7 +983,8 @@ export class RedisRunStore implements RunStore {
   async claimSavedResult(
     observed: RunRecord,
     result: WorkerResult,
-  ): Promise<'claimed' | 'duplicate' | 'conflict'> {
+    artifactTarget?: SandboxTarget,
+  ): Promise<'claimed' | 'duplicate' | 'conflict' | 'retry'> {
     return (await this.execute((client) =>
       client.eval(CLAIM_SCRIPT, {
         keys: [
@@ -993,6 +995,9 @@ export class RedisRunStore implements RunStore {
             observed.channelId,
             observed.threadTs,
           ),
+          artifactTarget
+            ? this.idleGateKey(artifactTarget)
+            : `${this.runKey(observed.runId)}:no-execution`,
         ],
         arguments: [
           observed.runId,
@@ -1000,9 +1005,11 @@ export class RedisRunStore implements RunStore {
           'saved',
           '',
           JSON.stringify(observed),
+          artifactTarget ? 'artifact' : '',
+          artifactTarget ? JSON.stringify(artifactTarget) : '',
         ],
       }),
-    )) as 'claimed' | 'duplicate' | 'conflict';
+    )) as 'claimed' | 'duplicate' | 'conflict' | 'retry';
   }
 
   async claimUnsubmitted(

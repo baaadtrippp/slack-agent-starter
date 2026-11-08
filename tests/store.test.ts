@@ -623,6 +623,42 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     ).toBe('claimed');
   });
 
+  it('keeps a saved artifact retryable when recovery moves after collection', async () => {
+    const lost = makeTarget('saved-artifact-lost');
+    const replacement = makeTarget('saved-artifact-replacement');
+    const run = makeRun();
+    const result = makeResult(run);
+    await store.admit(run);
+    await Promise.all([
+      store.enrollIdleSession(lost),
+      store.enrollIdleSession(replacement),
+    ]);
+    expect(await store.recordDispatchTarget(makeJob(run), lost)).toBe(
+      'recorded',
+    );
+    const observed = (await store.getRun(run.runId))!;
+    expect(await store.fenceLostTarget(lost)).toBe(true);
+    expect(await store.bindRecoveryTarget(lost, replacement)).toBe(true);
+
+    expect(await store.claimSavedResult(observed, result, lost)).toBe('retry');
+    expect(await store.getRun(run.runId)).toMatchObject({
+      state: 'accepted',
+      execution: lost,
+      recovery: replacement,
+    });
+    expect(await store.claimIdleStop(replacement, randomUUID())).toBe('active');
+
+    const recovered = (await store.getRun(run.runId))!;
+    expect(await store.claimSavedResult(recovered, result, replacement)).toBe(
+      'claimed',
+    );
+    expect(await store.getRun(run.runId)).toMatchObject({
+      state: 'publishing',
+      result,
+      recovery: replacement,
+    });
+  });
+
   it('returns an original target after exact Stop proof', async () => {
     const target = makeTarget('confirmed-stop');
     const run = makeRun({ controls: true, statusMessageId: nextTimestamp() });

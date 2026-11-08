@@ -712,16 +712,26 @@ export function createGateway({
             validateResult(run, result)
           )
             return;
-          const bytes = inspection.artifactTarget
+          const artifactSupported = supportsArtifact(result);
+          let artifactTarget = artifactSupported
+            ? inspection.artifactTarget
+            : undefined;
+          const bytes = artifactTarget
             ? inspection.artifactBytes
-            : supportsArtifact(result)
-              ? await readArtifact(run, result)
+            : artifactSupported
+              ? await readArtifact(run, result, (target) => {
+                  artifactTarget = target;
+                })
               : undefined;
           const artifact =
             bytes && digest(bytes) === result.artifact?.sha256
               ? bytes
               : undefined;
-          const saved = await store.claimSavedResult(run, result);
+          const saved = await store.claimSavedResult(
+            run,
+            result,
+            artifactTarget,
+          );
           if (saved === 'claimed') {
             try {
               await publish(run, result, artifact);

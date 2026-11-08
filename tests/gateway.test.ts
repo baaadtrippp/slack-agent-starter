@@ -695,6 +695,8 @@ describe.skipIf(!redisUrl)(
       ) => Promise<WorkerInspection>,
       operatorIds: string[] = [],
       releaseRecoveredWorker?: (run: RunRecord) => Promise<void>,
+      inputConfig: Parameters<typeof harness>[3] = {},
+      collectArtifact?: Parameters<typeof harness>[4],
     ) {
       mockControlAccess();
       vi.mocked(SlackAdapter.prototype.postMessage)
@@ -712,8 +714,8 @@ describe.skipIf(!redisUrl)(
         createMockState(),
         false,
         undefined,
-        {},
-        undefined,
+        inputConfig,
+        collectArtifact,
         true,
         {
           inspectWorker,
@@ -929,6 +931,58 @@ describe.skipIf(!redisUrl)(
           ],
         }),
       );
+    });
+
+    it('keeps a saved artifact retryable when its collection target turns stale', async () => {
+      const csv = Buffer.from('label,value\nsynthetic,1\n');
+      const inspect = vi.fn();
+      const { gateway, run, job } = await startControlled(
+        inspect,
+        [],
+        undefined,
+        { csvOutput: true },
+        vi.fn(),
+      );
+      const output = {
+        ...result(job),
+        artifact: { sha256: createHash('sha256').update(csv).digest('hex') },
+        session: {
+          seedRunId: job.runId,
+          nativeId: randomUUID(),
+          adapterId: randomUUID(),
+          revision: 1,
+        },
+      };
+      inspect.mockResolvedValue({
+        state: 'exited',
+        result: output,
+        artifactTarget: run.execution,
+      });
+      const claimSavedResult = vi
+        .spyOn(gateway.store, 'claimSavedResult')
+        .mockResolvedValueOnce('retry');
+      gateway.clock.now = run.deadline + 1_000;
+      expect(
+        (
+          await gateway.interactions(
+            interaction(run, STATUS_ACTION_ID, {
+              user: 'UOTHER1',
+              actionTs: '1800000061.500000',
+              sentAt: gateway.clock.now,
+            }),
+          )
+        ).status,
+      ).toBe(200);
+      await gateway.flush();
+      expect(claimSavedResult).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ runId: run.runId }),
+        output,
+        run.execution,
+      );
+      expect(await gateway.store.getRun(run.runId)).toMatchObject({
+        state: 'accepted',
+      });
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledOnce();
     });
 
     it('records exact exit proof and releases an expired run with no saved result', async () => {
