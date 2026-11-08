@@ -157,6 +157,16 @@ though ACP reported the turn finished. The worker classifies the quota response
 without classifying the unrelated provider error. This test uses a local model
 endpoint and does not exhaust a paid provider quota.
 
+**Provider integration.** A disposable Vercel Sandbox ran the candidate
+supervisor, worker, adapter, and Pi with UID and GID 1000, no capabilities, and
+privilege escalation disabled. IPv6 remained disabled while the worker reached
+the allowlisted IPv4 HTTPS model fixture. The trusted control command stopped
+only its target, the target delivered no late result, and the peer completed. A
+replacement Sandbox mounted the same Drive and
+[resumed the exact session with its retained CSV](f08-clarification.md#provider-replacement-evidence).
+The probe used a controlled model and no Slack route change. The disposable
+Sandboxes, Drive, and snapshot were removed and verified absent.
+
 ## Evidence rules
 
 For each slice, link evidence and label it as one of:

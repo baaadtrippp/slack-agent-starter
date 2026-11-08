@@ -76,6 +76,12 @@ This route-free check exercised the worker and Drive rather than Slack or a
 gateway restart. The earlier live runs separately cover Slack clarification and
 same-thread delivery.
 
+The packaged worker from `8e620a92b2c24d2476136162fc99f83c3d4f4eae` repeated
+this check with the managed launch restriction active. A fresh Sandbox resumed
+the same native and adapter sessions, consumed one reply without replay, and
+produced the same exact CSV from the retained input. The worker and supervisor
+files were unchanged when this evidence was recorded.
+
 ## Integrated Slack regression
 
 1. In the authorized acceptance window, stage matching gateway and worker builds
