@@ -14,6 +14,8 @@ export type WorkerSession = z.infer<typeof workerSessionSchema>;
 
 export const slackTimestamp = z.string().regex(/^\d{10}\.\d{6}$/);
 export const slackContextSender = z.string().regex(/^[UWB][A-Z0-9]{1,31}$/);
+const slackWorkspaceId = /^T[A-Z0-9]{1,31}$/;
+const slackChannelId = /^C[A-Z0-9]{1,31}$/;
 
 export const MAX_SLACK_ATTACHMENT_METADATA = 5;
 export const MAX_THREAD_CONTEXT_MESSAGES = 20;
@@ -155,6 +157,12 @@ export const workerJobSchema = z
   })
   .strict()
   .refine(({ csvOutput, artifactOutput }) => !(csvOutput && artifactOutput))
+  .refine(
+    ({ input, memory }) =>
+      !memory ||
+      (slackWorkspaceId.test(input.workspaceId) &&
+        slackChannelId.test(input.channelId)),
+  )
   .refine(
     ({ input, memory, csvOutput, artifactOutput }) =>
       memory !== 'save' ||

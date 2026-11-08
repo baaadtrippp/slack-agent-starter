@@ -265,6 +265,53 @@ describe('Sandbox worker control', () => {
   });
 
   test.skipIf(process.platform !== 'linux')(
+    'refuses to restore an interrupted memory save with an inconsistent session',
+    async () => {
+      const paths = await fixture();
+      const runId = randomUUID();
+      const seedRunId = randomUUID();
+      const nativeId = randomUUID();
+      const worker = join(paths.root, 'interrupted-memory-worker.mjs');
+      const sessions = join(paths.workspace, 'runs', seedRunId, 'pi-sessions');
+      await mkdir(join(paths.workspace, 'runs', runId));
+      await mkdir(sessions, { recursive: true });
+      await writeFile(
+        join(sessions, 'session.jsonl'),
+        JSON.stringify({ type: 'session', id: nativeId }) + '\n',
+      );
+      await writeFile(worker, 'process.exit(0)');
+      try {
+        await expect(
+          supervise(
+            {
+              version: 1,
+              runId,
+              generation: 1,
+              memory: 'save',
+              session: {
+                seedRunId,
+                nativeId,
+                adapterId: randomUUID(),
+                revision: 2,
+              },
+            },
+            {
+              ...paths,
+              worker,
+              readIdentity: async () => {
+                await delay(200);
+                return '1';
+              },
+            },
+          ),
+        ).rejects.toThrow('Native session was not restored');
+      } finally {
+        await rm(paths.root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
     'registers the exact control before releasing worker admission',
     async () => {
       const paths = await fixture();
@@ -554,35 +601,41 @@ setInterval(() => {}, 1000);
           proveGroup: () => {},
         },
       );
-      let status;
-      for (let attempt = 0; attempt < 50; attempt += 1) {
-        status = await controlRun(request(runId, 'status'), paths);
-        // The supervisor registers the group before the child handles signals.
-        if (
-          status.state === 'running' &&
-          (await readFile(ready, 'utf8').catch(() => undefined)) === '1'
-        )
-          break;
-        await delay(20);
+      try {
+        let status;
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          status = await controlRun(request(runId, 'status'), paths);
+          // The supervisor registers the group before the child handles signals.
+          if (
+            status.state === 'running' &&
+            (await readFile(ready, 'utf8').catch(() => undefined)) === '1'
+          )
+            break;
+          await delay(20);
+        }
+        expect(status?.state).toBe('running');
+        expect(await readFile(ready, 'utf8')).toBe('1');
+        await expect(
+          controlRun(request(runId, 'cancel'), paths),
+        ).resolves.toEqual(
+          expect.objectContaining({
+            state: 'exited',
+            forced: true,
+            targetPgid: expect.any(Number),
+            processesExited: true,
+            sessionSafe: 'uncommitted',
+          }),
+        );
+        await expect(supervised).resolves.toEqual(
+          expect.objectContaining({ forced: true, stopRequested: true }),
+        );
+      } finally {
+        await controlRun(request(runId, 'cancel'), paths).catch(() => {});
+        await supervised.catch(() => {});
+        await rm(paths.root, { recursive: true, force: true });
       }
-      expect(status?.state).toBe('running');
-      expect(await readFile(ready, 'utf8')).toBe('1');
-      await expect(
-        controlRun(request(runId, 'cancel'), paths),
-      ).resolves.toEqual(
-        expect.objectContaining({
-          state: 'exited',
-          forced: true,
-          targetPgid: expect.any(Number),
-          processesExited: true,
-          sessionSafe: 'uncommitted',
-        }),
-      );
-      await expect(supervised).resolves.toEqual(
-        expect.objectContaining({ forced: true, stopRequested: true }),
-      );
-      await rm(paths.root, { recursive: true, force: true });
     },
+    10_000,
   );
 
   test.skipIf(process.platform !== 'linux')(
