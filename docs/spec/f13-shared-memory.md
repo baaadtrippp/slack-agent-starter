@@ -35,7 +35,7 @@ The worker needs `flock` and the shared-notes module in its startup seed.
    `@bot remember for this channel: The synthetic badge is violet.` Wait for one
    saved reply. The starting status reports admission and the saved reply
    reports persistence. A save-only mention leaves the native session unchanged.
-2. As another internal member, start a fresh thread in that channel and send
+2. As an internal member, start a fresh thread in that channel and send
    `@bot use shared notes: What color is the synthetic badge?` Verify the answer
    says violet. The writer's thread can include an unrelated synthetic detail to
    check that Pi receives the note alone.
@@ -56,7 +56,7 @@ The worker needs `flock` and the shared-notes module in its startup seed.
 - A disposable provider probe checks lock contention and same-mount atomic
   replacement on the actual Drive, then reads after a clean Sandbox replacement.
   The integrated live Slack pass checks the save acknowledgement and
-  cross-thread use by two internal members.
+  cross-thread use. The signed gateway tests exercise a different reader.
 
 ## Deterministic evidence
 
@@ -82,5 +82,22 @@ After the writer's synthetic conversation workspace was deleted and the first
 Sandbox released the Drive, a fresh Sandbox mounted the same Drive read/write
 and read both notes. The provider confirmed the writable attachment in each
 session. Both temporary Sandboxes and the Drive were removed and verified
-absent. Live Slack delivery and the actual membership lookups remain for the
-integrated pass.
+absent.
+
+## Live Slack evidence
+
+On 8 November 2026, the enabled channel exercised the gateway and worker from
+`0b1268d2292c3878a5f7272532bee70224b4fafc`. One internal member saved
+`The synthetic badge is violet` in a top-level thread and asked Pi to use the
+shared notes in a fresh top-level thread. The save was acknowledged and the
+read answered violet. Each input received one eyes reaction, one status ending
+in Completed, and one final answer. The answers matched the recorded gateway
+publications and worker callbacks.
+
+This check covers live save and recall across threads with the same member.
+The signed gateway test separately covers an authorized reader with a different
+user ID, a new conversation, and no imported thread context. An additional
+live check with another member is optional for this acceptance slice.
+
+The original Slack route was restored and removal of the temporary deployment,
+worker, seed, snapshot, and test Drive was verified.
