@@ -224,6 +224,48 @@ function parseThreadReply(raw: unknown) {
   };
 }
 
+export function normalizeFailureResult(run: RunRecord, result: WorkerResult) {
+  if (result.type !== 'failed') return;
+  if (result.session || result.artifact) return 400;
+  if (result.failureCategory === 'provider_quota') {
+    result.text = WORKER_QUOTA_REPLY;
+    return;
+  }
+  if (result.failureCategory === 'drive_full') {
+    result.text =
+      run.memory === 'save'
+        ? SHARED_NOTE_STORAGE_FULL_REPLY
+        : WORKER_STORAGE_FULL_REPLY;
+    return;
+  }
+  if (run.memory === 'save') {
+    result.text =
+      result.inputError === 'shared_notes_full'
+        ? SHARED_NOTE_FULL_REPLY
+        : SHARED_NOTE_UNCONFIRMED_REPLY;
+    return;
+  }
+  if (
+    run.memory === 'read' &&
+    result.inputError === 'shared_notes_unavailable'
+  ) {
+    result.text = SHARED_NOTES_UNAVAILABLE_REPLY;
+    return;
+  }
+  result.text =
+    result.inputError === 'pdf_unreadable'
+      ? PDF_UNREADABLE_REPLY
+      : result.inputError === 'pdf_text_too_large'
+        ? PDF_TEXT_TOO_LARGE_REPLY
+        : result.inputError === 'too_many_sources'
+          ? 'This thread has reached its ' +
+            MAX_RETAINED_INPUTS +
+            '-source limit. Start a new thread to add more files or links.'
+          : result.inputError === 'retained_sources_unavailable'
+            ? RETAINED_SOURCES_UNAVAILABLE_REPLY
+            : WORKER_FAILURE_REPLY;
+}
+
 export function createGateway({
   config,
   state,
@@ -255,7 +297,7 @@ export function createGateway({
     });
   let bot = createBot();
 
-  async function initializeBot() {
+  async function initializeBot(timeoutMs = 15_000) {
     const current = bot;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -269,7 +311,7 @@ export function createGateway({
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error('Chat initialization timed out')),
-            15_000,
+            timeoutMs,
           );
         }),
       ]);
@@ -570,47 +612,7 @@ export function createGateway({
   }
 
   function validateResult(run: RunRecord, result: WorkerResult) {
-    if (result.type === 'failed') {
-      if (result.session || result.artifact) return 400;
-      if (result.failureCategory === 'provider_quota') {
-        result.text = WORKER_QUOTA_REPLY;
-        return;
-      }
-      if (result.failureCategory === 'drive_full') {
-        result.text =
-          run.memory === 'save'
-            ? SHARED_NOTE_STORAGE_FULL_REPLY
-            : WORKER_STORAGE_FULL_REPLY;
-        return;
-      }
-      if (run.memory === 'save') {
-        result.text =
-          result.inputError === 'shared_notes_full'
-            ? SHARED_NOTE_FULL_REPLY
-            : SHARED_NOTE_UNCONFIRMED_REPLY;
-        return;
-      }
-      if (
-        run.memory === 'read' &&
-        result.inputError === 'shared_notes_unavailable'
-      ) {
-        result.text = SHARED_NOTES_UNAVAILABLE_REPLY;
-        return;
-      }
-      result.text =
-        result.inputError === 'pdf_unreadable'
-          ? PDF_UNREADABLE_REPLY
-          : result.inputError === 'pdf_text_too_large'
-            ? PDF_TEXT_TOO_LARGE_REPLY
-            : result.inputError === 'too_many_sources'
-              ? 'This thread has reached its ' +
-                MAX_RETAINED_INPUTS +
-                '-source limit. Start a new thread to add more files or links.'
-              : result.inputError === 'retained_sources_unavailable'
-                ? RETAINED_SOURCES_UNAVAILABLE_REPLY
-                : WORKER_FAILURE_REPLY;
-      return;
-    }
+    if (result.type === 'failed') return normalizeFailureResult(run, result);
     if (result.inputError || result.failureCategory) return 400;
     if (run.memory === 'save') {
       if (
@@ -737,6 +739,7 @@ export function createGateway({
           (await store.getRun(run.runId)) ?? run,
           now(),
           sessionRestored,
+          true,
         ))
       )
         await releaseRecoveredWorker?.(run);
@@ -984,7 +987,7 @@ export function createGateway({
     const leadingMention = currentText.match(/^<@([UW][A-Z0-9]+)>\s+/);
     // The same Slack message can arrive as a reply and a mention. On a cold
     // gateway, the signed envelope identifies the installed bot before admission.
-    const botUserId =
+    let botUserId =
       slack.botUserId ??
       (leadingMention
         ? eventAuthorizations
@@ -995,6 +998,15 @@ export function createGateway({
                 authorization.team_id === config.workspaceId,
             )?.user_id
         : undefined);
+    if (leadingMention && !botUserId) {
+      try {
+        await initializeBot(2_200);
+      } catch {
+        return new Response(null, { status: 503 });
+      }
+      botUserId = slack.botUserId;
+      if (!botUserId) return new Response(null, { status: 503 });
+    }
     const botMention =
       leadingMention && leadingMention[1] === botUserId ? leadingMention : null;
     const command =

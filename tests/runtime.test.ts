@@ -893,6 +893,7 @@ function runtimeEvent(options?: {
     team_id: 'TTEST1',
     event_id: eventId,
     is_ext_shared_channel: false,
+    authorizations: [{ team_id: 'TTEST1', user_id: 'UBOT1', is_bot: true }],
     event: {
       type: 'app_mention',
       user: 'UTEST1',

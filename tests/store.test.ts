@@ -533,6 +533,38 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     expect(await store.claimIdleStop(savedTarget, randomUUID())).toBe(
       'claimed',
     );
+    const noResultTarget = makeTarget('terminal-no-result-exit');
+    const noResultRun = makeRun();
+    await store.admit(noResultRun);
+    expect(await store.enrollIdleSession(noResultTarget)).toBe(true);
+    expect(
+      await store.recordDispatchTarget(makeJob(noResultRun), noResultTarget),
+    ).toBe('recorded');
+    const noResultObserved = (await store.getRun(noResultRun.runId))!;
+    const failed: WorkerResult = {
+      ...makeResult(noResultRun),
+      type: 'failed',
+      text: 'Synthetic failure.',
+    };
+    expect(
+      await store.claimPublication(noResultRun.runId, failed, Date.now()),
+    ).toBe('claimed');
+    expect(await store.completePublication(noResultRun, nextTimestamp())).toBe(
+      true,
+    );
+    expect(await store.releaseRecoveryTarget(noResultObserved)).toBeUndefined();
+    expect(await store.claimIdleStop(noResultTarget, randomUUID())).toBe(
+      'active',
+    );
+    expect(await store.releaseRecoveryTarget(noResultObserved, true)).toEqual(
+      noResultTarget,
+    );
+    expect(await store.getRun(noResultRun.runId)).toMatchObject({
+      exitConfirmed: true,
+    });
+    expect(await store.claimIdleStop(noResultTarget, randomUUID())).toBe(
+      'claimed',
+    );
   });
 
   it('holds an artifact claim while its exact target is fenced for recovery', async () => {
@@ -885,6 +917,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       sessionId: randomUUID(),
     };
     await store.admit(run);
+    expect(await store.enrollIdleSession(target)).toBe(true);
     expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(
       'recorded',
     );
@@ -892,8 +925,8 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     expect(bound).not.toBeNull();
     expect(await store.interruptRun(bound!, run.deadline - 1)).toBe(false);
     const interrupted = await Promise.all([
-      store.interruptRun(bound!, run.deadline),
-      store.interruptRun(bound!, run.deadline),
+      store.interruptRun(bound!, run.deadline, false, true),
+      store.interruptRun(bound!, run.deadline, false, true),
     ]);
     expect(interrupted).toEqual([true, true]);
     expect(
@@ -906,7 +939,10 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     expect(await store.getRun(run.runId)).toMatchObject({
       state: 'interrupted',
       execution: target,
+      exitConfirmed: true,
     });
+    expect(await store.releaseRecoveryTarget(bound!)).toEqual(target);
+    expect(await store.claimIdleStop(target, randomUUID())).toBe('claimed');
 
     const duplicate = await store.admit(run);
     expect(duplicate.outcome).toBe('duplicate');

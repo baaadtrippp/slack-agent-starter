@@ -157,6 +157,7 @@ export interface RunStore {
     run: RunRecord,
     now: number,
     sessionRestored?: boolean,
+    exitConfirmed?: boolean,
   ): Promise<boolean>;
 }
 
@@ -512,6 +513,10 @@ if run.runId ~= observed.runId or run.eventId ~= observed.eventId or
 if run.state ~= 'completed' and run.state ~= 'worker_failed' and
    run.state ~= 'publication_uncertain' and run.state ~= 'stopped' and
    run.state ~= 'interrupted' then return '' end
+if ARGV[3] == '1' and run.exitConfirmed ~= true then
+  run.exitConfirmed = true
+  redis.call('SET', KEYS[1], cjson.encode(run), 'KEEPTTL')
+end
 local target = run.recovery
 if not target then
   if run.exitConfirmed ~= true then return '' end
@@ -627,6 +632,7 @@ if current.kind ~= 'work' or
     (ARGV[3] ~= '1' or not current.controls)) or current.result or
    current.deadline > tonumber(ARGV[2]) then return 0 end
 current.state = 'interrupted'
+if ARGV[5] == '1' then current.exitConfirmed = true end
 current.statusVersion = (current.statusVersion or 0) + 1
 redis.call('SET', KEYS[1], cjson.encode(current))
 redis.call('DEL', KEYS[2])
@@ -1342,12 +1348,17 @@ export class RedisRunStore implements RunStore {
 
   async releaseRecoveryTarget(
     run: RunRecord,
+    exitConfirmed = false,
   ): Promise<SandboxTarget | undefined> {
     if (!run.execution) return;
     const encoded = await this.execute((client) =>
       client.eval(RELEASE_RECOVERY_TARGET_SCRIPT, {
         keys: [this.runKey(run.runId), this.activeDispatchKey(run.execution!)],
-        arguments: [JSON.stringify(run), this.activeDispatchPrefix()],
+        arguments: [
+          JSON.stringify(run),
+          this.activeDispatchPrefix(),
+          exitConfirmed ? '1' : '0',
+        ],
       }),
     );
     if (typeof encoded !== 'string' || !encoded) return;
@@ -1477,6 +1488,7 @@ export class RedisRunStore implements RunStore {
     run: RunRecord,
     now: number,
     sessionRestored = false,
+    exitConfirmed = false,
   ): Promise<boolean> {
     return (
       Number(
@@ -1494,6 +1506,7 @@ export class RedisRunStore implements RunStore {
               String(now),
               sessionRestored ? '1' : '0',
               this.activeDispatchPrefix(),
+              exitConfirmed ? '1' : '0',
             ],
           }),
         ),

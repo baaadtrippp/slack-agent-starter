@@ -61,6 +61,7 @@ function envelope() {
     team_id: 'TTEST1',
     event_id: `Ev${randomUUID()}`,
     is_ext_shared_channel: false,
+    authorizations: [{ team_id: 'TTEST1', user_id: 'UBOT1', is_bot: true }],
     event: {
       type: 'app_mention',
       user: 'UTEST1',
@@ -391,6 +392,39 @@ describe.skipIf(!redisUrl)(
         },
       });
     });
+
+    it.each(['remember for this channel:', 'use shared notes:'])(
+      'initializes a cold bot identity before classifying %s with human authorization',
+      async (command) => {
+        mockControlAccess();
+        let initialized = false;
+        vi.mocked(SlackAdapter.prototype.initialize).mockImplementationOnce(
+          async () => {
+            initialized = true;
+          },
+        );
+        const botUserId = vi
+          .spyOn(SlackAdapter.prototype, 'botUserId', 'get')
+          .mockImplementation(() => (initialized ? 'UBOT1' : undefined));
+        const gateway = harness();
+        const event = {
+          ...envelope(),
+          authorizations: [
+            { team_id: 'TTEST1', user_id: 'UTEST1', is_bot: false },
+          ],
+        };
+        event.event.text = `<@UBOT1> ${command} Synthetic text`;
+        expect((await gateway.events(signed(event))).status).toBe(200);
+        await gateway.flush();
+        expect(SlackAdapter.prototype.initialize).toHaveBeenCalledOnce();
+        expect(gateway.dispatch).toHaveBeenCalledOnce();
+        expect(gateway.dispatch.mock.calls[0]?.[0]).toMatchObject({
+          memory: command.startsWith('remember') ? 'save' : 'read',
+          input: { text: 'Synthetic text' },
+        });
+        botUserId.mockRestore();
+      },
+    );
 
     it('binds shared notes to the admitted scope and publishes a save only after the worker result', async () => {
       mockControlAccess();
@@ -895,6 +929,34 @@ describe.skipIf(!redisUrl)(
           ],
         }),
       );
+    });
+
+    it('records exact exit proof and releases an expired run with no saved result', async () => {
+      const inspect = vi.fn().mockResolvedValue({ state: 'exited' as const });
+      const releaseRecoveredWorker = vi.fn(async () => {});
+      const { gateway, run } = await startControlled(
+        inspect,
+        [],
+        releaseRecoveredWorker,
+      );
+      gateway.clock.now = run.deadline + 1_000;
+      expect(
+        (
+          await gateway.interactions(
+            interaction(run, STATUS_ACTION_ID, {
+              user: 'UOTHER1',
+              actionTs: '1800000062.000000',
+              sentAt: gateway.clock.now,
+            }),
+          )
+        ).status,
+      ).toBe(200);
+      await gateway.flush();
+      expect(await gateway.store.getRun(run.runId)).toMatchObject({
+        state: 'interrupted',
+        exitConfirmed: true,
+      });
+      expect(releaseRecoveredWorker).toHaveBeenCalledOnce();
     });
 
     it('releases terminal recovery after a callback wins an in-flight Status inspection', async () => {

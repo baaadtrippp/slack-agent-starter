@@ -5,7 +5,7 @@ import { Sandbox } from '@vercel/sandbox';
 import { ConsoleLogger } from 'chat';
 import { createClient } from 'redis';
 import { collectRunArtifact } from './generated-artifact.js';
-import { createGateway } from './gateway.js';
+import { createGateway, normalizeFailureResult } from './gateway.js';
 import {
   createManagedWorker,
   MANAGED_DRIVE_WRITE_SETUP,
@@ -238,11 +238,15 @@ function initialize() {
               const inspection = await inspectSandboxRun(run, false).catch(
                 () => undefined,
               );
-              if (inspection?.state === 'exited' && inspection.result) {
-                await store
-                  .claimSavedResult(run, inspection.result)
-                  .catch(() => undefined);
-                target = await store.releaseRecoveryTarget(run);
+              if (inspection?.state === 'exited') {
+                if (
+                  inspection.result &&
+                  !normalizeFailureResult(run, inspection.result)
+                )
+                  await store
+                    .claimSavedResult(run, inspection.result)
+                    .catch(() => undefined);
+                target = await store.releaseRecoveryTarget(run, true);
               }
             }
             if (!managed || !target || target.sandboxName !== sandboxName)
