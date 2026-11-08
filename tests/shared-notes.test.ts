@@ -14,8 +14,7 @@ import { afterEach, beforeEach, expect, it } from 'vitest';
 // @ts-expect-error No declaration file is shipped for the Sandbox module.
 import * as sharedNotes from '../apps/worker/sandbox/shared-notes.mjs';
 
-const { isDriveFullError, readSharedNotes, saveSharedNote, sharedNotesFull } =
-  sharedNotes;
+const { readSharedNotes, saveSharedNote, sharedNotesFull } = sharedNotes;
 
 const exec = promisify(execFile);
 const moduleUrl = new URL(
