@@ -476,6 +476,26 @@ end
 return 1
 `;
 
+const RELEASE_RECOVERY_TARGET_SCRIPT = `
+local encoded = redis.call('GET', KEYS[1])
+if not encoded then return '' end
+local run = cjson.decode(encoded)
+local observed = cjson.decode(ARGV[1])
+if run.runId ~= observed.runId or run.eventId ~= observed.eventId or
+   run.generation ~= observed.generation or not run.execution or
+   not observed.execution or
+   run.execution.sandboxName ~= observed.execution.sandboxName or
+   run.execution.sessionId ~= observed.execution.sessionId or
+   not run.recovery then return '' end
+if run.state ~= 'completed' and run.state ~= 'worker_failed' and
+   run.state ~= 'publication_uncertain' and run.state ~= 'stopped' and
+   run.state ~= 'interrupted' then return '' end
+local recovery = run.recovery
+redis.call('SREM', KEYS[2], run.runId)
+redis.call('SREM', ARGV[2] .. recovery.sandboxName .. ':' .. recovery.sessionId .. ':active', run.runId)
+return cjson.encode(recovery)
+`;
+
 const FENCE_LOST_TARGET_SCRIPT = `
 local gate = redis.call('GET', KEYS[1])
 if gate == 'open' then
@@ -501,16 +521,26 @@ for _, id in ipairs(ids) do
     redis.call('SREM', KEYS[2], id)
   else
     local run = cjson.decode(encoded)
-    if not run.execution or run.execution.sandboxName ~= old.sandboxName or
-       run.execution.sessionId ~= old.sessionId then
+    local current = run.recovery or run.execution
+    local original = run.execution and
+      run.execution.sandboxName == old.sandboxName and
+      run.execution.sessionId == old.sessionId
+    local replay = original and run.recovery and
+      run.recovery.sandboxName == replacement.sandboxName and
+      run.recovery.sessionId == replacement.sessionId
+    if not current then
       redis.call('SREM', KEYS[2], id)
+    elseif (current.sandboxName ~= old.sandboxName or
+            current.sessionId ~= old.sessionId) and not replay then
+      if not original then redis.call('SREM', KEYS[2], id) end
     elseif run.state == 'accepted' or run.state == 'dispatch_failed' or
            run.state == 'stopping' then
-      if run.recovery and
-         (run.recovery.sandboxName ~= replacement.sandboxName or
-          run.recovery.sessionId ~= replacement.sessionId) then return 0 end
-      run.recovery = replacement
-      redis.call('SET', key, cjson.encode(run), 'KEEPTTL')
+      if not replay then
+        local migrated = run.recovery ~= nil
+        run.recovery = replacement
+        redis.call('SET', key, cjson.encode(run), 'KEEPTTL')
+        if migrated then redis.call('SREM', KEYS[2], id) end
+      end
       redis.call('SADD', KEYS[4], id)
     else
       redis.call('SREM', KEYS[2], id)
@@ -1269,6 +1299,20 @@ export class RedisRunStore implements RunStore {
         ),
       ) === 1
     );
+  }
+
+  async releaseRecoveryTarget(
+    run: RunRecord,
+  ): Promise<SandboxTarget | undefined> {
+    if (!run.execution) return;
+    const encoded = await this.execute((client) =>
+      client.eval(RELEASE_RECOVERY_TARGET_SCRIPT, {
+        keys: [this.runKey(run.runId), this.activeDispatchKey(run.execution!)],
+        arguments: [JSON.stringify(run), this.activeDispatchPrefix()],
+      }),
+    );
+    if (typeof encoded !== 'string' || !encoded) return;
+    return JSON.parse(encoded) as SandboxTarget;
   }
 
   async enrollIdleSession(target: SandboxTarget): Promise<boolean> {

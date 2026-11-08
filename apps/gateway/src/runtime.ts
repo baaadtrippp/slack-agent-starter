@@ -142,30 +142,32 @@ function initialize() {
     ...(controlsEnabled
       ? {
           inspectWorker: async (run, stop) => {
-            const exact = await inspectSandboxRun(run, stop).catch(
-              () => undefined,
-            );
+            const currentTarget = run.recovery ?? run.execution;
+            const exact = await inspectSandboxRun(
+              currentTarget ? { ...run, execution: currentTarget } : run,
+              stop,
+            ).catch(() => undefined);
             if (exact?.state === 'exited' || exact?.state === 'stopped')
               return exact;
             if (
               !managed ||
-              !run.execution ||
-              run.execution.sandboxName !== sandboxName
+              !currentTarget ||
+              currentTarget.sandboxName !== sandboxName
             )
               return { state: 'unknown' };
 
             // Recovery proves the exact target stopped or disappeared before
             // fencing it and reconciling one replacement on the same Drive.
             const session = await managed.recoverSession(
-              run.execution,
+              currentTarget,
               Date.now() + 25_000,
             );
             if (!session) return { state: 'unknown' };
             const target = {
-              sandboxName: run.execution.sandboxName,
+              sandboxName: currentTarget.sandboxName,
               sessionId: session.sessionId,
             };
-            if (!(await store.bindRecoveryTarget(run.execution, target)))
+            if (!(await store.bindRecoveryTarget(currentTarget, target)))
               return { state: 'unknown' };
             const token = randomUUID();
             if (!(await store.reserveRecovery(target, token)))
@@ -196,15 +198,8 @@ function initialize() {
             }
           },
           releaseRecoveredWorker: async (run) => {
-            const current = await store.getRun(run.runId);
-            const target = current?.recovery ?? run.execution;
-            if (
-              !run.execution ||
-              !(await store.releaseDispatchTarget(run.runId, run.execution)) ||
-              !managed ||
-              !target ||
-              target.sandboxName !== sandboxName
-            )
+            const target = await store.releaseRecoveryTarget(run);
+            if (!managed || !target || target.sandboxName !== sandboxName)
               return;
             const sandbox = await Sandbox.get({
               name: target.sandboxName,

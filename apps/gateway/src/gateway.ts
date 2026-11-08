@@ -438,6 +438,7 @@ export function createGateway({
       );
       await publishingStatus;
       await renderStatus(run.runId);
+      await releaseRecoveredWorker?.(run).catch(() => {});
       return;
     }
 
@@ -504,6 +505,7 @@ export function createGateway({
     }
     await publishingStatus;
     await renderStatus(run.runId);
+    await releaseRecoveredWorker?.(run).catch(() => {});
   }
 
   async function publishNotice(
@@ -631,6 +633,18 @@ export function createGateway({
     try {
       if (run.state === 'stopping') {
         await confirmStop(run, rendering);
+        return;
+      }
+      if (
+        [
+          'completed',
+          'worker_failed',
+          'publication_uncertain',
+          'interrupted',
+          'stopped',
+        ].includes(run.state)
+      ) {
+        await releaseRecoveredWorker?.(run);
         return;
       }
       if (run.state !== 'accepted' && run.state !== 'dispatch_failed') return;
@@ -1421,7 +1435,10 @@ export function createGateway({
       return new Response(null, { status: 503 });
     }
     if (claim === 'duplicate') {
-      schedule(() => renderStatus(run.runId));
+      schedule(async () => {
+        await releaseRecoveredWorker?.(run).catch(() => {});
+        await renderStatus(run.runId);
+      });
       return new Response(null, { status: 204 });
     }
     if (claim === 'expired') return new Response(null, { status: 410 });

@@ -434,6 +434,103 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     );
   });
 
+  it('atomically releases a current recovery binding after a delayed terminal callback', async () => {
+    const lost = makeTarget('delayed-terminal');
+    const replacement = makeTarget('delayed-terminal-replacement');
+    const run = makeRun();
+    await store.admit(run);
+    await Promise.all([
+      store.enrollIdleSession(lost),
+      store.enrollIdleSession(replacement),
+    ]);
+    expect(await store.recordDispatchTarget(makeJob(run), lost)).toBe(
+      'recorded',
+    );
+    expect(await store.fenceLostTarget(lost)).toBe(true);
+    expect(await store.bindRecoveryTarget(lost, replacement)).toBe(true);
+    const bound = (await store.getRun(run.runId))!;
+    expect(await store.releaseRecoveryTarget(bound)).toBeUndefined();
+    expect(await store.claimIdleStop(replacement, randomUUID())).toBe('active');
+
+    expect(
+      await store.claimPublication(run.runId, makeResult(run), Date.now()),
+    ).toBe('claimed');
+    expect(await store.completePublication(run, nextTimestamp())).toBe(true);
+    expect(
+      await store.releaseRecoveryTarget({ ...bound, eventId: randomUUID() }),
+    ).toBeUndefined();
+    expect(await store.claimIdleStop(replacement, randomUUID())).toBe('active');
+    expect(await store.releaseRecoveryTarget(bound)).toEqual(replacement);
+    expect(await store.claimIdleStop(replacement, randomUUID())).toBe(
+      'claimed',
+    );
+    expect(
+      await state.getClient().sCard(activeDispatchKey(namespace, lost)),
+    ).toBe(0);
+  });
+
+  it('migrates affected reservations across a second exact runtime loss', async () => {
+    const firstTarget = makeTarget('repeat-a');
+    const secondTarget = makeTarget('repeat-b');
+    const thirdTarget = makeTarget('repeat-c');
+    const first = makeRun();
+    const second = makeRun();
+    await Promise.all([store.admit(first), store.admit(second)]);
+    await Promise.all([
+      store.enrollIdleSession(firstTarget),
+      store.enrollIdleSession(secondTarget),
+      store.enrollIdleSession(thirdTarget),
+    ]);
+    expect(await store.recordDispatchTarget(makeJob(first), firstTarget)).toBe(
+      'recorded',
+    );
+    expect(await store.recordDispatchTarget(makeJob(second), firstTarget)).toBe(
+      'recorded',
+    );
+    expect(await store.fenceLostTarget(firstTarget)).toBe(true);
+    expect(await store.bindRecoveryTarget(firstTarget, secondTarget)).toBe(
+      true,
+    );
+    expect(await store.fenceLostTarget(secondTarget)).toBe(true);
+    expect(await store.bindRecoveryTarget(secondTarget, thirdTarget)).toBe(
+      true,
+    );
+
+    for (const run of [first, second])
+      expect(await store.getRun(run.runId)).toMatchObject({
+        execution: firstTarget,
+        recovery: thirdTarget,
+      });
+    expect(
+      await state.getClient().sCard(activeDispatchKey(namespace, firstTarget)),
+    ).toBe(2);
+    expect(
+      await state.getClient().sCard(activeDispatchKey(namespace, secondTarget)),
+    ).toBe(0);
+    expect(
+      await state.getClient().sCard(activeDispatchKey(namespace, thirdTarget)),
+    ).toBe(2);
+
+    const firstBound = (await store.getRun(first.runId))!;
+    expect(
+      await store.claimPublication(first.runId, makeResult(first), Date.now()),
+    ).toBe('claimed');
+    expect(await store.completePublication(first, nextTimestamp())).toBe(true);
+    expect(await store.releaseRecoveryTarget(firstBound)).toEqual(thirdTarget);
+    expect(await store.claimIdleStop(thirdTarget, randomUUID())).toBe('active');
+
+    const secondBound = (await store.getRun(second.runId))!;
+    expect(await store.interruptRun(secondBound, secondBound.deadline)).toBe(
+      true,
+    );
+    expect(await store.claimIdleStop(thirdTarget, randomUUID())).toBe(
+      'claimed',
+    );
+    expect(
+      await state.getClient().sCard(activeDispatchKey(namespace, firstTarget)),
+    ).toBe(0);
+  });
+
   it('claims a callback once and releases only its own thread lease on completion', async () => {
     const run = makeRun({ conversationId: 'd'.repeat(64) });
     await store.admit(run);
@@ -790,6 +887,10 @@ function makeTarget(label: string): SandboxTarget {
 
 function idleGateKey(namespace: string, target: SandboxTarget): string {
   return `${namespace}:idle:${target.sandboxName}:${target.sessionId}:gate`;
+}
+
+function activeDispatchKey(namespace: string, target: SandboxTarget): string {
+  return `${namespace}:idle:${target.sandboxName}:${target.sessionId}:active`;
 }
 
 function managedRuntimeKey(namespace: string, sandboxName: string): string {

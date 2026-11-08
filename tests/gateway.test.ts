@@ -119,6 +119,7 @@ function harness(
   progressUi = false,
   controls?: {
     inspectWorker: (run: RunRecord, stop: boolean) => Promise<WorkerInspection>;
+    releaseRecoveredWorker?: (run: RunRecord) => Promise<void>;
     operatorIds?: string[];
   },
 ) {
@@ -155,7 +156,14 @@ function harness(
     dispatch,
     ...(isSandboxStopped ? { isSandboxStopped } : {}),
     ...(collectArtifact ? { collectArtifact } : {}),
-    ...(controls ? { inspectWorker: controls.inspectWorker } : {}),
+    ...(controls
+      ? {
+          inspectWorker: controls.inspectWorker,
+          ...(controls.releaseRecoveredWorker
+            ? { releaseRecoveredWorker: controls.releaseRecoveredWorker }
+            : {}),
+        }
+      : {}),
     schedule: (task) => tasks.push(task),
     now: () => clock.now,
   });
@@ -1757,6 +1765,76 @@ describe.skipIf(!redisUrl)(
         state: 'completed',
         messageId: '1800000001.000001',
       });
+    });
+
+    it('releases a recovery reservation when the lost worker callback arrives late', async () => {
+      let failRelease = true;
+      const releaseRecoveredWorker = vi.fn(async (run: RunRecord) => {
+        if (failRelease) {
+          failRelease = false;
+          throw new Error('Synthetic recovery release outage');
+        }
+        await gateway.store.releaseRecoveryTarget(run);
+      });
+      const gateway = harness(
+        createMockState(),
+        false,
+        undefined,
+        {},
+        undefined,
+        false,
+        {
+          inspectWorker: async () => ({ state: 'unknown' }),
+          releaseRecoveredWorker,
+        },
+      );
+      const body = envelope();
+      await gateway.events(signed(body));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      const lost = {
+        sandboxName: 'synthetic-late-worker',
+        sessionId: randomUUID(),
+      };
+      const replacement = {
+        sandboxName: lost.sandboxName,
+        sessionId: randomUUID(),
+      };
+      await Promise.all([
+        gateway.store.enrollIdleSession(lost),
+        gateway.store.enrollIdleSession(replacement),
+      ]);
+      expect(await gateway.store.recordDispatchTarget(job, lost)).toBe(
+        'recorded',
+      );
+      expect(await gateway.store.fenceLostTarget(lost)).toBe(true);
+      expect(await gateway.store.bindRecoveryTarget(lost, replacement)).toBe(
+        true,
+      );
+      const output = result(job);
+
+      expect(
+        (await gateway.callback(callback(output, job.callbackToken))).status,
+      ).toBe(202);
+      await gateway.flush();
+      expect(releaseRecoveredWorker).toHaveBeenCalledOnce();
+      expect(await gateway.store.getRun(job.runId)).toMatchObject({
+        state: 'completed',
+        execution: lost,
+        recovery: replacement,
+      });
+      expect(await gateway.store.claimIdleStop(replacement, randomUUID())).toBe(
+        'active',
+      );
+
+      expect(
+        (await gateway.callback(callback(output, job.callbackToken))).status,
+      ).toBe(204);
+      await gateway.flush();
+      expect(releaseRecoveredWorker).toHaveBeenCalledTimes(2);
+      expect(await gateway.store.claimIdleStop(replacement, randomUUID())).toBe(
+        'claimed',
+      );
     });
 
     it('shows finishing while the final answer is still publishing, then completes', async () => {

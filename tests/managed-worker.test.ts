@@ -150,9 +150,16 @@ describe.skipIf(!redisUrl)('managed worker replacement', () => {
       sourceSnapshotId: seedId,
       runCommand: vi.fn().mockResolvedValue({ exitCode: 0 }),
     };
+    const secondReplacement = {
+      sessionId: 'synthetic-recovered-session-2',
+      status: 'running',
+      sourceSnapshotId: seedId,
+      runCommand: vi.fn().mockResolvedValue({ exitCode: 0 }),
+    };
     let session = old;
     let attachment: string | undefined;
     let inventoryFails = true;
+    let resumes = 0;
     const listSessions = vi.fn(() => {
       if (inventoryFails) throw new Error('Synthetic provider outage');
       return (async function* () {
@@ -161,8 +168,9 @@ describe.skipIf(!redisUrl)('managed worker replacement', () => {
     });
     sandboxGet.mockImplementation(async ({ resume }: { resume: boolean }) => {
       if (resume) {
-        session = replacement;
-        attachment = replacementId;
+        resumes += 1;
+        session = resumes === 1 ? replacement : secondReplacement;
+        attachment = session.sessionId;
       }
       return {
         persistent: false,
@@ -219,5 +227,34 @@ describe.skipIf(!redisUrl)('managed worker replacement', () => {
     expect(
       sandboxGet.mock.calls.filter(([input]) => input.resume),
     ).toHaveLength(1);
+
+    session = { ...replacement, status: 'stopped' };
+    attachment = undefined;
+    expect(
+      await managed.recoverSession(
+        { sandboxName, sessionId: replacementId },
+        Date.now() + 15_000,
+      ),
+    ).toBe(secondReplacement);
+    expect(
+      await store.isIdleSessionOpen({
+        sandboxName,
+        sessionId: replacementId,
+      }),
+    ).toBe(false);
+    expect(
+      await store.isIdleSessionOpen({
+        sandboxName,
+        sessionId: secondReplacement.sessionId,
+      }),
+    ).toBe(true);
+    expect(await store.getManagedRuntime(sandboxName)).toEqual({
+      phase: 'ready',
+      sessionId: secondReplacement.sessionId,
+      driveId,
+    });
+    expect(
+      sandboxGet.mock.calls.filter(([input]) => input.resume),
+    ).toHaveLength(2);
   });
 });
