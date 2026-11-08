@@ -126,6 +126,36 @@ export function workerFailureCategory(error) {
   if (isDriveFullError(error)) return 'drive_full';
 }
 
+export function durableProviderQuota(records, priorRevision = 0) {
+  const current = records.slice(priorRevision);
+  const user = current.findIndex(
+    (row) => row.type === 'message' && row.message.role === 'user',
+  );
+  const assistant = current.findLastIndex(
+    (row) => row.type === 'message' && row.message.role === 'assistant',
+  );
+  const answer = current[assistant]?.message;
+  return (
+    user >= 0 &&
+    assistant > user &&
+    answer.stopReason === 'error' &&
+    isProviderQuotaSignal(answer.errorMessage)
+  );
+}
+
+export function recoverDriveWriteFailure(job, result, error) {
+  if (job.session && job.memory !== 'save' && result.type === 'completed')
+    throw uncertainRun;
+  result.type = 'failed';
+  result.text = failureText;
+  delete result.inputError;
+  delete result.failureCategory;
+  if (isDriveFullError(error)) result.failureCategory = 'drive_full';
+  delete result.session;
+  delete result.artifact;
+  return result;
+}
+
 export const readStagedInputExtension = `
 import { readFile } from 'node:fs/promises';
 import { Type } from 'typebox';
@@ -448,14 +478,7 @@ async function run(job, model, key, stopSignal = new AbortController().signal) {
     console.error(
       JSON.stringify({ runId: job.runId, phase: 'drive_write_failed' }),
     );
-    if (job.session && result.type === 'completed') throw uncertainRun;
-    result.type = 'failed';
-    result.text = failureText;
-    delete result.inputError;
-    delete result.failureCategory;
-    if (isDriveFullError(error)) result.failureCategory = 'drive_full';
-    delete result.session;
-    delete result.artifact;
+    recoverDriveWriteFailure(job, result, error);
   }
 
   try {
@@ -640,6 +663,7 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
       timeoutMs,
     });
     stopped = false;
+    let turnError;
     try {
       const handle = await runtime.ensureSession({
         sessionKey: job.runId,
@@ -667,7 +691,7 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
       if (outcome.status !== 'completed') throw new Error('Pi turn failed');
     } catch (error) {
       if (stopSignal.aborted) throw cancelledRun;
-      throw error;
+      turnError = error;
     } finally {
       try {
         await runtime.shutdown();
@@ -675,6 +699,29 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
       } catch {
         throw uncertainRun;
       }
+    }
+
+    if (turnError) {
+      if (turnError !== providerQuotaFailure && started) {
+        const failed = await (
+          job.session
+            ? verifySavedSession(
+                job.session,
+                sessions,
+                adapter,
+                scratch,
+                work,
+                false,
+              )
+            : readNativeSession(sessions)
+        ).catch(() => undefined);
+        if (
+          failed &&
+          durableProviderQuota(failed.records, before?.records.length ?? 0)
+        )
+          throw providerQuotaFailure;
+      }
+      throw turnError;
     }
 
     const saved = job.session

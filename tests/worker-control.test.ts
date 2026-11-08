@@ -265,11 +265,33 @@ describe('Sandbox worker control', () => {
   });
 
   test.skipIf(process.platform !== 'linux').each([
-    ['interrupted', false],
-    ['completed', true],
+    [
+      'interrupted memory save with an inconsistent native session',
+      false,
+      2,
+      'Native session was not restored',
+    ],
+    [
+      'completed memory save with an inconsistent native session',
+      true,
+      2,
+      'Native session was not restored',
+    ],
+    [
+      'interrupted memory save with a missing adapter entry',
+      false,
+      1,
+      'Adapter session changed',
+    ],
+    [
+      'completed memory save with a missing adapter entry',
+      true,
+      1,
+      'Adapter session changed',
+    ],
   ])(
-    'refuses to report %s memory save with an inconsistent session as safe',
-    async (_outcome, completed) => {
+    'refuses to report %s as safe',
+    async (_case, completed, revision, error) => {
       const paths = await fixture();
       const runId = randomUUID();
       const seedRunId = randomUUID();
@@ -305,7 +327,7 @@ describe('Sandbox worker control', () => {
                 seedRunId,
                 nativeId,
                 adapterId: randomUUID(),
-                revision: 2,
+                revision,
               },
             },
             {
@@ -317,7 +339,7 @@ describe('Sandbox worker control', () => {
               },
             },
           ),
-        ).rejects.toThrow('Native session was not restored');
+        ).rejects.toThrow(error);
       } finally {
         await rm(paths.root, { recursive: true, force: true });
       }

@@ -6,8 +6,13 @@ import { workerResultSchema } from '../packages/contracts/src/index.js';
 // @ts-expect-error No declaration file is shipped for the Sandbox entry point.
 import * as sandboxWorker from '../apps/worker/sandbox/run.mjs';
 
-const { consumeTurn, isProviderQuotaSignal, workerFailureCategory } =
-  sandboxWorker;
+const {
+  consumeTurn,
+  durableProviderQuota,
+  isProviderQuotaSignal,
+  recoverDriveWriteFailure,
+  workerFailureCategory,
+} = sandboxWorker;
 
 type TurnEvent =
   | { type: 'status'; text: string }
@@ -174,6 +179,67 @@ describe('Sandbox worker progress', () => {
         }),
       ),
     ).toBeUndefined();
+  });
+
+  it('delivers a failed note-save result when its manifest cannot be written', () => {
+    const result = {
+      type: 'completed',
+      text: 'Saved to this channel’s shared notes.',
+    };
+    const full = Object.assign(new Error('Synthetic full Drive'), {
+      code: 'ENOSPC',
+    });
+
+    expect(
+      recoverDriveWriteFailure(
+        { memory: 'save', session: { seedRunId: 'retained' } },
+        result,
+        full,
+      ),
+    ).toMatchObject({
+      type: 'failed',
+      failureCategory: 'drive_full',
+    });
+    expect(result.text).not.toContain('Saved');
+    expect(() =>
+      recoverDriveWriteFailure(
+        { session: { seedRunId: 'retained' } },
+        { type: 'completed', text: 'Completed answer' },
+        full,
+      ),
+    ).toThrow('Worker state requires inspection');
+  });
+
+  it('recognizes quota only in the current durable Pi turn', () => {
+    const prior = {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '402: {"message":"old quota error"}',
+      },
+    };
+    const currentUser = { type: 'message', message: { role: 'user' } };
+    const quota = {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '429: {"message":"quota exceeded"}',
+      },
+    };
+    const generic = {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '401: ordinary provider failure',
+      },
+    };
+
+    expect(durableProviderQuota([prior, currentUser, quota], 1)).toBe(true);
+    expect(durableProviderQuota([prior, currentUser, generic], 1)).toBe(false);
+    expect(durableProviderQuota([prior], 1)).toBe(false);
   });
 
   it('reports working once when a tool call is the first live event', async () => {
