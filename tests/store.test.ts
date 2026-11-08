@@ -478,10 +478,11 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       await store.recordDispatchTarget(makeJob(callbackRun), callbackTarget),
     ).toBe('recorded');
     const callbackObserved = (await store.getRun(callbackRun.runId))!;
+    const callbackResult = makeResult(callbackRun);
     expect(
       await store.claimPublication(
         callbackRun.runId,
-        makeResult(callbackRun),
+        callbackResult,
         Date.now(),
       ),
     ).toBe('claimed');
@@ -492,9 +493,15 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     expect(await store.claimIdleStop(callbackTarget, randomUUID())).toBe(
       'active',
     );
-    expect(
-      await store.releaseDispatchTarget(callbackRun.runId, callbackTarget),
-    ).toBe(true);
+    expect(await store.claimSavedResult(callbackObserved, callbackResult)).toBe(
+      'duplicate',
+    );
+    expect(await store.getRun(callbackRun.runId)).toMatchObject({
+      exitConfirmed: true,
+    });
+    expect(await store.releaseRecoveryTarget(callbackObserved)).toEqual(
+      callbackTarget,
+    );
 
     const savedTarget = makeTarget('saved-result-exit');
     const savedRun = makeRun();
@@ -526,6 +533,73 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     expect(await store.claimIdleStop(savedTarget, randomUUID())).toBe(
       'claimed',
     );
+  });
+
+  it('holds an artifact claim while its exact target is fenced for recovery', async () => {
+    const lost = makeTarget('artifact-lost');
+    const replacement = makeTarget('artifact-replacement');
+    const run = makeRun();
+    const result = makeResult(run);
+    await store.admit(run);
+    await Promise.all([
+      store.enrollIdleSession(lost),
+      store.enrollIdleSession(replacement),
+    ]);
+    expect(await store.recordDispatchTarget(makeJob(run), lost)).toBe(
+      'recorded',
+    );
+    const firstLease = randomUUID();
+    expect(await store.reserveArtifactCollection(run.runId, firstLease)).toBe(
+      true,
+    );
+    expect(await store.fenceLostTarget(lost)).toBe(true);
+    expect(
+      await store.claimPublication(
+        run.runId,
+        result,
+        Date.now(),
+        firstLease,
+        lost,
+      ),
+    ).toBe('retry');
+    const retryLease = randomUUID();
+    expect(await store.reserveArtifactCollection(run.runId, retryLease)).toBe(
+      true,
+    );
+    expect(await store.bindRecoveryTarget(lost, replacement)).toBe(true);
+    expect(
+      await store.claimPublication(
+        run.runId,
+        result,
+        Date.now(),
+        retryLease,
+        lost,
+      ),
+    ).toBe('claimed');
+  });
+
+  it('returns an original target after exact Stop proof', async () => {
+    const target = makeTarget('confirmed-stop');
+    const run = makeRun({ controls: true, statusMessageId: nextTimestamp() });
+    await store.admit(run);
+    expect(await store.enrollIdleSession(target)).toBe(true);
+    expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(
+      'recorded',
+    );
+    expect(
+      await store.requestStop({
+        runId: run.runId,
+        generation: run.generation,
+        statusMessageId: run.statusMessageId!,
+      }),
+    ).toBe('requested');
+    const stopping = (await store.getRun(run.runId))!;
+    expect(await store.confirmStopped(stopping)).toBe('confirmed');
+    expect(await store.getRun(run.runId)).toMatchObject({
+      state: 'stopped',
+      exitConfirmed: true,
+    });
+    expect(await store.releaseRecoveryTarget(stopping)).toEqual(target);
   });
 
   it('unsubmits a proven prelaunch failure racing Stop without a failure result', async () => {

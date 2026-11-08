@@ -113,6 +113,7 @@ export interface RunStore {
     result: WorkerResult,
     now: number,
     artifactLease?: string,
+    execution?: SandboxTarget,
   ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry'>;
   claimSavedResult(
     observed: RunRecord,
@@ -205,7 +206,7 @@ local result = cjson.decode(ARGV[2])
 if run.runId ~= ARGV[1] or run.runId ~= result.runId or run.generation ~= result.generation then
   return 'conflict'
 end
-local observed = ARGV[5] and cjson.decode(ARGV[5])
+local observed = ARGV[5] and ARGV[5] ~= '' and cjson.decode(ARGV[5])
 if ARGV[3] == 'unsubmitted' then
   if run.kind ~= 'work' or run.execution or result.type ~= 'failed' or result.session or
      redis.call('GET', KEYS[2]) ~= run.runId then return 'conflict' end
@@ -226,6 +227,10 @@ local function sameArtifact(a, b)
 end
 if run.state == 'publishing' or run.state == 'completed' or run.state == 'worker_failed' or run.state == 'publication_uncertain' then
   if run.result and run.result.eventId == result.eventId and run.result.runId == result.runId and run.result.generation == result.generation and run.result.sequence == result.sequence and run.result.type == result.type and run.result.text == result.text and sameArtifact(run.result.artifact, result.artifact) and sameSession(run.result.session, result.session) then
+    if observed and run.exitConfirmed ~= true then
+      run.exitConfirmed = true
+      redis.call('SET', KEYS[1], cjson.encode(run), 'KEEPTTL')
+    end
     return 'duplicate'
   end
   return 'conflict'
@@ -233,6 +238,16 @@ end
 if run.state ~= 'accepted' and run.state ~= 'dispatch_failed' then return 'conflict' end
 if observed and redis.call('GET', KEYS[3]) ~= run.runId then return 'conflict' end
 if ARGV[4] and ARGV[4] ~= '' and redis.call('GET', KEYS[2]) ~= ARGV[4] then return 'retry' end
+if ARGV[6] == 'artifact' and not run.recovery then
+  local gate = redis.call('GET', KEYS[4])
+  if gate and gate ~= 'open' then
+    local closed = cjson.decode(gate)
+    if closed.state == 'lost' then
+      if redis.call('GET', KEYS[2]) == ARGV[4] then redis.call('DEL', KEYS[2]) end
+      return 'retry'
+    end
+  end
+end
 if observed then run.exitConfirmed = true end
 run.result = result
 run.state = 'publishing'
@@ -327,6 +342,7 @@ if ARGV[2] ~= '' then
   redis.call('SET', KEYS[4], cjson.encode(previous))
 end
 run.state = 'stopped'
+run.exitConfirmed = true
 run.statusVersion = (run.statusVersion or 0) + 1
 redis.call('SET', KEYS[1], cjson.encode(run))
 redis.call('DEL', KEYS[2])
@@ -927,15 +943,25 @@ export class RedisRunStore implements RunStore {
     result: WorkerResult,
     now: number,
     artifactLease?: string,
+    execution?: SandboxTarget,
   ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry'> {
     return (await this.execute((client) =>
       client.eval(CLAIM_SCRIPT, {
-        keys: [this.runKey(runId), this.csvCollectionKey(runId)],
+        keys: [
+          this.runKey(runId),
+          this.csvCollectionKey(runId),
+          `${this.runKey(runId)}:no-owner`,
+          execution
+            ? this.idleGateKey(execution)
+            : `${this.runKey(runId)}:no-execution`,
+        ],
         arguments: [
           runId,
           JSON.stringify(result),
           String(now),
-          ...(artifactLease ? [artifactLease] : []),
+          artifactLease ?? '',
+          '',
+          artifactLease && execution ? 'artifact' : '',
         ],
       }),
     )) as 'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry';

@@ -660,6 +660,7 @@ describe.skipIf(!redisUrl)(
         stop: boolean,
       ) => Promise<WorkerInspection>,
       operatorIds: string[] = [],
+      releaseRecoveredWorker?: (run: RunRecord) => Promise<void>,
     ) {
       mockControlAccess();
       vi.mocked(SlackAdapter.prototype.postMessage)
@@ -680,7 +681,11 @@ describe.skipIf(!redisUrl)(
         {},
         undefined,
         true,
-        { inspectWorker, operatorIds },
+        {
+          inspectWorker,
+          operatorIds,
+          ...(releaseRecoveredWorker ? { releaseRecoveredWorker } : {}),
+        },
       );
       const target = { sandboxName: 'test-sandbox', sessionId: 'test-session' };
       gateway.dispatch.mockImplementationOnce(async (job) => {
@@ -878,6 +883,55 @@ describe.skipIf(!redisUrl)(
         messageId: answerTs,
       });
       expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(2);
+      expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
+        expect.any(String),
+        statusTs,
+        expect.objectContaining({
+          children: [
+            expect.objectContaining({
+              content: 'Completed. The result is in this thread.',
+            }),
+          ],
+        }),
+      );
+    });
+
+    it('releases terminal recovery after a callback wins an in-flight Status inspection', async () => {
+      const entered = Promise.withResolvers<void>();
+      const proof = Promise.withResolvers<WorkerInspection>();
+      const inspect = vi.fn(async () => {
+        entered.resolve();
+        return proof.promise;
+      });
+      const releaseRecoveredWorker = vi.fn(async () => {});
+      const { gateway, run, job } = await startControlled(
+        inspect,
+        [],
+        releaseRecoveredWorker,
+      );
+      expect(
+        (await gateway.interactions(interaction(run, STATUS_ACTION_ID))).status,
+      ).toBe(200);
+      const statusTask = gateway.tasks.shift()!;
+      const status = statusTask();
+      await entered.promise;
+
+      const terminal = result(job);
+      expect(
+        (await gateway.callback(callback(terminal, job.callbackToken))).status,
+      ).toBe(202);
+      await gateway.flush();
+      expect(releaseRecoveredWorker).toHaveBeenCalledOnce();
+
+      proof.resolve({ state: 'exited', result: terminal });
+      await status;
+      expect(releaseRecoveredWorker).toHaveBeenCalledTimes(2);
+      expect(await gateway.store.getRun(run.runId)).toMatchObject({
+        state: 'completed',
+        messageId: answerTs,
+        exitConfirmed: true,
+      });
       expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(2);
       expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
         expect.any(String),

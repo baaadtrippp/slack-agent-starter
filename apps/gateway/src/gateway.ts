@@ -711,13 +711,14 @@ export function createGateway({
             bytes && digest(bytes) === result.artifact?.sha256
               ? bytes
               : undefined;
-          if ((await store.claimSavedResult(run, result)) === 'claimed') {
+          const saved = await store.claimSavedResult(run, result);
+          if (saved === 'claimed') {
             try {
               await publish(run, result, artifact);
             } finally {
               await releaseRecoveredWorker?.(run);
             }
-          }
+          } else if (saved === 'duplicate') await releaseRecoveredWorker?.(run);
           return;
         }
       }
@@ -1465,6 +1466,7 @@ export function createGateway({
         result,
         claimAt,
         artifactLease,
+        artifactLease ? run.execution : undefined,
       );
     } catch {
       console.error(

@@ -158,10 +158,27 @@ function initialize() {
       ? {
           inspectWorker: async (run, stop) => {
             const currentTarget = run.recovery ?? run.execution;
-            const exact = await inspectSandboxRun(
-              currentTarget ? { ...run, execution: currentTarget } : run,
-              stop,
-            ).catch(() => undefined);
+            let exact;
+            if (run.recovery) {
+              const sandbox = await Sandbox.get({
+                name: run.recovery.sandboxName,
+                resume: false,
+                signal: AbortSignal.timeout(5_000),
+              }).catch(() => undefined);
+              const session = sandbox?.currentSession();
+              if (
+                session?.status === 'running' &&
+                session.sessionId === run.recovery.sessionId
+              )
+                exact = await inspectSandboxRun(run, stop, session).catch(
+                  () => undefined,
+                );
+            } else {
+              exact = await inspectSandboxRun(
+                currentTarget ? { ...run, execution: currentTarget } : run,
+                stop,
+              ).catch(() => undefined);
+            }
             if (exact?.state === 'exited' || exact?.state === 'stopped')
               return exact;
             if (
@@ -213,7 +230,18 @@ function initialize() {
             }
           },
           releaseRecoveredWorker: async (run) => {
-            const target = await store.releaseRecoveryTarget(run);
+            let target = await store.releaseRecoveryTarget(run);
+            if (!target && !run.recovery && run.execution) {
+              const inspection = await inspectSandboxRun(run, false).catch(
+                () => undefined,
+              );
+              if (inspection?.state === 'exited' && inspection.result) {
+                await store
+                  .claimSavedResult(run, inspection.result)
+                  .catch(() => undefined);
+                target = await store.releaseRecoveryTarget(run);
+              }
+            }
             if (!managed || !target || target.sandboxName !== sandboxName)
               return;
             const sandbox = await Sandbox.get({
