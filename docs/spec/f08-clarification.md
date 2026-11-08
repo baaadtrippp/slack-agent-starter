@@ -113,7 +113,8 @@ files were unchanged when this evidence was recorded.
    one new native user turn, no second history import, the same native and
    adapter IDs, an advanced revision, and a scoped read of the original CSV.
    Verify one acknowledgement, one status ending in Completed, and one final
-   answer and CSV in the same thread. Download the artifact and compare it to
-   `period,units\nQ2,7\n` and the recorded checksum. Keep any duplicate-delivery
-   claim tied to the deterministic tests unless a redelivery is observed in this
-   window.
+   answer and CSV in the same thread. Download the artifact and compare its
+   exact bytes to `period,units\nQ2,7\n`. Verify the retained source against the
+   recorded source checksum, and record the output artifact's checksum
+   separately. Keep any duplicate-delivery claim tied to the deterministic tests
+   unless a redelivery is observed in this window.
