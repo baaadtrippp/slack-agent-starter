@@ -1768,7 +1768,15 @@ describe.skipIf(!redisUrl)(
       });
     });
 
-    it('releases a recovery reservation when the lost worker callback arrives late', async () => {
+    it('recovers the artifact and releases the replacement when a lost worker callback arrives late', async () => {
+      const csv = Buffer.from('label,value\nsynthetic,1\n');
+      const collectArtifact = vi.fn(
+        async (_runId: string, target: SandboxTarget) => {
+          if (target.sessionId !== replacement.sessionId)
+            throw new Error('The original worker is unavailable');
+          return csv;
+        },
+      );
       let failRelease = true;
       const releaseRecoveredWorker = vi.fn(async (run: RunRecord) => {
         if (failRelease) {
@@ -1781,8 +1789,8 @@ describe.skipIf(!redisUrl)(
         createMockState(),
         false,
         undefined,
-        {},
-        undefined,
+        { csvOutput: true },
+        collectArtifact,
         false,
         {
           inspectWorker: async () => ({ state: 'unknown' }),
@@ -1812,12 +1820,34 @@ describe.skipIf(!redisUrl)(
       expect(await gateway.store.bindRecoveryTarget(lost, replacement)).toBe(
         true,
       );
-      const output = result(job);
+      const output = {
+        ...result(job),
+        artifact: { sha256: createHash('sha256').update(csv).digest('hex') },
+        session: {
+          seedRunId: job.runId,
+          nativeId: randomUUID(),
+          adapterId: randomUUID(),
+          revision: 1,
+        },
+      };
 
       expect(
         (await gateway.callback(callback(output, job.callbackToken))).status,
       ).toBe(202);
       await gateway.flush();
+      expect(collectArtifact).toHaveBeenCalledExactlyOnceWith(
+        job.runId,
+        replacement,
+        undefined,
+      );
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenNthCalledWith(
+        2,
+        'slack:CTEST1:' + body.event.ts,
+        {
+          markdown: '',
+          files: [{ data: csv, filename: 'result.csv', mimeType: 'text/csv' }],
+        },
+      );
       expect(releaseRecoveredWorker).toHaveBeenCalledOnce();
       expect(await gateway.store.getRun(job.runId)).toMatchObject({
         state: 'completed',

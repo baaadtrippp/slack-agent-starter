@@ -147,9 +147,9 @@ The managed-worker and Redis checks cover two affected runs and an unrelated run
 after exact-session loss. Provider inventory failure is not treated as loss. The
 affected target is fenced, its reservations follow the verified same-Drive
 replacement, and the idle worker cannot stop before terminal proof. Tests cover
-a committed result, an interruption, a late terminal callback, and a second
-replacement. A resumed session stays reserved when its durable result or
-checkpoint safety cannot be confirmed.
+a committed result, an interruption, a late terminal callback with its artifact
+recovered from the replacement, and a second replacement. A resumed session
+stays reserved when its durable result or checkpoint safety cannot be confirmed.
 
 **Controlled model.** The pinned Pi and ACP versions received synthetic 402 and
 401 responses. The quota signal persisted in the assistant error record even

@@ -628,18 +628,28 @@ export function createGateway({
   }
 
   async function readArtifact(
-    run: Pick<RunRecord, 'runId' | 'execution'>,
+    run: Pick<RunRecord, 'runId' | 'execution' | 'recovery'>,
     result: WorkerResult,
   ) {
-    if (!result.artifact || !run.execution || !collectArtifact) return;
-    const bytes = await collectArtifact(
-      run.runId,
-      run.execution,
-      result.artifact.format,
-    ).catch(() => undefined);
-    return bytes && digest(bytes) === result.artifact.sha256
-      ? bytes
-      : undefined;
+    const collect = collectArtifact;
+    const artifact = result.artifact;
+    if (!artifact || !run.execution || !collect) return;
+    const getRecovery = async () =>
+      (await store.getRun(run.runId).catch(() => undefined))?.recovery;
+    const target = (await getRecovery()) ?? run.recovery ?? run.execution;
+    const readFrom = (execution: SandboxTarget) =>
+      collect(run.runId, execution, artifact.format).catch(() => undefined);
+    let bytes = await readFrom(target);
+    if (!bytes) {
+      const moved = await getRecovery();
+      if (
+        moved &&
+        (moved.sandboxName !== target.sandboxName ||
+          moved.sessionId !== target.sessionId)
+      )
+        bytes = await readFrom(moved);
+    }
+    return bytes && digest(bytes) === artifact.sha256 ? bytes : undefined;
   }
 
   function supportsArtifact(result: WorkerResult) {
