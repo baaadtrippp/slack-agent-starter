@@ -3,6 +3,16 @@ import { Drive, Sandbox } from '@vercel/sandbox';
 import type { Session } from '@vercel/sandbox';
 import type { ManagedRuntime, RedisRunStore, SandboxTarget } from './store.js';
 
+export const MANAGED_WORKER_PRIVILEGE_DROP =
+  'setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs';
+
+export const MANAGED_DRIVE_WRITE_SETUP = [
+  'test ! -L /workspace',
+  'mountpoint -q /workspace',
+  'if [ "$(stat -c %u:%g -- /workspace)" != "1000:1000" ]; then chown --no-dereference -- 1000:1000 /workspace; fi',
+  `${MANAGED_WORKER_PRIVILEGE_DROP} -- test -w /workspace`,
+].join(' && ');
+
 type ManagedWorkerConfig = {
   sandboxName: string;
   driveName: string;
@@ -60,11 +70,12 @@ export function createManagedWorker(
       cmd: 'bash',
       args: [
         '-c',
-        'set -eu; mountpoint -q /workspace; cd /tmp/hydra-worker; test -x node_modules/.bin/pi; test -x node_modules/.bin/pi-acp; command -v flock >/dev/null; command -v sysctl >/dev/null; command -v setpriv >/dev/null; node --check run.mjs; node --check shared-notes.mjs' +
+        `set -eu; ${MANAGED_DRIVE_WRITE_SETUP} || exit 1; cd /tmp/hydra-worker; test -x node_modules/.bin/pi; test -x node_modules/.bin/pi-acp; command -v flock >/dev/null; command -v sysctl >/dev/null; node --check run.mjs; node --check shared-notes.mjs` +
           (controlsEnabled
             ? '; node --check supervise.mjs; node --check control.mjs'
             : ''),
       ],
+      sudo: true,
       timeoutMs: 3_000,
       signal,
     });
