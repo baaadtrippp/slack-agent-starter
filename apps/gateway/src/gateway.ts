@@ -82,7 +82,11 @@ type GatewayOptions = {
     job: WorkerJob,
     stagedInputs?: Buffer[],
   ) => Promise<
-    void | 'worker-unavailable' | 'input-staging-failed' | 'input-storage-full'
+    | void
+    | 'worker-unavailable'
+    | 'worker-start-failed'
+    | 'input-staging-failed'
+    | 'input-storage-full'
   >;
   collectArtifact?: (
     runId: string,
@@ -136,6 +140,8 @@ export const RECOVERED_REPLY =
 
 export const WORKER_UNAVAILABLE_REPLY =
   'The worker is unavailable. Your message was not submitted. Mention me again when the worker is ready.';
+export const WORKER_START_FAILURE_REPLY =
+  'The worker could not start. Your message was not submitted. Mention me again when the worker is ready.';
 
 const INPUT_STAGING_FAILURE_REPLY =
   'The inputs could not be staged. Resend the message with its files and links to retry.';
@@ -1295,11 +1301,13 @@ export function createGateway({
         const notice =
           dispatchOutcome === 'worker-unavailable'
             ? WORKER_UNAVAILABLE_REPLY
-            : dispatchOutcome === 'input-storage-full'
-              ? INPUT_STORAGE_FULL_REPLY
-              : dispatchOutcome === 'input-staging-failed'
-                ? INPUT_STAGING_FAILURE_REPLY
-                : undefined;
+            : dispatchOutcome === 'worker-start-failed'
+              ? WORKER_START_FAILURE_REPLY
+              : dispatchOutcome === 'input-storage-full'
+                ? INPUT_STORAGE_FULL_REPLY
+                : dispatchOutcome === 'input-staging-failed'
+                  ? INPUT_STAGING_FAILURE_REPLY
+                  : undefined;
         if (notice && !(await publishNotice(run, 'failed', notice)))
           console.error(
             JSON.stringify({

@@ -469,6 +469,99 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     ).toBe(0);
   });
 
+  it('releases an ordinary terminal reservation only with confirmed exit proof', async () => {
+    const callbackTarget = makeTarget('callback-result-exit');
+    const callbackRun = makeRun();
+    await store.admit(callbackRun);
+    expect(await store.enrollIdleSession(callbackTarget)).toBe(true);
+    expect(
+      await store.recordDispatchTarget(makeJob(callbackRun), callbackTarget),
+    ).toBe('recorded');
+    const callbackObserved = (await store.getRun(callbackRun.runId))!;
+    expect(
+      await store.claimPublication(
+        callbackRun.runId,
+        makeResult(callbackRun),
+        Date.now(),
+      ),
+    ).toBe('claimed');
+    expect(await store.completePublication(callbackRun, nextTimestamp())).toBe(
+      true,
+    );
+    expect(await store.releaseRecoveryTarget(callbackObserved)).toBeUndefined();
+    expect(await store.claimIdleStop(callbackTarget, randomUUID())).toBe(
+      'active',
+    );
+    expect(
+      await store.releaseDispatchTarget(callbackRun.runId, callbackTarget),
+    ).toBe(true);
+
+    const savedTarget = makeTarget('saved-result-exit');
+    const savedRun = makeRun();
+    await store.admit(savedRun);
+    expect(await store.enrollIdleSession(savedTarget)).toBe(true);
+    expect(
+      await store.recordDispatchTarget(makeJob(savedRun), savedTarget),
+    ).toBe('recorded');
+    const savedObserved = (await store.getRun(savedRun.runId))!;
+    expect(
+      await store.claimSavedResult(savedObserved, makeResult(savedRun)),
+    ).toBe('claimed');
+    expect(await store.completePublication(savedRun, nextTimestamp())).toBe(
+      true,
+    );
+    expect(await store.getRun(savedRun.runId)).toMatchObject({
+      exitConfirmed: true,
+    });
+    expect(
+      await store.releaseRecoveryTarget({
+        ...savedObserved,
+        eventId: randomUUID(),
+      }),
+    ).toBeUndefined();
+    expect(await store.claimIdleStop(savedTarget, randomUUID())).toBe('active');
+    expect(await store.releaseRecoveryTarget(savedObserved)).toEqual(
+      savedTarget,
+    );
+    expect(await store.claimIdleStop(savedTarget, randomUUID())).toBe(
+      'claimed',
+    );
+  });
+
+  it('unsubmits a proven prelaunch failure racing Stop without a failure result', async () => {
+    const target = makeTarget('prelaunch-stop');
+    const run = makeRun({
+      controls: true,
+      statusMessageId: nextTimestamp(),
+    });
+    await store.admit(run);
+    expect(await store.enrollIdleSession(target)).toBe(true);
+    expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(
+      'recorded',
+    );
+    expect(
+      await store.requestStop({
+        runId: run.runId,
+        generation: run.generation,
+        statusMessageId: run.statusMessageId!,
+      }),
+    ).toBe('requested');
+    expect(await store.releaseDispatchTarget(run.runId, target, true)).toBe(
+      true,
+    );
+    const stopping = (await store.getRun(run.runId))!;
+    expect(stopping).toMatchObject({ state: 'stopping' });
+    expect(stopping).not.toHaveProperty('execution');
+    expect(
+      await store.claimUnsubmitted(stopping, {
+        ...makeResult(run),
+        type: 'failed',
+      }),
+    ).toBe(false);
+    expect(await store.confirmStopped(stopping)).toBe('confirmed');
+    expect(await store.getRun(run.runId)).toMatchObject({ state: 'stopped' });
+  });
+
   it('migrates affected reservations across a second exact runtime loss', async () => {
     const firstTarget = makeTarget('repeat-a');
     const secondTarget = makeTarget('repeat-b');

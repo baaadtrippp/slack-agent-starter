@@ -73,6 +73,7 @@ export type RunRecord = {
   result?: WorkerResult;
   execution?: SandboxTarget;
   recovery?: SandboxTarget;
+  exitConfirmed?: true;
   blockedBy?: string;
   messageId?: string;
   progress?: WorkerProgress;
@@ -232,6 +233,7 @@ end
 if run.state ~= 'accepted' and run.state ~= 'dispatch_failed' then return 'conflict' end
 if observed and redis.call('GET', KEYS[3]) ~= run.runId then return 'conflict' end
 if ARGV[4] and ARGV[4] ~= '' and redis.call('GET', KEYS[2]) ~= ARGV[4] then return 'retry' end
+if observed then run.exitConfirmed = true end
 run.result = result
 run.state = 'publishing'
 run.statusVersion = (run.statusVersion or 0) + 1
@@ -485,15 +487,20 @@ if run.runId ~= observed.runId or run.eventId ~= observed.eventId or
    run.generation ~= observed.generation or not run.execution or
    not observed.execution or
    run.execution.sandboxName ~= observed.execution.sandboxName or
-   run.execution.sessionId ~= observed.execution.sessionId or
-   not run.recovery then return '' end
+   run.execution.sessionId ~= observed.execution.sessionId then return '' end
 if run.state ~= 'completed' and run.state ~= 'worker_failed' and
    run.state ~= 'publication_uncertain' and run.state ~= 'stopped' and
    run.state ~= 'interrupted' then return '' end
-local recovery = run.recovery
+local target = run.recovery
+if not target then
+  if run.exitConfirmed ~= true then return '' end
+  target = run.execution
+end
 redis.call('SREM', KEYS[2], run.runId)
-redis.call('SREM', ARGV[2] .. recovery.sandboxName .. ':' .. recovery.sessionId .. ':active', run.runId)
-return cjson.encode(recovery)
+if run.recovery then
+  redis.call('SREM', ARGV[2] .. run.recovery.sandboxName .. ':' .. run.recovery.sessionId .. ':active', run.runId)
+end
+return cjson.encode(target)
 `;
 
 const FENCE_LOST_TARGET_SCRIPT = `

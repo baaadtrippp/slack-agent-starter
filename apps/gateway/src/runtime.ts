@@ -11,14 +11,19 @@ import { RedisRunStore } from './store.js';
 import type { SandboxTarget } from './store.js';
 import { inspectSandboxRun } from './worker-control.js';
 
+const MANAGED_WORKER_PRELAUNCH_EXIT = 78;
+const MANAGED_WORKER_PRIVILEGE_DROP =
+  'setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs';
+
 // The provider's domain allowlist remains the IPv4 egress boundary. Verify
 // IPv6 is disabled, then start the entire worker tree without privilege to
 // restore it. The managed image and staged files use uid/gid 1000.
 const MANAGED_WORKER_LAUNCH = [
-  'set -eu',
-  'sysctl -qw net.ipv6.conf.default.disable_ipv6=1 net.ipv6.conf.all.disable_ipv6=1',
-  'for setting in /proc/sys/net/ipv6/conf/*/disable_ipv6; do read -r disabled < "$setting"; test "$disabled" = 1; done',
-  'exec setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs -- node "$1"',
+  'set -u',
+  `sysctl -qw net.ipv6.conf.default.disable_ipv6=1 net.ipv6.conf.all.disable_ipv6=1 || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}`,
+  `for setting in /proc/sys/net/ipv6/conf/*/disable_ipv6; do read -r disabled < "$setting" || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}; test "$disabled" = 1 || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}; done`,
+  `${MANAGED_WORKER_PRIVILEGE_DROP} -- true || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}`,
+  `exec ${MANAGED_WORKER_PRIVILEGE_DROP} -- sh -c 'node "$1"; code=$?; if [ "$code" -eq ${MANAGED_WORKER_PRELAUNCH_EXIT} ]; then exit 79; fi; exit "$code"' hydra-worker "$1"`,
 ].join('; ');
 
 let gateway: ReturnType<typeof createGateway> | undefined;
@@ -355,6 +360,21 @@ function initialize() {
             ),
           });
           const current = await store.getRun(job.runId);
+          if (managed && finished.exitCode === MANAGED_WORKER_PRELAUNCH_EXIT) {
+            const released = await releaseReservation(true);
+            await stopIfIdle();
+            console.error(
+              JSON.stringify({
+                runId: job.runId,
+                phase: released
+                  ? 'worker_prelaunch_failed'
+                  : 'worker_prelaunch_release_unconfirmed',
+              }),
+            );
+            if (released && current?.state === 'accepted')
+              return 'worker-start-failed';
+            return;
+          }
           if (current?.state === 'stopping' || current?.state === 'stopped')
             return;
           if (

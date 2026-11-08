@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createManagedWorker } from '../apps/gateway/src/managed-worker.js';
 import { RedisRunStore } from '../apps/gateway/src/store.js';
+import type { RunRecord } from '../apps/gateway/src/store.js';
+import type { WorkerJob } from '../packages/contracts/src/index.js';
 
 const { sandboxGet, driveGet } = vi.hoisted(() => ({
   sandboxGet: vi.fn(),
@@ -127,6 +129,127 @@ describe.skipIf(!redisUrl)('managed worker replacement', () => {
     expect(
       sandboxGet.mock.calls.filter(([input]) => input.resume),
     ).toHaveLength(1);
+  });
+
+  it('migrates stopped-session reservations before admitting fresh work', async () => {
+    sandboxGet.mockReset();
+    driveGet.mockReset();
+    const store = new RedisRunStore(state.getClient(), namespace);
+    const sandboxName = 'synthetic-dispatch-worker';
+    const driveName = 'synthetic-dispatch-drive';
+    const seedId = 'synthetic-dispatch-seed';
+    const driveId = 'synthetic-dispatch-drive-id';
+    const old = {
+      sessionId: 'synthetic-dispatch-old',
+      status: 'stopped',
+      sourceSnapshotId: seedId,
+    };
+    const replacement = {
+      sessionId: 'synthetic-dispatch-replacement',
+      status: 'running',
+      sourceSnapshotId: seedId,
+      runCommand: vi.fn().mockResolvedValue({ exitCode: 0 }),
+    };
+    let session = old;
+    let attachment: string | undefined;
+    sandboxGet.mockImplementation(async ({ resume }: { resume: boolean }) => {
+      if (resume) {
+        session = replacement;
+        attachment = replacement.sessionId;
+      }
+      return {
+        persistent: false,
+        currentSnapshotId: seedId,
+        mounts: { '/workspace': { mode: 'read-write', drive: driveName } },
+        currentSession: () => session,
+      };
+    });
+    driveGet.mockImplementation(async () => ({
+      driveId,
+      name: driveName,
+      currentSessionId: attachment,
+      currentSandboxName: attachment ? sandboxName : undefined,
+    }));
+    expect(
+      await store.compareManagedRuntime(sandboxName, null, {
+        phase: 'ready',
+        sessionId: old.sessionId,
+        driveId,
+      }),
+    ).toBe(true);
+    const makeRun = (): RunRecord => ({
+      runId: randomUUID(),
+      conversationId: 'a'.repeat(64),
+      generation: 1,
+      eventId: randomUUID(),
+      workspaceId: 'T_SYNTHETIC',
+      channelId: 'C_SYNTHETIC',
+      threadTs: randomUUID(),
+      messageTs: randomUUID(),
+      senderId: 'U_SYNTHETIC',
+      deadline: Date.now() + 60_000,
+      callbackHash: 'b'.repeat(64),
+      kind: 'work',
+      state: 'accepted',
+    });
+    const makeJob = (run: RunRecord): WorkerJob => ({
+      version: 1,
+      runId: run.runId,
+      conversationId: run.conversationId,
+      generation: 1,
+      input: {
+        text: 'Synthetic work',
+        senderId: run.senderId,
+        workspaceId: run.workspaceId,
+        channelId: run.channelId,
+        threadTs: run.threadTs,
+        messageTs: run.messageTs,
+      },
+      deadline: run.deadline,
+      callbackUrl: 'https://gateway.example/api/worker/callback',
+      callbackToken: 'c'.repeat(64),
+    });
+    const oldTarget = { sandboxName, sessionId: old.sessionId };
+    const active = makeRun();
+    await store.admit(active);
+    expect(await store.enrollIdleSession(oldTarget)).toBe(true);
+    expect(await store.recordDispatchTarget(makeJob(active), oldTarget)).toBe(
+      'recorded',
+    );
+    const compare = vi.spyOn(store, 'compareManagedRuntime');
+    compare.mockResolvedValueOnce(false);
+
+    const managed = createManagedWorker(
+      { sandboxName, driveName, seedId },
+      store,
+    );
+    expect(await managed.getSession(Date.now() + 15_000)).toBeUndefined();
+    expect(await store.isLostTarget(oldTarget)).toBe(true);
+    expect(
+      sandboxGet.mock.calls.filter(([input]) => input.resume),
+    ).toHaveLength(0);
+
+    expect(await managed.getSession(Date.now() + 15_000)).toBe(replacement);
+    const replacementTarget = {
+      sandboxName,
+      sessionId: replacement.sessionId,
+    };
+    expect(await store.getRun(active.runId)).toMatchObject({
+      execution: oldTarget,
+      recovery: replacementTarget,
+    });
+
+    const fresh = makeRun();
+    await store.admit(fresh);
+    expect(
+      await store.recordDispatchTarget(makeJob(fresh), replacementTarget, true),
+    ).toBe('recorded');
+    expect(await store.getRun(active.runId)).toMatchObject({
+      recovery: replacementTarget,
+    });
+    expect(await store.getRun(fresh.runId)).toMatchObject({
+      execution: replacementTarget,
+    });
   });
 
   it('replaces an exact session missing from a completed inventory but not an inventory failure', async () => {

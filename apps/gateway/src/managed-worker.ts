@@ -121,7 +121,12 @@ export function createManagedWorker(
       drive.currentSandboxName
     )
       return;
-    if (await store.isLostTarget(target(session))) return;
+    const stoppedTarget = target(session);
+    // Fence an unexpectedly stopped session before resuming it. If active
+    // runs still own this target, activate() migrates them to the replacement
+    // before the managed runtime becomes ready for a fresh dispatch.
+    if (!(await store.isLostTarget(stoppedTarget)))
+      await store.fenceLostTarget(stoppedTarget);
 
     const starting: ManagedRuntime = {
       phase: 'starting',

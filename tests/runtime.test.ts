@@ -370,6 +370,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
   const sandboxDispatchConditions = [
     'running',
     'managed idle',
+    'prelaunch failure',
+    'unmanaged exit 78',
     'stopped',
     'unrecordable',
     'stopping',
@@ -393,7 +395,10 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       const store = new RedisRunStore(observer.getClient());
       const operationId = randomUUID();
       const startResponseLost = condition === 'start response lost';
-      const managed = condition === 'managed idle';
+      const prelaunchFailure = condition === 'prelaunch failure';
+      const unmanagedSentinel = condition === 'unmanaged exit 78';
+      const managed =
+        condition === 'managed idle' || condition === 'prelaunch failure';
       const hasResult = condition === 'running' || managed;
       const driveName = 'synthetic-drive';
       const seedId = 'synthetic-seed';
@@ -414,7 +419,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       let job: WorkerJob;
       const commandWait = vi.fn().mockImplementation(async () => {
         expect(await store.claimIdleStop(target, operationId)).toBe('active');
-        if (hasResult)
+        if (hasResult && !prelaunchFailure)
           expect(
             await store.claimPublication(
               job.runId,
@@ -430,7 +435,14 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
               Date.now(),
             ),
           ).toBe('claimed');
-        return { exitCode: condition === 'uncertain exit' ? 1 : 0 };
+        return {
+          exitCode:
+            prelaunchFailure || unmanagedSentinel
+              ? 78
+              : condition === 'uncertain exit'
+                ? 1
+                : 0,
+        };
       });
       const sessionRunCommand = vi.fn().mockImplementation(async (command) => {
         job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
@@ -488,34 +500,57 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           hasResult ||
           condition === 'uncertain exit' ||
           condition === 'result missing' ||
-          startResponseLost
+          startResponseLost ||
+          prelaunchFailure ||
+          unmanagedSentinel
         ) {
-          expect(JSON.parse(encoded!)).toMatchObject({
-            state: startResponseLost
-              ? 'dispatch_failed'
-              : hasResult
-                ? 'publishing'
-                : 'accepted',
-            execution: target,
-          });
+          const persisted = JSON.parse(encoded!);
+          if (prelaunchFailure) {
+            expect(persisted).toMatchObject({
+              state: 'worker_failed',
+              result: {
+                type: 'failed',
+                text: expect.stringContaining('worker could not start'),
+              },
+            });
+            expect(persisted).not.toHaveProperty('execution');
+          } else
+            expect(persisted).toMatchObject({
+              state: startResponseLost
+                ? 'dispatch_failed'
+                : hasResult
+                  ? 'publishing'
+                  : 'accepted',
+              execution: target,
+            });
           expect(recorded).toMatchObject({
             state: 'accepted',
             execution: target,
           });
           expect(sessionRunCommand).toHaveBeenCalledTimes(1);
-          if (managed)
+          if (managed) {
             expect(sessionRunCommand).toHaveBeenCalledWith(
               expect.objectContaining({
                 cmd: 'bash',
                 sudo: true,
                 args: [
                   '-c',
-                  expect.stringContaining('--no-new-privs'),
+                  expect.any(String),
                   'hydra-worker',
                   '/tmp/hydra-worker/run.mjs',
                 ],
               }),
             );
+            const launch = sessionRunCommand.mock.calls[0]![0].args[1];
+            expect(launch).toContain(
+              'sysctl -qw net.ipv6.conf.default.disable_ipv6=1 net.ipv6.conf.all.disable_ipv6=1',
+            );
+            expect(launch).toContain(
+              'read -r disabled < "$setting" || exit 78',
+            );
+            expect(launch).toContain('--no-new-privs -- true || exit 78');
+            expect(launch).toContain('if [ "$code" -eq 78 ]; then exit 79');
+          }
           expect(commandWait).toHaveBeenCalledTimes(startResponseLost ? 0 : 1);
           expect(await store.claimIdleStop(target, operationId)).toBe(
             managed
