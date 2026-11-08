@@ -152,16 +152,22 @@ describe.skipIf(!redisUrl)('managed worker replacement', () => {
     ).toHaveLength(1);
   });
 
-  it('migrates stopped-session reservations before admitting fresh work', async () => {
+  const stages = ['unbound', 'bound', 'fenced'];
+  it.each(stages)('retries a stopped startup when %s', async (stage) => {
     sandboxGet.mockReset();
     driveGet.mockReset();
     const store = new RedisRunStore(state.getClient(), namespace);
-    const sandboxName = 'synthetic-dispatch-worker';
+    const sandboxName = 'synthetic-dispatch-worker-' + stage;
     const driveName = 'synthetic-dispatch-drive';
     const seedId = 'synthetic-dispatch-seed';
     const driveId = 'synthetic-dispatch-drive-id';
     const old = {
       sessionId: 'synthetic-dispatch-old',
+      status: 'stopped',
+      sourceSnapshotId: seedId,
+    };
+    const failedReplacement = {
+      sessionId: 'synthetic-dispatch-stopped-replacement',
       status: 'stopped',
       sourceSnapshotId: seedId,
     };
@@ -174,6 +180,10 @@ describe.skipIf(!redisUrl)('managed worker replacement', () => {
     let session = old;
     let attachment: string | undefined;
     sandboxGet.mockImplementation(async ({ resume }: { resume: boolean }) => {
+      if (resume && session === old) {
+        session = failedReplacement;
+        throw new Error('Replacement stopped before readiness');
+      }
       if (resume) {
         session = replacement;
         attachment = replacement.sessionId;
@@ -250,7 +260,37 @@ describe.skipIf(!redisUrl)('managed worker replacement', () => {
       sandboxGet.mock.calls.filter(([input]) => input.resume),
     ).toHaveLength(0);
 
+    await expect(managed.getSession(Date.now() + 15_000)).rejects.toThrow(
+      'Replacement stopped before readiness',
+    );
+    const failedTarget = {
+      sandboxName,
+      sessionId: failedReplacement.sessionId,
+    };
+    expect(await store.getManagedRuntime(sandboxName)).toMatchObject({
+      phase: 'starting',
+      sessionId: old.sessionId,
+    });
+    if (stage !== 'unbound') {
+      expect(await store.enrollIdleSession(failedTarget)).toBe(true);
+      expect(await store.bindRecoveryTarget(oldTarget, failedTarget)).toBe(
+        true,
+      );
+    }
+    if (stage === 'fenced')
+      expect(await store.fenceLostTarget(failedTarget)).toBe(true);
+
+    attachment = failedTarget.sessionId;
+    expect(await managed.getSession(Date.now() + 15_000)).toBeUndefined();
+    expect(
+      sandboxGet.mock.calls.filter(([input]) => input.resume),
+    ).toHaveLength(1);
+    attachment = undefined;
     expect(await managed.getSession(Date.now() + 15_000)).toBe(replacement);
+    expect(await store.isLostTarget(failedTarget)).toBe(true);
+    expect(
+      sandboxGet.mock.calls.filter(([input]) => input.resume),
+    ).toHaveLength(2);
     const replacementTarget = {
       sandboxName,
       sessionId: replacement.sessionId,

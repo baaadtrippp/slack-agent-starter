@@ -107,6 +107,24 @@ export function createManagedWorker(
     if (updated) return session;
   }
 
+  async function fenceStoppedReplacement(
+    previous: ManagedRuntime,
+    replacement: SandboxTarget,
+  ) {
+    if (await store.isLostTarget(replacement)) return true;
+    if (!(await store.enrollIdleSession(replacement)))
+      return store.isLostTarget(replacement);
+    const prior = { sandboxName, sessionId: previous.sessionId };
+    // Preserve every reservation from the original target before replacing
+    // the stopped intermediate session, even if activation never bound it.
+    if (
+      (await store.isLostTarget(prior)) &&
+      !(await store.bindRecoveryTarget(prior, replacement))
+    )
+      return store.isLostTarget(replacement);
+    return store.fenceLostTarget(replacement);
+  }
+
   async function getSession(deadline: number) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) return;
@@ -122,28 +140,37 @@ export function createManagedWorker(
     )
       return;
 
-    if (!current || current.phase === 'starting')
+    const session = sandbox.currentSession();
+    const detached =
+      session.status === 'stopped' &&
+      !drive.currentSessionId &&
+      !drive.currentSandboxName;
+    if (
+      !current ||
+      (current.phase === 'starting' &&
+        (!detached || session.sessionId === current.sessionId))
+    )
       return activate(sandbox, drive, current, signal);
 
-    const session = sandbox.currentSession();
-    if (session.sessionId !== current.sessionId) return;
-    if (isReadySession(session, drive)) return session;
-    if (
-      session.status !== 'stopped' ||
-      drive.currentSessionId ||
-      drive.currentSandboxName
-    )
+    if (current.phase === 'ready' && session.sessionId !== current.sessionId)
       return;
+    if (isReadySession(session, drive)) return session;
+    if (!detached) return;
     const stoppedTarget = target(session);
-    // Fence an unexpectedly stopped session before resuming it. If active
-    // runs still own this target, activate() migrates them to the replacement
-    // before the managed runtime becomes ready for a fresh dispatch.
-    if (!(await store.isLostTarget(stoppedTarget)))
+    if (current.phase === 'starting') {
+      if (
+        session.sourceSnapshotId !== seedId ||
+        !(await fenceStoppedReplacement(current, stoppedTarget))
+      )
+        return;
+    } else if (!(await store.isLostTarget(stoppedTarget))) {
+      // An unexpected stop keeps active reservations for the next activation.
       await store.fenceLostTarget(stoppedTarget);
+    }
 
     const starting: ManagedRuntime = {
       phase: 'starting',
-      sessionId: current.sessionId,
+      sessionId: session.sessionId,
       driveId: current.driveId,
       operationId: randomUUID(),
     };
