@@ -113,27 +113,56 @@ it('preserves the prior snapshot if a write is interrupted before rename', async
   ]);
 });
 
-it('preserves the prior snapshot if the Drive fills before rename', async () => {
-  const first = note(1, 'Initial note');
-  await saveSharedNote(first, signal, paths);
-  const driveFull = Object.assign(new Error('Synthetic full Drive'), {
-    code: 'ENOSPC',
-  });
-  let checks = 0;
-  await expect(
-    saveSharedNote(
-      note(2, 'Uncommitted note'),
-      {
-        throwIfAborted() {
-          if (++checks === 2) throw driveFull;
-        },
-      },
-      paths,
-    ),
-  ).rejects.toBe(driveFull);
-  expect(isDriveFullError(driveFull)).toBe(true);
-  expect(await readSharedNotes(first, paths)).toEqual([first.text]);
-});
+it.each(['writeFile', 'sync'])(
+  'preserves the prior snapshot when the Drive fills during %s',
+  async (operation) => {
+    const first = note(1, 'Initial note');
+    await saveSharedNote(first, signal, paths);
+    const memory = join(paths.workspace, 'shared-memory');
+    const filesBefore = await readdir(memory);
+
+    await exec(process.execPath, [
+      '--input-type=module',
+      '--eval',
+      `
+        import assert from 'node:assert/strict';
+        import fs from 'node:fs/promises';
+        import { syncBuiltinESMExports } from 'node:module';
+
+        const [moduleUrl, input, paths, operation] = process.argv.slice(1);
+        const realOpen = fs.open;
+        const full = Object.assign(new Error('Synthetic full Drive'), {
+          code: 'ENOSPC',
+        });
+        let attempts = 0;
+        fs.open = async (path, ...args) => {
+          const file = await realOpen(path, ...args);
+          if (typeof path === 'string' && path.endsWith('.tmp')) {
+            file[operation] = async () => {
+              attempts++;
+              throw full;
+            };
+          }
+          return file;
+        };
+        syncBuiltinESMExports();
+        const { isDriveFullError, saveSharedNote } = await import(moduleUrl);
+        await assert.rejects(
+          saveSharedNote(JSON.parse(input), new AbortController().signal, JSON.parse(paths)),
+          (error) => error === full && isDriveFullError(error),
+        );
+        assert.equal(attempts, 1);
+      `,
+      moduleUrl.href,
+      JSON.stringify(note(2, 'Uncommitted note')),
+      JSON.stringify(paths),
+      operation,
+    ]);
+
+    expect(await readdir(memory)).toEqual(filesBefore);
+    expect(await readSharedNotes(first, paths)).toEqual([first.text]);
+  },
+);
 
 it('refuses excess notes and preserves all previously saved entries', async () => {
   for (let number = 1; number <= 16; number++)
