@@ -95,7 +95,10 @@ type GatewayOptions = {
   ) => Promise<Buffer>;
   isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>;
   inspectWorker?: (run: RunRecord, stop: boolean) => Promise<WorkerInspection>;
-  releaseRecoveredWorker?: (run: RunRecord) => Promise<void>;
+  releaseRecoveredWorker?: (
+    run: RunRecord,
+    reconcileExit?: boolean,
+  ) => Promise<void>;
   schedule: (task: () => Promise<void>) => void;
   now?: () => number;
 };
@@ -681,7 +684,7 @@ export function createGateway({
           'stopped',
         ].includes(run.state)
       ) {
-        await releaseRecoveredWorker?.(run);
+        await releaseRecoveredWorker?.(run, true);
         return;
       }
       if (run.state !== 'accepted' && run.state !== 'dispatch_failed') return;

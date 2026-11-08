@@ -548,7 +548,12 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
             expect(launch).toContain(
               'read -r disabled < "$setting" || exit 78',
             );
-            expect(launch).toContain('--no-new-privs -- true || exit 78');
+            expect(launch).toContain(
+              'test ! -L /workspace && mountpoint -q /workspace',
+            );
+            expect(launch).toContain(
+              '--no-new-privs -- test -w /workspace || exit 78',
+            );
             expect(launch).toContain('if [ "$code" -eq 78 ]; then exit 79');
           }
           expect(commandWait).toHaveBeenCalledTimes(startResponseLost ? 0 : 1);

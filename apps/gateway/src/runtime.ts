@@ -6,14 +6,16 @@ import { ConsoleLogger } from 'chat';
 import { createClient } from 'redis';
 import { collectRunArtifact } from './generated-artifact.js';
 import { createGateway } from './gateway.js';
-import { createManagedWorker } from './managed-worker.js';
+import {
+  createManagedWorker,
+  MANAGED_DRIVE_WRITE_SETUP,
+  MANAGED_WORKER_PRIVILEGE_DROP,
+} from './managed-worker.js';
 import { RedisRunStore } from './store.js';
 import type { SandboxTarget } from './store.js';
 import { inspectSandboxRun } from './worker-control.js';
 
 const MANAGED_WORKER_PRELAUNCH_EXIT = 78;
-const MANAGED_WORKER_PRIVILEGE_DROP =
-  'setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs';
 
 // The provider's domain allowlist remains the IPv4 egress boundary. Verify
 // IPv6 is disabled, then start the entire worker tree without privilege to
@@ -22,7 +24,7 @@ const MANAGED_WORKER_LAUNCH = [
   'set -u',
   `sysctl -qw net.ipv6.conf.default.disable_ipv6=1 net.ipv6.conf.all.disable_ipv6=1 || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}`,
   `for setting in /proc/sys/net/ipv6/conf/*/disable_ipv6; do read -r disabled < "$setting" || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}; test "$disabled" = 1 || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}; done`,
-  `${MANAGED_WORKER_PRIVILEGE_DROP} -- true || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}`,
+  `${MANAGED_DRIVE_WRITE_SETUP} || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}`,
   `exec ${MANAGED_WORKER_PRIVILEGE_DROP} -- sh -c 'node "$1"; code=$?; if [ "$code" -eq ${MANAGED_WORKER_PRELAUNCH_EXIT} ]; then exit 79; fi; exit "$code"' hydra-worker "$1"`,
 ].join('; ');
 
@@ -158,29 +160,13 @@ function initialize() {
       ? {
           inspectWorker: async (run, stop) => {
             const currentTarget = run.recovery ?? run.execution;
-            let exact;
-            if (run.recovery) {
-              const sandbox = await Sandbox.get({
-                name: run.recovery.sandboxName,
-                resume: false,
-                signal: AbortSignal.timeout(5_000),
-              }).catch(() => undefined);
-              const session = sandbox?.currentSession();
-              if (
-                session?.status === 'running' &&
-                session.sessionId === run.recovery.sessionId
-              )
-                exact = await inspectSandboxRun(run, stop, session).catch(
-                  () => undefined,
-                );
-            } else {
-              exact = await inspectSandboxRun(
-                currentTarget ? { ...run, execution: currentTarget } : run,
-                stop,
-              ).catch(() => undefined);
+            if (!run.recovery) {
+              const exact = await inspectSandboxRun(run, stop).catch(
+                () => undefined,
+              );
+              if (exact?.state === 'exited' || exact?.state === 'stopped')
+                return exact;
             }
-            if (exact?.state === 'exited' || exact?.state === 'stopped')
-              return exact;
             if (
               !managed ||
               !currentTarget ||
@@ -188,18 +174,35 @@ function initialize() {
             )
               return { state: 'unknown' };
 
-            // Recovery proves the exact target stopped or disappeared before
-            // fencing it and reconciling one replacement on the same Drive.
-            const session = await managed.recoverSession(
-              currentTarget,
-              Date.now() + 25_000,
-            );
+            const bound = run.recovery
+              ? (
+                  await Sandbox.get({
+                    name: currentTarget.sandboxName,
+                    resume: false,
+                    signal: AbortSignal.timeout(5_000),
+                  }).catch(() => undefined)
+                )?.currentSession()
+              : undefined;
+            const useBound =
+              bound?.status === 'running' &&
+              bound.sessionId === currentTarget.sessionId;
+            // Only a verified stopped target can be rebound. An existing
+            // binding already proves that its original environment stopped.
+            const session = useBound
+              ? bound
+              : await managed.recoverSession(
+                  currentTarget,
+                  Date.now() + 25_000,
+                );
             if (!session) return { state: 'unknown' };
             const target = {
               sandboxName: currentTarget.sandboxName,
               sessionId: session.sessionId,
             };
-            if (!(await store.bindRecoveryTarget(currentTarget, target)))
+            if (
+              !useBound &&
+              !(await store.bindRecoveryTarget(currentTarget, target))
+            )
               return { state: 'unknown' };
             const token = randomUUID();
             if (!(await store.reserveRecovery(target, token)))
@@ -229,9 +232,9 @@ function initialize() {
               if (!stop) await managed.stopIfIdle(session).catch(() => {});
             }
           },
-          releaseRecoveredWorker: async (run) => {
+          releaseRecoveredWorker: async (run, reconcileExit) => {
             let target = await store.releaseRecoveryTarget(run);
-            if (!target && !run.recovery && run.execution) {
+            if (reconcileExit && !target && !run.recovery && run.execution) {
               const inspection = await inspectSandboxRun(run, false).catch(
                 () => undefined,
               );
