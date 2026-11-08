@@ -6,7 +6,7 @@
 - **Scope.** F08 and AC05 on the PR #24 merge, with related AC02 and AC03 checks
   for checkpoint reuse and independent progress. Keep the current ordinary
   final-answer fallback, existing Stop and Status, first-turn history, and file
-  exchange. O05 storage retention remains open.
+  exchange. O04 storage retention remains open.
 - **Path.** Reuse normal terminal publication and exact-session resume. Verify
   that Pi exits, the result and source catalog are saved before the callback,
   and a later reply starts one new turn. Keep the existing error path for

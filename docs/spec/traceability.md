@@ -136,26 +136,31 @@ against the same Redis state and verifies that an ordinary reply carries the
 exact saved native reference. The provider file-resume check is recorded
 [separately](f08-clarification.md#provider-replacement-evidence).
 
-AC10 regressions simulate provider quota, a full Drive while staging inputs, and
-storage failure during atomic note save. The gateway publishes fixed retry or
-storage guidance without exposing raw provider details. It does not launch a
-worker after a confirmed staging refusal. A failed write preserves earlier
-notes. An uncertain save asks the user to check the existing notes before
-resending.
+AC10 [gateway failure checks](../../tests/gateway.test.ts) and
+[runtime staging checks](../../tests/runtime.test.ts) simulate provider quota
+and a full Drive while staging inputs. The gateway publishes fixed retry or
+storage guidance without exposing raw provider details and does not launch a
+worker after a confirmed staging refusal. The
+[shared-note atomic-save checks](../../tests/shared-notes.test.ts) verify that a
+failed write preserves earlier notes; the gateway checks verify that an
+uncertain save asks the user to inspect the existing notes before resending.
 
-The managed-worker and Redis checks cover two affected runs and an unrelated run
-after exact-session loss. Provider inventory failure is not treated as loss. The
-affected target is fenced, its reservations follow the verified same-Drive
-replacement, and the idle worker cannot stop before terminal proof. Tests cover
-a committed result, an interruption, a late terminal callback with its artifact
-recovered from the replacement, and a second replacement. A resumed session
-stays reserved when its durable result or checkpoint safety cannot be confirmed.
+The [managed-worker replacement checks](../../tests/managed-worker.test.ts),
+[Redis reservation checks](../../tests/store.test.ts), and
+[gateway late-callback checks](../../tests/gateway.test.ts) cover two affected
+runs and an unrelated run after exact-session loss. Provider inventory failure
+is not treated as loss. The affected target is fenced, its reservations follow
+the verified same-Drive replacement, and the idle worker cannot stop before
+terminal proof. The checks cover a committed result, an interruption, a late
+terminal callback with its artifact recovered from the replacement, and a second
+replacement. A resumed session stays reserved when its durable result or
+checkpoint safety cannot be confirmed.
 
-**Controlled model.** The pinned Pi and ACP versions received synthetic 402 and
-401 responses. The quota signal persisted in the assistant error record even
-though ACP reported the turn finished. The worker classifies the quota response
-without classifying the unrelated provider error. This test uses a local model
-endpoint and does not exhaust a paid provider quota.
+**Deterministic controlled model.** The pinned Pi and ACP versions received
+synthetic 402 and 401 responses. The quota signal persisted in the assistant
+error record even though ACP reported the turn finished. The worker classifies
+the quota response without classifying the unrelated provider error. This test
+uses a local model endpoint and does not exhaust a paid provider quota.
 
 **Provider integration.** A disposable Vercel Sandbox ran the candidate
 supervisor, worker, adapter, and Pi with UID and GID 1000, no capabilities, and

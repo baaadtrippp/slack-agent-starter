@@ -37,11 +37,13 @@ The worker needs `flock` and the shared-notes module in its startup seed.
    reports persistence. A save-only mention leaves the native session unchanged.
 2. As an internal member, start a fresh thread in that channel and send
    `@bot use shared notes: What color is the synthetic badge?` Verify the answer
-   says violet. The writer's thread can include an unrelated synthetic detail to
-   check that Pi receives the note alone.
-3. Send an ordinary request phrased as a memory suggestion without the command
-   prefix. Use a new thread to ask for that detail and verify it was never added
-   to the shared notes.
+   says violet. This live step checks cross-thread recall; the controlled
+   provider evidence below separately checks that Pi's input excludes the
+   writer's unrelated synthetic detail.
+3. Optionally send an ordinary request phrased as a memory suggestion without
+   the command prefix. Treat the ordinary response as a live routing smoke
+   check, not proof about stored-note contents. The deterministic gateway and
+   worker checks establish that ordinary prose does not write shared notes.
 
 ## Acceptance checks
 
