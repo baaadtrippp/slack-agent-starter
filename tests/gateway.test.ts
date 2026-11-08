@@ -1922,6 +1922,97 @@ describe.skipIf(!redisUrl)(
       );
     });
 
+    it('retries artifact collection when recovery binds after the final lookup', async () => {
+      const csv = Buffer.from('label,value\nsynthetic,1\n');
+      const lost = {
+        sandboxName: 'synthetic-racing-worker',
+        sessionId: randomUUID(),
+      };
+      const replacement = {
+        sandboxName: lost.sandboxName,
+        sessionId: randomUUID(),
+      };
+      const collectArtifact = vi.fn(
+        async (_runId: string, target: SandboxTarget) => {
+          if (target.sessionId !== replacement.sessionId)
+            throw new Error('The original worker is unavailable');
+          return csv;
+        },
+      );
+      const gateway = harness(
+        createMockState(),
+        false,
+        undefined,
+        { csvOutput: true },
+        collectArtifact,
+      );
+      const body = envelope();
+      await gateway.events(signed(body));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      await Promise.all([
+        gateway.store.enrollIdleSession(lost),
+        gateway.store.enrollIdleSession(replacement),
+      ]);
+      expect(await gateway.store.recordDispatchTarget(job, lost)).toBe(
+        'recorded',
+      );
+      const claimPublication = gateway.store.claimPublication.bind(
+        gateway.store,
+      );
+      vi.spyOn(gateway.store, 'claimPublication').mockImplementationOnce(
+        async (...args) => {
+          expect(await gateway.store.fenceLostTarget(lost)).toBe(true);
+          expect(
+            await gateway.store.bindRecoveryTarget(lost, replacement),
+          ).toBe(true);
+          return claimPublication(...args);
+        },
+      );
+      const output = {
+        ...result(job),
+        artifact: { sha256: createHash('sha256').update(csv).digest('hex') },
+        session: {
+          seedRunId: job.runId,
+          nativeId: randomUUID(),
+          adapterId: randomUUID(),
+          revision: 1,
+        },
+      };
+
+      expect(
+        (await gateway.callback(callback(output, job.callbackToken))).status,
+      ).toBe(503);
+      expect(collectArtifact).toHaveBeenCalledExactlyOnceWith(
+        job.runId,
+        lost,
+        undefined,
+      );
+      expect(await gateway.store.getRun(job.runId)).toMatchObject({
+        state: 'accepted',
+        execution: lost,
+        recovery: replacement,
+      });
+
+      expect(
+        (await gateway.callback(callback(output, job.callbackToken))).status,
+      ).toBe(202);
+      await gateway.flush();
+      expect(collectArtifact).toHaveBeenLastCalledWith(
+        job.runId,
+        replacement,
+        undefined,
+      );
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenNthCalledWith(
+        2,
+        'slack:CTEST1:' + body.event.ts,
+        {
+          markdown: '',
+          files: [{ data: csv, filename: 'result.csv', mimeType: 'text/csv' }],
+        },
+      );
+    });
+
     it('shows finishing while the final answer is still publishing, then completes', async () => {
       const gateway = harness(
         createMockState(),

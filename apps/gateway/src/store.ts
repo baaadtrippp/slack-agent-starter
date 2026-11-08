@@ -113,7 +113,7 @@ export interface RunStore {
     result: WorkerResult,
     now: number,
     artifactLease?: string,
-    execution?: SandboxTarget,
+    artifactTarget?: SandboxTarget,
   ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry'>;
   claimSavedResult(
     observed: RunRecord,
@@ -238,14 +238,19 @@ end
 if run.state ~= 'accepted' and run.state ~= 'dispatch_failed' then return 'conflict' end
 if observed and redis.call('GET', KEYS[3]) ~= run.runId then return 'conflict' end
 if ARGV[4] and ARGV[4] ~= '' and redis.call('GET', KEYS[2]) ~= ARGV[4] then return 'retry' end
-if ARGV[6] == 'artifact' and not run.recovery then
+if ARGV[6] == 'artifact' then
+  local attempted = cjson.decode(ARGV[7])
+  local current = run.recovery or run.execution
+  local changed = not current or current.sandboxName ~= attempted.sandboxName or current.sessionId ~= attempted.sessionId
   local gate = redis.call('GET', KEYS[4])
+  local lost = false
   if gate and gate ~= 'open' then
     local closed = cjson.decode(gate)
-    if closed.state == 'lost' then
-      if redis.call('GET', KEYS[2]) == ARGV[4] then redis.call('DEL', KEYS[2]) end
-      return 'retry'
-    end
+    lost = closed.state == 'lost'
+  end
+  if changed or lost then
+    if redis.call('GET', KEYS[2]) == ARGV[4] then redis.call('DEL', KEYS[2]) end
+    return 'retry'
   end
 end
 if observed then run.exitConfirmed = true end
@@ -943,7 +948,7 @@ export class RedisRunStore implements RunStore {
     result: WorkerResult,
     now: number,
     artifactLease?: string,
-    execution?: SandboxTarget,
+    artifactTarget?: SandboxTarget,
   ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry'> {
     return (await this.execute((client) =>
       client.eval(CLAIM_SCRIPT, {
@@ -951,8 +956,8 @@ export class RedisRunStore implements RunStore {
           this.runKey(runId),
           this.csvCollectionKey(runId),
           `${this.runKey(runId)}:no-owner`,
-          execution
-            ? this.idleGateKey(execution)
+          artifactTarget
+            ? this.idleGateKey(artifactTarget)
             : `${this.runKey(runId)}:no-execution`,
         ],
         arguments: [
@@ -961,7 +966,8 @@ export class RedisRunStore implements RunStore {
           String(now),
           artifactLease ?? '',
           '',
-          artifactLease && execution ? 'artifact' : '',
+          artifactLease && artifactTarget ? 'artifact' : '',
+          artifactTarget ? JSON.stringify(artifactTarget) : '',
         ],
       }),
     )) as 'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry';

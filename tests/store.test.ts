@@ -575,6 +575,19 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
         retryLease,
         lost,
       ),
+    ).toBe('retry');
+    const finalLease = randomUUID();
+    expect(await store.reserveArtifactCollection(run.runId, finalLease)).toBe(
+      true,
+    );
+    expect(
+      await store.claimPublication(
+        run.runId,
+        result,
+        Date.now(),
+        finalLease,
+        replacement,
+      ),
     ).toBe('claimed');
   });
 

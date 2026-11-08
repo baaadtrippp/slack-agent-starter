@@ -639,6 +639,7 @@ export function createGateway({
   async function readArtifact(
     run: Pick<RunRecord, 'runId' | 'execution' | 'recovery'>,
     result: WorkerResult,
+    onAttempt?: (target: SandboxTarget) => void,
   ) {
     const collect = collectArtifact;
     const artifact = result.artifact;
@@ -646,8 +647,12 @@ export function createGateway({
     const getRecovery = async () =>
       (await store.getRun(run.runId).catch(() => undefined))?.recovery;
     const target = (await getRecovery()) ?? run.recovery ?? run.execution;
-    const readFrom = (execution: SandboxTarget) =>
-      collect(run.runId, execution, artifact.format).catch(() => undefined);
+    const readFrom = (execution: SandboxTarget) => {
+      onAttempt?.(execution);
+      return collect(run.runId, execution, artifact.format).catch(
+        () => undefined,
+      );
+    };
     let bytes = await readFrom(target);
     if (!bytes) {
       const moved = await getRecovery();
@@ -1443,6 +1448,7 @@ export function createGateway({
     const claimAt = now();
     let artifact: Buffer | undefined;
     let artifactLease: string | undefined;
+    let artifactTarget: SandboxTarget | undefined;
     if (
       supportsArtifact(result) &&
       collectArtifact &&
@@ -1459,7 +1465,9 @@ export function createGateway({
       if (!reserved) return new Response(null, { status: 503 });
 
       // Collect before the worker can exit and release its Sandbox reservation.
-      artifact = await readArtifact(run, result);
+      artifact = await readArtifact(run, result, (target) => {
+        artifactTarget = target;
+      });
     }
     let claim;
     try {
@@ -1469,7 +1477,7 @@ export function createGateway({
         result,
         claimAt,
         artifactLease,
-        artifactLease ? run.execution : undefined,
+        artifactTarget,
       );
     } catch {
       console.error(
