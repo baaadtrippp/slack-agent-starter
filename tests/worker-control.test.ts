@@ -264,9 +264,12 @@ describe('Sandbox worker control', () => {
     await rm(paths.root, { recursive: true, force: true });
   });
 
-  test.skipIf(process.platform !== 'linux')(
-    'refuses to restore an interrupted memory save with an inconsistent session',
-    async () => {
+  test.skipIf(process.platform !== 'linux').each([
+    ['interrupted', false],
+    ['completed', true],
+  ])(
+    'refuses to report %s memory save with an inconsistent session as safe',
+    async (_outcome, completed) => {
       const paths = await fixture();
       const runId = randomUUID();
       const seedRunId = randomUUID();
@@ -279,6 +282,16 @@ describe('Sandbox worker control', () => {
         join(sessions, 'session.jsonl'),
         JSON.stringify({ type: 'session', id: nativeId }) + '\n',
       );
+      if (completed)
+        await writeFile(
+          join(paths.workspace, 'runs', runId, 'result.json'),
+          JSON.stringify({
+            version: 1,
+            runId,
+            generation: 1,
+            type: 'completed',
+          }),
+        );
       await writeFile(worker, 'process.exit(0)');
       try {
         await expect(

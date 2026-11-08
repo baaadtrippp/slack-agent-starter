@@ -678,9 +678,8 @@ async function removeOwnedScratch(job) {
 async function verifySessionState(job, result, stop, workspace) {
   if (!job.session) return stop ? 'uncommitted' : 'committed';
   if (job.memory === 'save') {
-    if (result?.type === 'completed') return 'committed';
     await verifyCurrentSession(job.session, workspace);
-    return 'restored';
+    return result?.type === 'completed' ? 'committed' : 'restored';
   }
   if (result?.type !== 'completed') {
     await verifyCurrentSession(job.session, workspace);
