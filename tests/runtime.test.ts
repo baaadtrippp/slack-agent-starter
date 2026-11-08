@@ -552,7 +552,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
               'test ! -L /workspace && mountpoint -q /workspace',
             );
             expect(launch).toContain(
-              '--no-new-privs -- test -w /workspace || exit 78',
+              "--no-new-privs -- sh -c 'test -w /workspace && test -x /workspace' || exit 78",
             );
             expect(launch).toContain('if [ "$code" -eq 78 ]; then exit 79');
           }

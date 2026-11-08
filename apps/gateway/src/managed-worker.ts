@@ -10,7 +10,7 @@ export const MANAGED_DRIVE_WRITE_SETUP = [
   'test ! -L /workspace',
   'mountpoint -q /workspace',
   'if [ "$(stat -c %u:%g -- /workspace)" != "1000:1000" ]; then chown --no-dereference -- 1000:1000 /workspace; fi',
-  `${MANAGED_WORKER_PRIVILEGE_DROP} -- test -w /workspace`,
+  `${MANAGED_WORKER_PRIVILEGE_DROP} -- sh -c 'test -w /workspace && test -x /workspace'`,
 ].join(' && ');
 
 type ManagedWorkerConfig = {
@@ -70,7 +70,9 @@ export function createManagedWorker(
       cmd: 'bash',
       args: [
         '-c',
-        `set -eu; ${MANAGED_DRIVE_WRITE_SETUP} || exit 1; cd /tmp/hydra-worker; test -x node_modules/.bin/pi; test -x node_modules/.bin/pi-acp; command -v flock >/dev/null; command -v sysctl >/dev/null; node --check run.mjs; node --check shared-notes.mjs` +
+        `set -eu; ${MANAGED_DRIVE_WRITE_SETUP} || exit 1; exec ${MANAGED_WORKER_PRIVILEGE_DROP} -- bash -c "$1"`,
+        'hydra-readiness',
+        'set -eu; cd /tmp/hydra-worker; test -x node_modules/.bin/pi; test -x node_modules/.bin/pi-acp; command -v flock >/dev/null; command -v sysctl >/dev/null; node --check run.mjs; node --check shared-notes.mjs' +
           (controlsEnabled
             ? '; node --check supervise.mjs; node --check control.mjs'
             : ''),

@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import {
   mkdtemp,
   mkdir,
@@ -10,11 +10,18 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it as vitestIt } from 'vitest';
 // @ts-expect-error No declaration file is shipped for the Sandbox module.
 import * as sharedNotes from '../apps/worker/sandbox/shared-notes.mjs';
 
 const { readSharedNotes, saveSharedNote, sharedNotesFull } = sharedNotes;
+
+// CI runs this suite on Linux and must have the worker's flock dependency.
+const it = vitestIt.skipIf(
+  process.platform !== 'linux' ||
+    (!process.env.CI &&
+      spawnSync('flock', ['--version'], { stdio: 'ignore' }).status !== 0),
+);
 
 const exec = promisify(execFile);
 const moduleUrl = new URL(

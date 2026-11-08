@@ -126,14 +126,17 @@ describe.skipIf(!redisUrl)('managed worker replacement', () => {
     expect(replacement.runCommand).toHaveBeenCalledWith(
       expect.objectContaining({ cmd: 'bash', sudo: true }),
     );
-    const [, prepareDrive] = replacement.runCommand.mock.calls[0]![0].args;
+    const [, prepareDrive, , checkWorker] =
+      replacement.runCommand.mock.calls[0]![0].args;
     expect(prepareDrive).toContain(
       'test ! -L /workspace && mountpoint -q /workspace',
     );
     expect(prepareDrive).toContain(
       'chown --no-dereference -- 1000:1000 /workspace',
     );
-    expect(prepareDrive).toContain('--no-new-privs -- test -w /workspace');
+    expect(prepareDrive).toContain('test -w /workspace && test -x /workspace');
+    expect(prepareDrive).toContain('--no-new-privs -- bash -c "$1"');
+    expect(checkWorker).toContain('node --check run.mjs');
 
     expect(await ready()).toBe(replacement);
     expect(await store.getManagedRuntime(sandboxName)).toEqual({
