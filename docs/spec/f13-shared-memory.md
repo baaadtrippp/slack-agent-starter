@@ -89,15 +89,15 @@ absent.
 On 8 November 2026, the enabled channel exercised the gateway and worker from
 `0b1268d2292c3878a5f7272532bee70224b4fafc`. One internal member saved
 `The synthetic badge is violet` in a top-level thread and asked Pi to use the
-shared notes in a fresh top-level thread. The save was acknowledged and the
-read answered violet. Each input received one eyes reaction, one status ending
-in Completed, and one final answer. The answers matched the recorded gateway
+shared notes in a fresh top-level thread. The save was acknowledged and the read
+answered violet. Each input received one eyes reaction, one status ending in
+Completed, and one final answer. The answers matched the recorded gateway
 publications and worker callbacks.
 
-This check covers live save and recall across threads with the same member.
-The signed gateway test separately covers an authorized reader with a different
-user ID, a new conversation, and no imported thread context. An additional
-live check with another member is optional for this acceptance slice.
+This check covers live save and recall across threads with the same member. The
+signed gateway test separately covers an authorized reader with a different user
+ID, a new conversation, and no imported thread context. An additional live check
+with another member is optional for this acceptance slice.
 
 The original Slack route was restored and removal of the temporary deployment,
 worker, seed, snapshot, and test Drive was verified.

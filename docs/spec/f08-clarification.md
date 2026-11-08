@@ -17,8 +17,8 @@
   with a controlled model that asks before calling a file tool. Assert process
   exit before the reply, peer completion during the gap, matching native and
   adapter IDs, advancing revisions, exact retained bytes, and no replay. Use the
-  existing gateway tests for callback and input deduplication and ownership.
-  Repeat the file-bearing case in the integrated live pass.
+  existing gateway tests for callback and input deduplication and ownership. Run
+  the file-bearing replacement sequence against the actual Sandbox and Drive.
 
 ## Deterministic evidence on the PR #24 merge
 
@@ -55,7 +55,26 @@ Earlier [text-only live evidence](milestone-4.md#live-slack-evidence) covers
 exact resume after Sandbox replacement.
 [File-bearing live evidence](f04-f06-file-exchange.md#live-slack-evidence)
 covers same-session source reuse and a verified Slack artifact on an earlier
-runtime. The sequence below remains pending on the integrated release candidate.
+runtime.
+
+## Provider replacement evidence
+
+A controlled model drove the packaged worker from
+`9401bbb02dd8da18d87d5a4197e1b4726e6b07bf` through the real Vercel Sandbox and
+Drive. The first Pi turn asked which period to select before calling a file
+tool, then saved the checkpoint and exited. The original Sandbox detached the
+Drive. A fresh nonpersistent Sandbox mounted the same Drive at `/workspace`. A
+temporary runtime marker from the first Sandbox was absent in the replacement.
+
+The reply reused the same native and adapter IDs and transcript path, advanced
+the revision, and added exactly one native user turn. It read the retained
+23-byte CSV without another upload or history import and wrote the exact 18-byte
+output `period,units\nQ2,7\n`. Both disposable Sandboxes and the Drive were
+removed and verified absent.
+
+This route-free check exercised the worker and Drive rather than Slack or a
+gateway restart. The earlier live runs separately cover Slack clarification and
+same-thread delivery.
 
 ## Integrated Slack regression
 
