@@ -39,8 +39,30 @@ function writeInNewWorker(input: ReturnType<typeof note>) {
   return exec(process.execPath, [
     '--input-type=module',
     '--eval',
-    'const {saveSharedNote} = await import(process.argv[1]);' +
-      'await saveSharedNote(JSON.parse(process.argv[2]), new AbortController().signal, JSON.parse(process.argv[3]));',
+    `
+      import assert from 'node:assert/strict';
+      import { spawnSync } from 'node:child_process';
+      import { createHash } from 'node:crypto';
+      import { join } from 'node:path';
+
+      const [moduleUrl, inputJson, pathsJson] = process.argv.slice(1);
+      const input = JSON.parse(inputJson);
+      const paths = JSON.parse(pathsJson);
+      const { saveSharedNote } = await import(moduleUrl);
+      const scope = createHash('sha256')
+        .update(JSON.stringify([input.workspaceId, input.channelId]))
+        .digest('hex');
+      let checked = false;
+      await saveSharedNote(input, {
+        throwIfAborted() {
+          if (checked) return;
+          checked = true;
+          const contender = spawnSync('flock', ['-n', join(paths.locks, scope), 'true']);
+          assert.equal(contender.status, 1, 'The lock must block a second writer');
+        },
+      }, paths);
+      assert.equal(checked, true);
+    `,
     moduleUrl.href,
     JSON.stringify(input),
     JSON.stringify(paths),
