@@ -201,6 +201,7 @@ export const workerResultSchema = z
         'shared_notes_unavailable',
       ])
       .optional(),
+    failureCategory: z.enum(['provider_quota', 'drive_full']).optional(),
     artifact: z
       .object({ sha256: checksum, format: z.enum(artifactFormats).optional() })
       .strict()
@@ -208,7 +209,14 @@ export const workerResultSchema = z
     session: workerSessionSchema.optional(),
     text: z.string().min(1).max(4_000),
   })
-  .strict();
+  .strict()
+  .refine(
+    ({ type, failureCategory }) => type === 'failed' || !failureCategory,
+    {
+      message: 'A completed worker result cannot include a failure category',
+      path: ['failureCategory'],
+    },
+  );
 
 export type WorkerResult = z.infer<typeof workerResultSchema>;
 

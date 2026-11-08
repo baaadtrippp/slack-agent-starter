@@ -14,7 +14,8 @@ import { afterEach, beforeEach, expect, it } from 'vitest';
 // @ts-expect-error No declaration file is shipped for the Sandbox module.
 import * as sharedNotes from '../apps/worker/sandbox/shared-notes.mjs';
 
-const { readSharedNotes, saveSharedNote, sharedNotesFull } = sharedNotes;
+const { isDriveFullError, readSharedNotes, saveSharedNote, sharedNotesFull } =
+  sharedNotes;
 
 const exec = promisify(execFile);
 const moduleUrl = new URL(
@@ -110,6 +111,28 @@ it('preserves the prior snapshot if a write is interrupted before rename', async
     first.text,
     'Next note',
   ]);
+});
+
+it('preserves the prior snapshot if the Drive fills before rename', async () => {
+  const first = note(1, 'Initial note');
+  await saveSharedNote(first, signal, paths);
+  const driveFull = Object.assign(new Error('Synthetic full Drive'), {
+    code: 'ENOSPC',
+  });
+  let checks = 0;
+  await expect(
+    saveSharedNote(
+      note(2, 'Uncommitted note'),
+      {
+        throwIfAborted() {
+          if (++checks === 2) throw driveFull;
+        },
+      },
+      paths,
+    ),
+  ).rejects.toBe(driveFull);
+  expect(isDriveFullError(driveFull)).toBe(true);
+  expect(await readSharedNotes(first, paths)).toEqual([first.text]);
 });
 
 it('refuses excess notes and preserves all previously saved entries', async () => {

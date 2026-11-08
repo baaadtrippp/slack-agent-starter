@@ -20,6 +20,16 @@ export const sharedNotesFull = new Error('Shared notes are full');
 export const sharedNotesUnavailable = new Error('Shared notes unavailable');
 export const sharedNoteSaved = 'Saved to this channel’s shared notes.';
 
+export function isDriveFullError(error) {
+  let current = error;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (!current || typeof current !== 'object') return false;
+    if (current.code === 'ENOSPC' || current.code === 'EDQUOT') return true;
+    current = current.cause;
+  }
+  return false;
+}
+
 function validNote(note) {
   return (
     typeof note === 'string' &&

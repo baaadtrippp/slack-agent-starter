@@ -15,6 +15,7 @@ import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import {
+  isDriveFullError,
   readSharedNotes,
   saveSharedNote,
   sharedNotesFull,
@@ -70,6 +71,10 @@ const uncertainRun = new Error('Worker state requires inspection');
 const cancelledRun = new Error('Worker run was cancelled');
 const unreadablePdf = new Error('PDF text extraction failed');
 const oversizedPdfText = new Error('PDF text exceeds the test limit');
+const providerQuotaFailure = Object.assign(
+  new Error('Provider quota is unavailable'),
+  { failureCategory: 'provider_quota' },
+);
 const bin = join(import.meta.dirname, 'node_modules', '.bin');
 const slackTimestamp = /^\d{10}\.\d{6}$/;
 const slackSenderId = /^[UWB][A-Z0-9]{1,31}$/;
@@ -79,6 +84,47 @@ const mimeType =
 const maxContextMessages = 20;
 const maxContextMessageBytes = 2 * 1024;
 const maxContextBytes = 16 * 1024;
+
+const providerQuotaCodes = new Set([
+  '402',
+  '429',
+  'INSUFFICIENT_CREDITS',
+  'PAYMENT_REQUIRED',
+  'PROVIDER_QUOTA',
+  'RATE_LIMIT',
+  'RATE_LIMITED',
+]);
+
+export function isProviderQuotaSignal(value) {
+  if (value && typeof value === 'object') {
+    const codes = [value.code, value.detailCode];
+    if (
+      codes.some(
+        (code) =>
+          (typeof code === 'number' || typeof code === 'string') &&
+          providerQuotaCodes.has(String(code).toUpperCase()),
+      )
+    )
+      return true;
+    value = value.message;
+  }
+  if (typeof value !== 'string' || Buffer.byteLength(value) > 4096)
+    return false;
+  return (
+    /^(?:402|429)\b/.test(value) ||
+    /\b(?:http(?: status)?|status)\s*(?:code\s*)?(?:402|429)\b/i.test(value) ||
+    /\b(?:provider |model )?(?:quota|rate[ -]limit)(?: is| was)? (?:exceeded|exhausted|reached)\b/i.test(
+      value,
+    ) ||
+    /\b(?:insufficient|no|out of) (?:credits?|balance)\b/i.test(value) ||
+    /\bpayment required\b/i.test(value)
+  );
+}
+
+export function workerFailureCategory(error) {
+  if (error === providerQuotaFailure) return 'provider_quota';
+  if (isDriveFullError(error)) return 'drive_full';
+}
 
 export const readStagedInputExtension = `
 import { readFile } from 'node:fs/promises';
@@ -368,6 +414,7 @@ async function run(job, model, key, stopSignal = new AbortController().signal) {
       result.type = 'completed';
     } catch (error) {
       if (error === uncertainRun || error === cancelledRun) throw error;
+      result.failureCategory = workerFailureCategory(error);
       if (error === sharedNotesFull) result.inputError = 'shared_notes_full';
       if (error === sharedNotesUnavailable && job.memory === 'read')
         result.inputError = 'shared_notes_unavailable';
@@ -379,7 +426,8 @@ async function run(job, model, key, stopSignal = new AbortController().signal) {
       console.error(
         JSON.stringify({
           runId: job.runId,
-          phase: result.inputError ?? 'pi_turn_failed',
+          phase:
+            result.failureCategory ?? result.inputError ?? 'pi_turn_failed',
         }),
       );
     }
@@ -404,6 +452,8 @@ async function run(job, model, key, stopSignal = new AbortController().signal) {
     result.type = 'failed';
     result.text = failureText;
     delete result.inputError;
+    delete result.failureCategory;
+    if (isDriveFullError(error)) result.failureCategory = 'drive_full';
     delete result.session;
     delete result.artifact;
   }
@@ -676,6 +726,11 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
       !answer
     )
       throw new Error('Expected one new Pi turn');
+    if (answer.stopReason === 'error') {
+      if (isProviderQuotaSignal(answer.errorMessage))
+        throw providerQuotaFailure;
+      throw new Error('Pi provider turn failed');
+    }
     const text = answer?.content
       ?.filter((part) => part.type === 'text')
       .map((part) => part.text)
@@ -1065,9 +1120,15 @@ export async function consumeTurn(turn, reportWorking) {
       reported = true;
       reportWorking();
     }
-    if (event.type === 'error') break;
+    if (event.type === 'error') {
+      if (isProviderQuotaSignal(event)) throw providerQuotaFailure;
+      break;
+    }
   }
-  return turn.result;
+  const result = await turn.result;
+  if (result.status === 'failed' && isProviderQuotaSignal(result.error))
+    throw providerQuotaFailure;
+  return result;
 }
 
 function extractPdfText(path, timeout, runId) {
