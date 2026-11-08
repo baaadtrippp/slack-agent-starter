@@ -544,7 +544,8 @@ export function createGateway({
     const completed =
       inspection?.state === 'stopped' ? inspection.completed : undefined;
     if (completed && validateResult(run, completed)) return;
-    await store.confirmStopped(run, completed?.session);
+    const confirmed = await store.confirmStopped(run, completed?.session);
+    if (confirmed !== 'conflict') await releaseRecoveredWorker?.(run);
   }
 
   function validateResult(run: RunRecord, result: WorkerResult) {
@@ -672,7 +673,11 @@ export function createGateway({
       if (
         run.deadline <= now() &&
         exited &&
-        (await store.interruptRun(run, now(), sessionRestored))
+        (await store.interruptRun(
+          (await store.getRun(run.runId)) ?? run,
+          now(),
+          sessionRestored,
+        ))
       )
         await releaseRecoveredWorker?.(run);
     } finally {

@@ -72,6 +72,7 @@ export type RunRecord = {
   session?: WorkerSession;
   result?: WorkerResult;
   execution?: SandboxTarget;
+  recovery?: SandboxTarget;
   blockedBy?: string;
   messageId?: string;
   progress?: WorkerProgress;
@@ -328,6 +329,9 @@ run.statusVersion = (run.statusVersion or 0) + 1
 redis.call('SET', KEYS[1], cjson.encode(run))
 redis.call('DEL', KEYS[2])
 if run.execution then redis.call('SREM', KEYS[3], run.runId) end
+if run.recovery then
+  redis.call('SREM', ARGV[3] .. run.recovery.sandboxName .. ':' .. run.recovery.sessionId .. ':active', run.runId)
+end
 return 'confirmed'
 `;
 
@@ -458,12 +462,64 @@ local target = cjson.decode(ARGV[2])
 if run.runId ~= ARGV[1] or not run.execution or
    run.execution.sandboxName ~= target.sandboxName or
    run.execution.sessionId ~= target.sessionId then return 0 end
+local recovery = run.recovery
 if ARGV[3] == 'unsubmitted' and
    (run.state == 'accepted' or run.state == 'stopping') then
   run.execution = nil
+  run.recovery = nil
   redis.call('SET', KEYS[1], cjson.encode(run), 'KEEPTTL')
 end
 redis.call('SREM', KEYS[2], run.runId)
+if recovery then
+  redis.call('SREM', ARGV[4] .. recovery.sandboxName .. ':' .. recovery.sessionId .. ':active', run.runId)
+end
+return 1
+`;
+
+const FENCE_LOST_TARGET_SCRIPT = `
+local gate = redis.call('GET', KEYS[1])
+if gate == 'open' then
+  redis.call('SET', KEYS[1], cjson.encode({state = 'lost'}))
+  return 1
+end
+if not gate then return 0 end
+local closed = cjson.decode(gate)
+return closed.state == 'lost' and 1 or 0
+`;
+
+const BIND_RECOVERY_TARGET_SCRIPT = `
+local gate = redis.call('GET', KEYS[1])
+if not gate or gate == 'open' or cjson.decode(gate).state ~= 'lost' then return 0 end
+if redis.call('GET', KEYS[3]) ~= 'open' then return 0 end
+local old = cjson.decode(ARGV[1])
+local replacement = cjson.decode(ARGV[2])
+local ids = redis.call('SMEMBERS', KEYS[2])
+for _, id in ipairs(ids) do
+  local key = ARGV[3] .. id
+  local encoded = redis.call('GET', key)
+  if not encoded then
+    redis.call('SREM', KEYS[2], id)
+  else
+    local run = cjson.decode(encoded)
+    if not run.execution or run.execution.sandboxName ~= old.sandboxName or
+       run.execution.sessionId ~= old.sessionId then
+      redis.call('SREM', KEYS[2], id)
+    elseif run.state == 'accepted' or run.state == 'dispatch_failed' or
+           run.state == 'stopping' then
+      if run.recovery and
+         (run.recovery.sandboxName ~= replacement.sandboxName or
+          run.recovery.sessionId ~= replacement.sessionId) then return 0 end
+      run.recovery = replacement
+      redis.call('SET', key, cjson.encode(run), 'KEEPTTL')
+      redis.call('SADD', KEYS[4], id)
+    else
+      redis.call('SREM', KEYS[2], id)
+      if run.recovery then
+        redis.call('SREM', ARGV[4] .. run.recovery.sandboxName .. ':' .. run.recovery.sessionId .. ':active', id)
+      end
+    end
+  end
+end
 return 1
 `;
 
@@ -516,6 +572,10 @@ current.state = 'interrupted'
 current.statusVersion = (current.statusVersion or 0) + 1
 redis.call('SET', KEYS[1], cjson.encode(current))
 redis.call('DEL', KEYS[2])
+if current.execution then redis.call('SREM', KEYS[3], current.runId) end
+if current.recovery then
+  redis.call('SREM', ARGV[4] .. current.recovery.sandboxName .. ':' .. current.recovery.sessionId .. ':active', current.runId)
+end
 return 1
 `;
 
@@ -672,6 +732,10 @@ export class RedisRunStore implements RunStore {
 
   private activeDispatchKey(target: SandboxTarget): string {
     return `${this.namespace}:idle:${target.sandboxName}:${target.sessionId}:active`;
+  }
+
+  private activeDispatchPrefix(): string {
+    return `${this.namespace}:idle:`;
   }
 
   async admit(
@@ -1002,6 +1066,7 @@ export class RedisRunStore implements RunStore {
         arguments: [
           JSON.stringify(observed),
           completedSession ? JSON.stringify(completedSession) : '',
+          this.activeDispatchPrefix(),
         ],
       }),
     )) as 'confirmed' | 'duplicate' | 'conflict';
@@ -1198,6 +1263,7 @@ export class RedisRunStore implements RunStore {
               runId,
               JSON.stringify(target),
               unsubmitted ? 'unsubmitted' : '',
+              this.activeDispatchPrefix(),
             ],
           }),
         ),
@@ -1212,6 +1278,57 @@ export class RedisRunStore implements RunStore {
           client.eval(ENROLL_IDLE_SESSION_SCRIPT, {
             keys: [this.idleGateKey(target), this.activeDispatchKey(target)],
             arguments: [],
+          }),
+        ),
+      ) === 1
+    );
+  }
+
+  async fenceLostTarget(target: SandboxTarget): Promise<boolean> {
+    return (
+      Number(
+        await this.execute((client) =>
+          client.eval(FENCE_LOST_TARGET_SCRIPT, {
+            keys: [this.idleGateKey(target)],
+            arguments: [],
+          }),
+        ),
+      ) === 1
+    );
+  }
+
+  async isLostTarget(target: SandboxTarget): Promise<boolean> {
+    const gate = await this.execute((client) =>
+      client.get(this.idleGateKey(target)),
+    );
+    if (typeof gate !== 'string' || gate === 'open') return false;
+    try {
+      return (JSON.parse(gate) as { state?: string }).state === 'lost';
+    } catch {
+      return false;
+    }
+  }
+
+  async bindRecoveryTarget(
+    target: SandboxTarget,
+    replacement: SandboxTarget,
+  ): Promise<boolean> {
+    return (
+      Number(
+        await this.execute((client) =>
+          client.eval(BIND_RECOVERY_TARGET_SCRIPT, {
+            keys: [
+              this.idleGateKey(target),
+              this.activeDispatchKey(target),
+              this.idleGateKey(replacement),
+              this.activeDispatchKey(replacement),
+            ],
+            arguments: [
+              JSON.stringify(target),
+              JSON.stringify(replacement),
+              this.runPrefix(),
+              this.activeDispatchPrefix(),
+            ],
           }),
         ),
       ) === 1
@@ -1285,11 +1402,15 @@ export class RedisRunStore implements RunStore {
             keys: [
               this.runKey(run.runId),
               this.ownerKey(run.workspaceId, run.channelId, run.threadTs),
+              run.execution
+                ? this.activeDispatchKey(run.execution)
+                : `${this.runKey(run.runId)}:no-execution`,
             ],
             arguments: [
               JSON.stringify(run),
               String(now),
               sessionRestored ? '1' : '0',
+              this.activeDispatchPrefix(),
             ],
           }),
         ),

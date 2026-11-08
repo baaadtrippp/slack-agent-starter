@@ -37,7 +37,7 @@ async function isSandboxStopped(target: SandboxTarget) {
   for await (const session of sessions) {
     if (session.id === target.sessionId) return session.status === 'stopped';
   }
-  return false;
+  return true;
 }
 
 function initialize() {
@@ -150,19 +150,23 @@ function initialize() {
             if (
               !managed ||
               !run.execution ||
-              run.execution.sandboxName !== sandboxName ||
-              !(await isSandboxStopped(run.execution))
+              run.execution.sandboxName !== sandboxName
             )
               return { state: 'unknown' };
 
-            // Only inspect a replacement after the exact original session has
-            // stopped and the existing lifecycle verifies the managed Drive.
-            const session = await managed.getSession(Date.now() + 25_000);
+            // Recovery proves the exact target stopped or disappeared before
+            // fencing it and reconciling one replacement on the same Drive.
+            const session = await managed.recoverSession(
+              run.execution,
+              Date.now() + 25_000,
+            );
             if (!session) return { state: 'unknown' };
             const target = {
               sandboxName: run.execution.sandboxName,
               sessionId: session.sessionId,
             };
+            if (!(await store.bindRecoveryTarget(run.execution, target)))
+              return { state: 'unknown' };
             const token = randomUUID();
             if (!(await store.reserveRecovery(target, token)))
               return { state: 'unknown' };
@@ -192,22 +196,25 @@ function initialize() {
             }
           },
           releaseRecoveredWorker: async (run) => {
+            const current = await store.getRun(run.runId);
+            const target = current?.recovery ?? run.execution;
             if (
               !run.execution ||
               !(await store.releaseDispatchTarget(run.runId, run.execution)) ||
               !managed ||
-              run.execution.sandboxName !== sandboxName
+              !target ||
+              target.sandboxName !== sandboxName
             )
               return;
             const sandbox = await Sandbox.get({
-              name: run.execution.sandboxName,
+              name: target.sandboxName,
               resume: false,
               signal: AbortSignal.timeout(5_000),
             }).catch(() => undefined);
             const session = sandbox?.currentSession();
             if (
               session?.status === 'running' &&
-              session.sessionId === run.execution.sessionId
+              session.sessionId === target.sessionId
             )
               await managed.stopIfIdle(session).catch(() => {});
           },

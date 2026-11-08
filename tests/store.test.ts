@@ -355,6 +355,85 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     );
   });
 
+  it('fences one lost target and holds its replacement for every affected run', async () => {
+    const lost = makeTarget('lost-shared');
+    const replacement = makeTarget('lost-replacement');
+    const unrelated = makeTarget('unrelated');
+    const first = makeRun();
+    const second = makeRun();
+    const other = makeRun();
+    await Promise.all([
+      store.admit(first),
+      store.admit(second),
+      store.admit(other),
+    ]);
+    await Promise.all([
+      store.enrollIdleSession(lost),
+      store.enrollIdleSession(replacement),
+      store.enrollIdleSession(unrelated),
+    ]);
+    expect(await store.recordDispatchTarget(makeJob(first), lost)).toBe(
+      'recorded',
+    );
+    expect(await store.recordDispatchTarget(makeJob(second), lost)).toBe(
+      'recorded',
+    );
+    expect(await store.recordDispatchTarget(makeJob(other), unrelated)).toBe(
+      'recorded',
+    );
+
+    expect(await store.fenceLostTarget(lost)).toBe(true);
+    expect(await store.fenceLostTarget(lost)).toBe(true);
+    const refused = makeRun();
+    await store.admit(refused);
+    expect(await store.recordDispatchTarget(makeJob(refused), lost)).toBe(
+      'stopping',
+    );
+    expect(await store.bindRecoveryTarget(lost, replacement)).toBe(true);
+    expect(await store.bindRecoveryTarget(lost, replacement)).toBe(true);
+    expect(await store.getRun(first.runId)).toMatchObject({
+      execution: lost,
+      recovery: replacement,
+    });
+    expect(await store.getRun(second.runId)).toMatchObject({
+      execution: lost,
+      recovery: replacement,
+    });
+    expect(await store.getRun(other.runId)).toMatchObject({
+      execution: unrelated,
+    });
+    expect(await store.getRun(other.runId)).not.toHaveProperty('recovery');
+    expect(await store.claimIdleStop(replacement, randomUUID())).toBe('active');
+    expect(await store.claimIdleStop(unrelated, randomUUID())).toBe('active');
+
+    const recoveredFirst = (await store.getRun(first.runId))!;
+    const firstResult = makeResult(first);
+    expect(await store.claimSavedResult(recoveredFirst, firstResult)).toBe(
+      'claimed',
+    );
+    expect(await store.completePublication(first, nextTimestamp())).toBe(true);
+    expect(await store.releaseDispatchTarget(first.runId, lost)).toBe(true);
+    expect(await store.claimIdleStop(replacement, randomUUID())).toBe('active');
+
+    const recoveredSecond = (await store.getRun(second.runId))!;
+    expect(
+      await store.interruptRun(recoveredSecond, recoveredSecond.deadline),
+    ).toBe(true);
+    expect(await store.getRun(second.runId)).toMatchObject({
+      state: 'interrupted',
+      execution: lost,
+      recovery: replacement,
+    });
+    expect(await store.claimIdleStop(replacement, randomUUID())).toBe(
+      'claimed',
+    );
+    expect(await store.claimIdleStop(unrelated, randomUUID())).toBe('active');
+
+    expect(await store.releaseDispatchTarget(other.runId, unrelated)).toBe(
+      true,
+    );
+  });
+
   it('claims a callback once and releases only its own thread lease on completion', async () => {
     const run = makeRun({ conversationId: 'd'.repeat(64) });
     await store.admit(run);

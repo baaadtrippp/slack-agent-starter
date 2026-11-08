@@ -128,4 +128,96 @@ describe.skipIf(!redisUrl)('managed worker replacement', () => {
       sandboxGet.mock.calls.filter(([input]) => input.resume),
     ).toHaveLength(1);
   });
+
+  it('replaces an exact session missing from a completed inventory but not an inventory failure', async () => {
+    sandboxGet.mockReset();
+    driveGet.mockReset();
+    const store = new RedisRunStore(state.getClient(), namespace);
+    const sandboxName = 'synthetic-missing-worker';
+    const driveName = 'synthetic-missing-drive';
+    const seedId = 'synthetic-missing-seed';
+    const driveId = 'synthetic-missing-drive-id';
+    const oldId = 'synthetic-missing-session';
+    const replacementId = 'synthetic-recovered-session';
+    const old = {
+      sessionId: oldId,
+      status: 'stopped',
+      sourceSnapshotId: seedId,
+    };
+    const replacement = {
+      sessionId: replacementId,
+      status: 'running',
+      sourceSnapshotId: seedId,
+      runCommand: vi.fn().mockResolvedValue({ exitCode: 0 }),
+    };
+    let session = old;
+    let attachment: string | undefined;
+    let inventoryFails = true;
+    const listSessions = vi.fn(() => {
+      if (inventoryFails) throw new Error('Synthetic provider outage');
+      return (async function* () {
+        yield { id: 'unrelated-stopped-session', status: 'stopped' };
+      })();
+    });
+    sandboxGet.mockImplementation(async ({ resume }: { resume: boolean }) => {
+      if (resume) {
+        session = replacement;
+        attachment = replacementId;
+      }
+      return {
+        persistent: false,
+        currentSnapshotId: seedId,
+        mounts: { '/workspace': { mode: 'read-write', drive: driveName } },
+        currentSession: () => session,
+        listSessions,
+      };
+    });
+    driveGet.mockImplementation(async () => ({
+      driveId,
+      name: driveName,
+      currentSessionId: attachment,
+      currentSandboxName: attachment ? sandboxName : undefined,
+    }));
+    const target = { sandboxName, sessionId: oldId };
+    expect(
+      await store.compareManagedRuntime(sandboxName, null, {
+        phase: 'ready',
+        sessionId: oldId,
+        driveId,
+      }),
+    ).toBe(true);
+    expect(await store.enrollIdleSession(target)).toBe(true);
+
+    const managed = createManagedWorker(
+      { sandboxName, driveName, seedId },
+      store,
+    );
+    await expect(
+      managed.recoverSession(target, Date.now() + 15_000),
+    ).rejects.toThrow('Synthetic provider outage');
+    expect(await store.isIdleSessionOpen(target)).toBe(true);
+    expect(
+      sandboxGet.mock.calls.filter(([input]) => input.resume),
+    ).toHaveLength(0);
+
+    inventoryFails = false;
+    expect(await managed.recoverSession(target, Date.now() + 15_000)).toBe(
+      replacement,
+    );
+    expect(await store.isIdleSessionOpen(target)).toBe(false);
+    expect(
+      await store.isIdleSessionOpen({
+        sandboxName,
+        sessionId: replacementId,
+      }),
+    ).toBe(true);
+    expect(await store.getManagedRuntime(sandboxName)).toEqual({
+      phase: 'ready',
+      sessionId: replacementId,
+      driveId,
+    });
+    expect(
+      sandboxGet.mock.calls.filter(([input]) => input.resume),
+    ).toHaveLength(1);
+  });
 });

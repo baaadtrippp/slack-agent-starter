@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Drive, Sandbox } from '@vercel/sandbox';
 import type { Session } from '@vercel/sandbox';
-import type { ManagedRuntime, RedisRunStore } from './store.js';
+import type { ManagedRuntime, RedisRunStore, SandboxTarget } from './store.js';
 
 type ManagedWorkerConfig = {
   sandboxName: string;
@@ -73,6 +73,18 @@ export function createManagedWorker(
       ? await store.enrollIdleSession(target(session))
       : await store.isIdleSessionOpen(target(session));
     if (!enrolled) return;
+    if (
+      previous &&
+      (await store.isLostTarget({
+        sandboxName,
+        sessionId: previous.sessionId,
+      })) &&
+      !(await store.bindRecoveryTarget(
+        { sandboxName, sessionId: previous.sessionId },
+        target(session),
+      ))
+    )
+      return;
 
     const updated = await store.compareManagedRuntime(sandboxName, previous, {
       phase: 'ready',
@@ -109,6 +121,7 @@ export function createManagedWorker(
       drive.currentSandboxName
     )
       return;
+    if (await store.isLostTarget(target(session))) return;
 
     const starting: ManagedRuntime = {
       phase: 'starting',
@@ -140,6 +153,76 @@ export function createManagedWorker(
     );
   }
 
+  async function recoverSession(lost: SandboxTarget, deadline: number) {
+    if (lost.sandboxName !== sandboxName) return;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return;
+    const signal = AbortSignal.timeout(Math.min(25_000, remaining));
+    const [sandbox, drive, current] = await Promise.all([
+      Sandbox.get({ name: sandboxName, resume: false, signal }),
+      Drive.get({ name: driveName, signal }),
+      store.getManagedRuntime(sandboxName),
+    ]);
+    if (
+      !matchesSeedAndMount(sandbox, drive) ||
+      !current ||
+      current.driveId !== drive.driveId
+    )
+      return;
+    if (current.sessionId !== lost.sessionId) return getSession(deadline);
+    if (current.phase === 'starting') return getSession(deadline);
+
+    let lostConfirmed = true;
+    const sessions = await sandbox.listSessions({ signal });
+    for await (const session of sessions) {
+      if (session.id !== lost.sessionId) continue;
+      lostConfirmed = session.status === 'stopped';
+      break;
+    }
+    if (!lostConfirmed) return;
+
+    const observed = sandbox.currentSession();
+    const replacementAlreadyRunning =
+      observed.sessionId !== lost.sessionId && isReadySession(observed, drive);
+    if (
+      !replacementAlreadyRunning &&
+      (observed.status !== 'stopped' ||
+        drive.currentSessionId ||
+        drive.currentSandboxName)
+    )
+      return;
+    if (!(await store.fenceLostTarget(lost))) return;
+
+    const starting: ManagedRuntime = {
+      phase: 'starting',
+      sessionId: lost.sessionId,
+      driveId: current.driveId,
+      operationId: randomUUID(),
+    };
+    const claimed = await store
+      .compareManagedRuntime(sandboxName, current, starting)
+      .catch(() => store.compareManagedRuntime(sandboxName, current, starting));
+    if (!claimed) return getSession(deadline);
+    if (signal.aborted) {
+      await store.compareManagedRuntime(sandboxName, starting, current);
+      return;
+    }
+
+    if (replacementAlreadyRunning)
+      return activate(sandbox, drive, starting, signal);
+    const replacement = await Sandbox.get({
+      name: sandboxName,
+      resume: true,
+      signal,
+    });
+    return activate(
+      replacement,
+      await Drive.get({ name: driveName, signal }),
+      starting,
+      signal,
+    );
+  }
+
   async function stopIfIdle(session: Session) {
     const exact = target(session);
     const operationId = randomUUID();
@@ -150,5 +233,5 @@ export function createManagedWorker(
       await session.stop({ signal: AbortSignal.timeout(20_000) });
   }
 
-  return { getSession, stopIfIdle };
+  return { getSession, recoverSession, stopIfIdle };
 }
