@@ -1,5 +1,17 @@
 # Slack app configuration
 
+`v1.yaml` is the single supported installation manifest. It contains the
+public-channel events, file scopes, progress acknowledgement, Stop and Status
+interactivity, and thumbs feedback used by the
+[v1 quickstart](../../docs/service-setup.md). Copy it outside the checkout,
+replace the app-name and gateway-origin placeholders, validate it, apply it to
+the intended app, and reinstall that app.
+
+## Historical milestone manifests
+
+The other manifests preserve incremental tracer and review history. They are not
+installation entry points.
+
 `milestone-1.yaml` is the minimal manifest for the initial canned-reply slice.
 It subscribes only to `app_mention` and requests `app_mentions:read` and
 `chat:write`. It uses placeholders for the app name and gateway HTTPS URL.

@@ -1,61 +1,51 @@
-# Temporary fake worker
+# Sandbox worker
 
-Milestone 1 deploys this canned worker to a separate temporary Vercel project.
-It has no Slack, Redis, model, or platform-control credentials. Configure only
-`GATEWAY_ORIGIN`, the gateway's public HTTPS origin, in this project.
+The supported worker is the pinned Pi and ACP runtime in `sandbox/`. It runs in
+one named, nonpersistent Vercel Sandbox with one Vercel Drive mounted read/write
+at `/workspace`. The public bootstrap creates the clean startup snapshot, Drive,
+initial exact session, network policy, and Redis enrollment.
 
-Vercel project root: `apps/worker`. Enable source files outside the root to
-include the shared `packages/contracts` package. The worker accepts a bounded,
-run-scoped job at `POST /api/fake`, asks the gateway to confirm admission, and
-posts a canned result to the HTTPS callback URL already bound to its job. Its
-retries reuse one callback event ID.
+Follow the [v1 quickstart](../../docs/service-setup.md). From the repository
+root, its worker entry points are:
 
-This project is temporary test scaffolding. It does not demonstrate the Pi,
-OpenRouter, Vercel Sandbox, or Drive worker path and is replaced by the worker
-host integration in milestone 2.
-
-## Milestone 2 Sandbox worker
-
-Use one running, nonpersistent Sandbox with Node 24 or later and the Drive
-mounted read/write at `/workspace`. In the Sandbox, prepare the ephemeral worker
-directory with the pinned packages used in the live probe:
-
-```bash
-mkdir -m 700 /tmp/hydra-worker
-npm install --prefix /tmp/hydra-worker --no-audit --no-fund --ignore-scripts \
-  --save-exact acpx@0.21.1 pi-acp@0.0.34 @earendil-works/pi-coding-agent@1.5.0
+```text
+node --env-file="$SETUP_ENV" apps/gateway/scripts/bootstrap-worker.mjs setup "$WORKER_RECORD"
+node --env-file="$SETUP_ENV" apps/gateway/scripts/bootstrap-worker.mjs cleanup "$WORKER_RECORD"
 ```
 
-Copy [`sandbox/run.mjs`](sandbox/run.mjs),
-[`sandbox/supervise.mjs`](sandbox/supervise.mjs),
-[`sandbox/control.mjs`](sandbox/control.mjs), and
-[`sandbox/shared-notes.mjs`](sandbox/shared-notes.mjs) into `/tmp/hydra-worker`
-with the same filenames. Verify `flock` from util-linux is available for shared
-notes writes. Configure the Sandbox firewall for the gateway origin and
-OpenRouter. Inject the model key through the OpenRouter egress rule. The command
-receives only a placeholder key, the selected model and the admitted job. Keep
-the Sandbox's `NODE_EXTRA_CA_CERTS` available for Pi's TLS connection to the
-firewall.
+The setup command installs these exact packages into the startup snapshot:
 
-The gateway launches `node /tmp/hydra-worker/supervise.mjs` by Sandbox name with
-SDK detachment enabled. It invokes `control.mjs` separately with a
-run-and-generation-bound `HYDRA_CONTROL` value for Stop or Status. Stop starts
-with cooperative cancellation. If the run still has its original verified group
-leader after the grace period, the supervisor can terminate that isolated group.
-It verifies that the group and its marked ACP/Pi descendants have exited before
-restoring a resumed turn's exact prior checkpoint when needed. A fully committed
-checkpoint of the same native session can also be retained while the Slack
-answer is suppressed. The gateway displays Stopping and retains ownership
-whenever exit or session safety is unconfirmed.
+- `acpx@0.21.1`
+- `pi-acp@0.0.34`
+- `@earendil-works/pi-coding-agent@1.5.0`
 
-The SDK request signal bounds launch acknowledgement. The worker deadline and
-Sandbox lifetime bound execution. Status can recover the exact bounded Drive
-result after a normal worker exit or after the gateway has independently
-confirmed that exact Sandbox session stopped. If delivery is uncertain, inspect
-the run's Drive result manifest and gateway record before taking manual action.
+It copies `sandbox/run.mjs`, `sandbox/supervise.mjs`, `sandbox/control.mjs`, and
+`sandbox/shared-notes.mjs` from the checked-out commit and verifies their hashes
+inside the Sandbox. It also installs the Poppler and util-linux programs
+required by the checked-in PDF, privilege, process-control, and shared-note
+paths.
 
-For the [text-based PDF tracer](../../docs/spec/milestone-11.md), prepare the
-startup seed with the distribution's security-maintained Poppler tools and
-`prlimit` from util-linux. Verify `/usr/bin/pdftotext` and `/usr/bin/prlimit`
-before enabling PDF input on the gateway. The worker extracts at most 16 KiB of
-text with a 256 MiB parser address-space limit and a three-second deadline.
+The startup snapshot contains dependencies and the checked-in worker files. It
+has no Drive, model key, Slack credential, Redis credential, session, or user
+data. The live worker is forked from that snapshot with the Drive mounted at
+`/workspace`. Its egress allowlist contains only the configured gateway host and
+OpenRouter. The provider firewall is configured to inject the OpenRouter key
+into requests, while the process receives a placeholder value. The paid model
+smoke in the quickstart verifies that path end to end.
+
+The gateway starts `supervise.mjs` for work and invokes `control.mjs` for Stop
+or Status. A completed run saves its result and native session on the Drive
+before callback delivery. The managed runtime stops the Sandbox after verified
+idle and creates a fresh session from the same snapshot and Drive for the next
+turn.
+
+## Historical fake worker
+
+`api/fake.ts` and `src/fake-worker.ts` are deterministic gateway test
+scaffolding. They return a canned answer and use no model, Sandbox, or Drive. Do
+not deploy an `apps/worker` Vercel project for v1.
+
+Cleanup permanently deletes the worker Sandbox, seed Sandbox, startup snapshot,
+and Drive recorded by the bootstrap. It does not delete the gateway deployment,
+Slack app, OpenRouter key, Redis database, or Redis records. Use it only after
+Slack ingress is disabled and all accepted runs are terminal.

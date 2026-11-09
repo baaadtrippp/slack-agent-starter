@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { isIP } from 'node:net';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Drive, Sandbox, Snapshot } from '@vercel/sandbox';
@@ -80,6 +81,7 @@ function settings() {
       (gateway === origin.origin || gateway === origin.origin + '/') &&
       !origin.port &&
       origin.hostname.includes('.') &&
+      !isIP(origin.hostname) &&
       origin.hostname !== 'openrouter.ai',
     'GATEWAY_ORIGIN must be the bare public HTTPS gateway origin on port 443.',
   );
