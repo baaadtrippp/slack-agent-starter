@@ -3,15 +3,14 @@ node_modules/
 .pnpm-store/
 
 # Local configuration and credentials
-.env
-.env.*
+.env*
 !.env.example
 .dev.vars
 *.pem
 *.key
 
 # Provider and local authentication state
-.vercel/
+.vercel
 .wrangler/
 .slack/
 .claude/settings.local.json
