@@ -333,10 +333,7 @@ describe('Sandbox worker control', () => {
             {
               ...paths,
               worker,
-              readIdentity: async () => {
-                await delay(200);
-                return '1';
-              },
+              readIdentity: () => new Promise(() => {}),
             },
           ),
         ).rejects.toThrow(error);
@@ -545,10 +542,7 @@ process.once('message', async (message) => {
           {
             ...paths,
             worker,
-            readIdentity: async () => {
-              await delay(200);
-              return '1';
-            },
+            readIdentity: () => new Promise(() => {}),
           },
         ),
       ).resolves.toEqual(

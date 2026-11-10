@@ -1173,8 +1173,12 @@ export function createGateway({
         let text = input.text;
         if (command) {
           const allowed = await actorAllowed(run.channelId, run.senderId).catch(
-            () => false,
+            () => undefined,
           );
+          if (allowed === undefined) {
+            await publishNotice(run, 'failed', SHARED_NOTES_UNAVAILABLE_REPLY);
+            return;
+          }
           if (botMention && allowed) await initializeBot();
           if (!allowed || (botMention && botMention[1] !== slack.botUserId)) {
             await publishNotice(

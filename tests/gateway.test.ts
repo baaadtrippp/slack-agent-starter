@@ -517,6 +517,29 @@ describe.skipIf(!redisUrl)(
       },
     );
 
+    it('reports an unavailable membership check instead of refusing a shared note', async () => {
+      mockControlAccess();
+      const access = historyFetch.getMockImplementation()!;
+      historyFetch.mockImplementation(async (url, options) => {
+        if (String(url).endsWith('/conversations.members'))
+          throw new Error('Synthetic Slack outage');
+        return access(url, options);
+      });
+      vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
+        'UBOT1',
+      );
+      const gateway = harness();
+      const event = envelope();
+      event.event.text = '<@UBOT1> remember for this channel: Synthetic text';
+      expect((await gateway.events(signed(event))).status).toBe(200);
+      await gateway.flush();
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledWith(
+        `slack:CTEST1:${event.event.ts}`,
+        'I could not open this channel’s shared notes. Please try again later.',
+      );
+    });
+
     it.each([false, true])(
       'saves only current text from an ordinary file-share reply (file exchange: %s)',
       async (fileExchange) => {
