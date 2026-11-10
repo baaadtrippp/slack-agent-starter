@@ -691,7 +691,7 @@ export function createGateway({
           'stopped',
         ].includes(run.state)
       ) {
-        await releaseRecoveredWorker?.(run, true);
+        await releaseRecoveredWorker?.(run, true).catch(() => {});
         return;
       }
       if (run.state !== 'accepted' && run.state !== 'dispatch_failed') return;

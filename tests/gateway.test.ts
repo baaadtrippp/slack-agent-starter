@@ -1085,6 +1085,37 @@ describe.skipIf(!redisUrl)(
       );
     });
 
+    it('reports an ended run when the worker release fails during busy recovery', async () => {
+      const releaseRecoveredWorker = vi.fn(async () => {});
+      const { gateway, run, job } = await startControlled(
+        vi.fn(),
+        [],
+        releaseRecoveredWorker,
+      );
+      const mention = envelope();
+      const reply = {
+        ...mention,
+        event: { ...mention.event, thread_ts: run.threadTs },
+      };
+      expect(
+        (await gateway.events(signed(reply, gateway.clock.now))).status,
+      ).toBe(200);
+      const busy = gateway.tasks.splice(0);
+      expect(
+        (await gateway.callback(callback(result(job), job.callbackToken)))
+          .status,
+      ).toBe(202);
+      await gateway.flush();
+      gateway.clock.now = run.deadline + 1_000;
+      releaseRecoveredWorker.mockRejectedValueOnce(new Error('unavailable'));
+      for (const task of busy) await task();
+      await gateway.flush();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
+        expect.any(String),
+        'The previous run ended. This message was not submitted. Please resend it.',
+      );
+    });
+
     it('records timestamp-ordered thumbs only on a final answer, without a worker dispatch', async () => {
       const inspect = vi.fn();
       const { gateway, run, job } = await startControlled(inspect);
