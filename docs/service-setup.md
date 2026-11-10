@@ -10,8 +10,8 @@ one workspace and public channel, one named nonpersistent Sandbox, and one 1 GiB
 Drive. Start with new isolated resources so setup, validation, and teardown
 cannot affect another application.
 
-The quickstart assumes a POSIX shell on x86_64 Linux or WSL, with Docker for the
-test Redis. On macOS, replace the two toolchain script lines below with the
+The quickstart assumes Bash on x86_64 Linux or WSL, with Docker for the test
+Redis. On macOS, replace the two toolchain script lines below with the
 [macOS steps](toolchain.md#macos). Keep all private files outside the clone.
 Commands that use `$SETUP_ENV` and `$WORKER_RECORD` expect absolute paths.
 
@@ -35,7 +35,7 @@ docker run --rm --detach \
 TEST_REDIS_URL=redis://127.0.0.1:16379 pnpm check
 docker stop slack-agent-starter-test-redis
 pnpm scan:secrets
-test -z "$(git status --porcelain)"
+test -z "$(git status --porcelain)" && echo clean
 ```
 
 `pnpm check` uses the disposable loopback Redis described in
@@ -124,14 +124,17 @@ DMs, private channels, Slack Connect channels, external users, and bot messages.
 
 ## 3. Bootstrap the worker
 
-Create private paths outside the clone. The setup environment is a local
-mode-600 dotenv file. A separate Vercel pull provides its short-lived OIDC
-token. The JSON record makes setup retryable and binds every created resource to
-the checkout, Vercel project, Redis endpoint, model, region, and gateway origin.
+Create private paths in durable storage outside the clone, and keep them until
+cleanup has finished, because cleanup needs the same record. The setup
+environment is a local mode-600 dotenv file. A separate Vercel pull provides its
+short-lived OIDC token. The JSON record makes setup retryable and binds every
+created resource to the checkout, Vercel project, Redis endpoint, model, region,
+and gateway origin.
 
 ```sh
-PRIVATE_SETUP_DIR="$(mktemp -d)"
-chmod 700 "$PRIVATE_SETUP_DIR"
+PRIVATE_SETUP_DIR="$HOME/.slack-agent-starter/$PROJECT"
+mkdir -p "$PRIVATE_SETUP_DIR"
+chmod 700 "$HOME/.slack-agent-starter" "$PRIVATE_SETUP_DIR"
 OIDC_ENV="$PRIVATE_SETUP_DIR/vercel-oidc.env"
 SETUP_ENV="$PRIVATE_SETUP_DIR/setup.env"
 WORKER_RECORD="$PRIVATE_SETUP_DIR/worker-record.json"
@@ -181,7 +184,8 @@ failed or interrupted setup is retried with the same command, environment, and
 record. Do not delete or edit the record to work around a mismatch. If the OIDC
 token expires, pull into `OIDC_ENV` again and replace only `VERCEL_OIDC_TOKEN`
 in `SETUP_ENV`. If a seed Sandbox stopped before producing a snapshot, run
-cleanup with this record and start again with new private paths.
+cleanup with this record, then set a new `WORKER_RECORD` path, such as
+`"$PRIVATE_SETUP_DIR/worker-record-2.json"`, and run setup again.
 
 The bootstrap performs the following checks before printing settings.
 
@@ -239,8 +243,10 @@ pnpm exec vercel inspect "$GATEWAY_ORIGIN" --scope "$SCOPE" --json
 ```
 
 Confirm that the stable origin reports `READY`, targets Production, and belongs
-to the new project and expected deployment. Keep the deployment URL for rollback
-until the Slack smoke has passed.
+to the new project and expected deployment. Slack and the worker must reach this
+origin without signing in to Vercel. If the project's Deployment Protection
+covers production, limit it to preview deployments. Keep the deployment URL for
+rollback until the Slack smoke has passed.
 
 ## 5. Apply the complete Slack manifest
 
@@ -279,9 +285,9 @@ before.
 ```
 
 Verify one eyes acknowledgement, one status message that reaches Completed, and
-one separate answer containing the marker. In Vercel, confirm the function logs
-identify the Sandbox worker path and contain no fake-worker dispatch. Wait for
-the managed worker to stop after the verified result.
+one separate answer containing the marker. In Vercel's Sandbox view, confirm the
+named Sandbox from the setup output ran a session for this request. Wait for the
+managed worker to stop after the verified result.
 
 Reply in the same Slack thread without mentioning the bot and without repeating
 the marker.
@@ -294,9 +300,9 @@ Verify that the answer recalls the marker and that Slack receives one attached
 text file with the same marker. In Vercel's Sandbox view, confirm the same named
 Sandbox has a new session ID and that the earlier session is stopped.
 
-From the gateway publication logs, record the first and second run IDs for this
-thread in shell variables named `FIRST_RUN_ID` and `SECOND_RUN_ID`. Use the
-existing Redis store to check the two exact runs.
+From the gateway log lines with `"phase":"published"`, record the first and
+second run IDs for this thread in shell variables named `FIRST_RUN_ID` and
+`SECOND_RUN_ID`. Use the existing Redis store to check the two exact runs.
 
 ```sh
 node --env-file="$SETUP_ENV" --input-type=module - \
@@ -375,18 +381,28 @@ been checked. A gateway and worker built from different revisions are not a
 supported steady state.
 
 For complete teardown, first disable Slack Event Subscriptions and Interactivity
-or uninstall the app. Confirm there are no accepted, Stopping, or publishing
-runs. Then run the destructive cleanup with the same private record and a fresh
-OIDC token for the same Vercel project.
+or uninstall the app. Wait until every status message in the channel shows a
+final state. Then run the destructive cleanup with the same private record and a
+fresh OIDC token for the same Vercel project. From the clone, in a new shell,
+restore the paths from section 3. Use the newer record path if setup was
+retried.
 
 ```sh
+source scripts/use-toolchain.sh
+PROJECT=your-new-gateway-project
+PRIVATE_SETUP_DIR="$HOME/.slack-agent-starter/$PROJECT"
+WORKER_RECORD="$PRIVATE_SETUP_DIR/worker-record.json"
 CLEANUP_OIDC_ENV="$PRIVATE_SETUP_DIR/cleanup-oidc.env"
 CLEANUP_ENV="$PRIVATE_SETUP_DIR/cleanup.env"
 pnpm exec vercel env pull "$CLEANUP_OIDC_ENV" \
   --environment=development --yes
 chmod 600 "$CLEANUP_OIDC_ENV"
-# With an editor, copy VERCEL_OIDC_TOKEN into CLEANUP_ENV and add only the
-# same VERCEL_PROJECT_ID used for setup.
+```
+
+With an editor, create `CLEANUP_ENV`, copy `VERCEL_OIDC_TOKEN` into it, and add
+only the same `VERCEL_PROJECT_ID` used for setup. Then run cleanup:
+
+```sh
 chmod 600 "$CLEANUP_ENV"
 node --env-file="$CLEANUP_ENV" \
   apps/gateway/scripts/bootstrap-worker.mjs cleanup "$WORKER_RECORD"
@@ -396,7 +412,7 @@ Cleanup verifies removal of the recorded worker Sandbox, seed Sandbox, startup
 snapshot, and Drive. It permanently removes all native sessions, work, results,
 retained inputs, and shared notes on that Drive. Export anything that must be
 kept before cleanup. Cleanup marks the worker record retired before deletion, so
-any later setup must use new private paths and a new worker record.
+any later setup must use a new worker record path.
 
 Remove the gateway deployment or project, revoke the OpenRouter key, uninstall
 the Slack app, and delete the dedicated Redis database. Deleting the Redis
