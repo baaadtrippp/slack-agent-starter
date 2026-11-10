@@ -426,6 +426,22 @@ describe.skipIf(!redisUrl)(
       },
     );
 
+    it('admits an ordinary mention on a cold gateway without resolving the bot identity first', async () => {
+      const botUserId = vi
+        .spyOn(SlackAdapter.prototype, 'botUserId', 'get')
+        .mockReturnValue(undefined);
+      const gateway = harness();
+      const event = {
+        ...envelope(),
+        authorizations: [
+          { team_id: 'TTEST1', user_id: 'UTEST1', is_bot: false },
+        ],
+      };
+      expect((await gateway.events(signed(event))).status).toBe(200);
+      expect(SlackAdapter.prototype.initialize).not.toHaveBeenCalled();
+      botUserId.mockRestore();
+    });
+
     it('binds shared notes to the admitted scope and publishes a save only after the worker result', async () => {
       mockControlAccess();
       vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(

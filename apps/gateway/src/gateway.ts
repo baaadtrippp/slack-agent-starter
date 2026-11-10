@@ -994,7 +994,15 @@ export function createGateway({
     if (!input) return new Response(null, { status: 200 });
 
     const currentText = input.text.trimStart();
-    const leadingMention = currentText.match(/^<@([UW][A-Z0-9]+)>\s+/);
+    const commandPattern =
+      /^(remember for this channel:|use shared notes:)([\s\S]*)$/i;
+    const mentionMatch = currentText.match(/^<@([UW][A-Z0-9]+)>\s+/);
+    // Only a shared-note command needs to know which user the mention names.
+    const leadingMention =
+      mentionMatch &&
+      commandPattern.test(currentText.slice(mentionMatch[0].length))
+        ? mentionMatch
+        : null;
     // The same Slack message can arrive as a reply and a mention. On a cold
     // gateway, the signed envelope identifies the installed bot before admission.
     let botUserId =
@@ -1021,9 +1029,7 @@ export function createGateway({
       leadingMention && leadingMention[1] === botUserId ? leadingMention : null;
     const command =
       !mention || botMention
-        ? currentText
-            .slice(botMention?.[0].length ?? 0)
-            .match(/^(remember for this channel:|use shared notes:)([\s\S]*)$/i)
+        ? currentText.slice(botMention?.[0].length ?? 0).match(commandPattern)
         : null;
     const memory = command
       ? command[1]!.toLowerCase() === 'remember for this channel:'
