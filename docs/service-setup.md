@@ -164,13 +164,16 @@ chmod 600 "$SETUP_ENV"
 Sandboxes use the same region with no failover regions.
 
 Run setup from the repository root. Node lets variables already exported in the
-shell override `--env-file`, so the first line clears any that the file also
-sets, such as a `REDIS_URL` from another project.
+shell override `--env-file`, so each command that reads an env file runs in a
+subshell that first clears the names the file sets, such as a `REDIS_URL` from
+another project. Your shell keeps its own values.
 
 ```sh
-unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$SETUP_ENV")
-node --env-file="$SETUP_ENV" \
-  apps/gateway/scripts/bootstrap-worker.mjs setup "$WORKER_RECORD"
+(
+  unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$SETUP_ENV")
+  node --env-file="$SETUP_ENV" \
+    apps/gateway/scripts/bootstrap-worker.mjs setup "$WORKER_RECORD"
+)
 chmod 600 "$WORKER_RECORD"
 ```
 
@@ -308,6 +311,8 @@ second run IDs for this thread in shell variables named `FIRST_RUN_ID` and
 `SECOND_RUN_ID`. Use the existing Redis store to check the two exact runs.
 
 ```sh
+(
+unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$SETUP_ENV")
 node --env-file="$SETUP_ENV" --input-type=module - \
   "$FIRST_RUN_ID" "$SECOND_RUN_ID" <<'JS'
 import assert from 'node:assert/strict';
@@ -338,6 +343,7 @@ try {
   if (client.isOpen) client.destroy();
 }
 JS
+)
 ```
 
 The earlier Sandbox session must remain stopped. The new session uses the same
@@ -410,9 +416,11 @@ only the same `VERCEL_PROJECT_ID` used for setup. Then run cleanup:
 
 ```sh
 chmod 600 "$CLEANUP_ENV"
-unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$CLEANUP_ENV")
-node --env-file="$CLEANUP_ENV" \
-  apps/gateway/scripts/bootstrap-worker.mjs cleanup "$WORKER_RECORD"
+(
+  unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$CLEANUP_ENV")
+  node --env-file="$CLEANUP_ENV" \
+    apps/gateway/scripts/bootstrap-worker.mjs cleanup "$WORKER_RECORD"
+)
 ```
 
 Cleanup verifies removal of the recorded worker Sandbox, seed Sandbox, startup
