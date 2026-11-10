@@ -13,6 +13,9 @@ node --env-file="$SETUP_ENV" apps/gateway/scripts/bootstrap-worker.mjs setup "$W
 node --env-file="$SETUP_ENV" apps/gateway/scripts/bootstrap-worker.mjs cleanup "$WORKER_RECORD"
 ```
 
+Before a later cleanup, refresh the short-lived `VERCEL_OIDC_TOKEN` in
+`SETUP_ENV` as the quickstart describes.
+
 The setup command installs these exact packages into the startup snapshot:
 
 - `acpx@0.21.1`

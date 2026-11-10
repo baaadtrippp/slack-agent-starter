@@ -10,7 +10,9 @@ one workspace and public channel, one named nonpersistent Sandbox, and one 1 GiB
 Drive. Start with new isolated resources so setup, validation, and teardown
 cannot affect another application.
 
-The quickstart assumes a POSIX shell. Keep all private files outside the clone.
+The quickstart assumes a POSIX shell on x86_64 Linux or WSL, with Docker for the
+test Redis. On macOS, replace the two toolchain script lines below with the
+[macOS steps](toolchain.md#macos). Keep all private files outside the clone.
 Commands that use `$SETUP_ENV` and `$WORKER_RECORD` expect absolute paths.
 
 ## 1. Prepare a clean checkout
@@ -25,15 +27,21 @@ git rev-parse HEAD
 ./scripts/bootstrap-toolchain.sh
 source scripts/use-toolchain.sh
 pnpm install --frozen-lockfile
+docker run --rm --detach \
+  --name slack-agent-starter-test-redis \
+  --publish 127.0.0.1:16379:6379 \
+  redis@sha256:4eec4565e45aa0b3966554c866bc73211e281b0b3d89fe9a33c982e6faca809d \
+  redis-server --save "" --appendonly no
 TEST_REDIS_URL=redis://127.0.0.1:16379 pnpm check
+docker stop slack-agent-starter-test-redis
 pnpm scan:secrets
 test -z "$(git status --porcelain)"
 ```
 
-`pnpm check` needs the disposable loopback Redis described in
-[toolchain.md](toolchain.md). A clean status matters because the bootstrap binds
-its startup snapshot to the committed revision and refuses tracked local
-changes.
+`pnpm check` uses the disposable loopback Redis described in
+[toolchain.md](toolchain.md). If it exits early, run the same `docker stop`
+command. A clean status matters because the bootstrap binds its startup snapshot
+to the committed revision and refuses tracked local changes.
 
 ## 2. Create the service resources
 
