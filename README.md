@@ -1,29 +1,38 @@
 # Slack agent starter
 
-A TypeScript monorepo for a Slack gateway and a separate agent worker. The
-canonical product and architecture requirements are in the
-[v1 specification](docs/spec/v1.md).
+A deployable TypeScript Slack agent with a Vercel gateway and a separate Pi
+worker in Vercel Sandbox. Slack threads map to exact native Pi sessions on one
+persistent Vercel Drive. Upstash Redis stores routing and coordination state,
+and OpenRouter supplies the selected model.
 
-## Current implementation
+The supported v1 installation is the [v1 quickstart](docs/service-setup.md). It
+creates a clean worker snapshot, one named nonpersistent Sandbox, and one
+writable Drive using only files in this repository and adopter-supplied service
+accounts.
 
-Milestone 1 implements a signed Slack mention through Chat SDK and Upstash Redis
-to a temporary, separate fake-worker deployment. A run-authenticated callback
-returns a canned answer to its originating thread. O01 permits any internal
-member of the selected public test channel; private channels and DMs remain
-disabled.
+## V1 behavior
 
-The fake worker is test scaffolding. Pi, OpenRouter, Vercel Sandbox, and Drive
-are not connected. The v1 target architecture keeps Slack access and run
-coordination in the gateway, with a separate Pi worker process and one
-persistent Drive.
+- Mentions in one configured public channel start work.
+- Ordinary replies continue the same saved Pi session.
+- Status, Stop, Slack files, public text URLs, generated files, thumbs feedback,
+  and explicit channel notes use the same gateway and worker path.
+- A stopped Sandbox is replaced from the clean startup snapshot while the Drive
+  keeps sessions, work, results, and shared notes.
+- The worker can reach only the gateway origin and OpenRouter. The Sandbox
+  egress policy is configured to inject the model key without storing it in the
+  worker.
+
+The fake Vercel worker under `apps/worker/api/fake.ts` remains deterministic
+test scaffolding for the earliest milestone. It is not an installation path and
+does not prove Pi, Sandbox, Drive, or OpenRouter behavior.
 
 ## Documentation
 
+- [V1 quickstart](docs/service-setup.md)
 - [V1 requirements and architecture](docs/spec/v1.md)
-- [Milestone 1 slice](docs/spec/milestone-1.md)
 - [Requirements traceability](docs/spec/traceability.md)
+- [Worker implementation](apps/worker/README.md)
 - [Toolchain and full local checks](docs/toolchain.md)
-- [Service setup](docs/service-setup.md)
 - [Developer instructions](AGENTS.md)
 - [Contributing](CONTRIBUTING.md)
 
@@ -31,14 +40,15 @@ persistent Drive.
 
 Install the pinned toolchain and dependencies as described in
 [docs/toolchain.md](docs/toolchain.md). For full checks, run the disposable
-loopback Redis service there, then:
+loopback Redis service there, then run:
 
 ```text
 TEST_REDIS_URL=redis://127.0.0.1:16379 pnpm check
 pnpm scan:secrets
 ```
 
-Keep credentials, provider authentication, sessions, memory, real attachments,
-and runtime outputs out of Git. The committed fixtures are synthetic.
+Keep credentials, provider authentication, worker records, native sessions,
+memory, real attachments, and runtime outputs out of Git. Committed fixtures are
+synthetic.
 
 Licensed under the [MIT License](LICENSE).
