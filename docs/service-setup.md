@@ -68,7 +68,6 @@ name and account scope.
 ```sh
 PROJECT=your-new-gateway-project
 SCOPE=your-vercel-account-or-team
-GATEWAY_ORIGIN="https://$PROJECT.vercel.app"
 pnpm exec vercel project create "$PROJECT" --scope "$SCOPE"
 pnpm exec vercel project update "$PROJECT" --scope "$SCOPE" \
   --framework other \
@@ -80,9 +79,14 @@ pnpm exec vercel project inspect "$PROJECT" --scope "$SCOPE" --json
 ```
 
 Verify the readback before continuing. Copy the expected Project ID from the
-Vercel project settings. Reserve the project's stable HTTPS production origin,
-such as `https://your-new-gateway-project.vercel.app`. This bare origin becomes
-`GATEWAY_ORIGIN` and must keep pointing to this gateway.
+Vercel project settings. Then copy the production domain that Vercel assigned
+under the project's Domains settings. It is often `$PROJECT.vercel.app`, but
+Vercel adds a suffix when that name is taken. Set the bare HTTPS origin, which
+must keep pointing to this gateway:
+
+```sh
+GATEWAY_ORIGIN=https://your-assigned-production-domain
+```
 
 ### Upstash Redis
 
