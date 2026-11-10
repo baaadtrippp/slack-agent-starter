@@ -30,6 +30,7 @@ import { RedisRunStore } from '../apps/gateway/src/store.js';
 import type { RunRecord, SandboxTarget } from '../apps/gateway/src/store.js';
 import { createFakeWorker } from '../apps/worker/src/fake-worker.js';
 import {
+  SHARED_NOTE_SAVED,
   WORKER_FAILURE_REPLY,
   workerJobSchema,
 } from '../packages/contracts/src/index.js';
@@ -60,6 +61,7 @@ function envelope() {
     team_id: 'TTEST1',
     event_id: `Ev${randomUUID()}`,
     is_ext_shared_channel: false,
+    authorizations: [{ team_id: 'TTEST1', user_id: 'UBOT1', is_bot: true }],
     event: {
       type: 'app_mention',
       user: 'UTEST1',
@@ -118,8 +120,10 @@ function harness(
   progressUi = false,
   controls?: {
     inspectWorker: (run: RunRecord, stop: boolean) => Promise<WorkerInspection>;
+    releaseRecoveredWorker?: (run: RunRecord) => Promise<void>;
     operatorIds?: string[];
   },
+  storeNamespace = `${namespace}:${randomUUID()}`,
 ) {
   const clock = { now: initialTime };
   const tasks: Array<() => Promise<void>> = [];
@@ -131,7 +135,6 @@ function harness(
       ) => Promise<void | 'worker-unavailable'>
     >()
     .mockResolvedValue();
-  const storeNamespace = `${namespace}:${randomUUID()}`;
   const store = new RedisRunStore(redis.getClient(), storeNamespace);
   if (!progressUi)
     vi.spyOn(store, 'claimStatusCreation').mockResolvedValue(false);
@@ -154,7 +157,14 @@ function harness(
     dispatch,
     ...(isSandboxStopped ? { isSandboxStopped } : {}),
     ...(collectArtifact ? { collectArtifact } : {}),
-    ...(controls ? { inspectWorker: controls.inspectWorker } : {}),
+    ...(controls
+      ? {
+          inspectWorker: controls.inspectWorker,
+          ...(controls.releaseRecoveredWorker
+            ? { releaseRecoveredWorker: controls.releaseRecoveredWorker }
+            : {}),
+        }
+      : {}),
     schedule: (task) => tasks.push(task),
     now: () => clock.now,
   });
@@ -171,6 +181,7 @@ function harness(
   }
   return {
     ...gateway,
+    storeNamespace,
     store,
     admit,
     dispatch,
@@ -358,12 +369,373 @@ describe.skipIf(!redisUrl)(
       await redis.disconnect();
     });
 
+    it('admits an explicit shared note from an ordinary member only once', async () => {
+      mockControlAccess();
+      vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
+        'UBOT1',
+      );
+      const gateway = harness();
+      const event = envelope();
+      event.event.text =
+        '<@UBOT1> remember for this channel: The badge is purple.';
+      await gateway.events(signed(event));
+      await gateway.events(signed(event));
+      await gateway.events(signed({ ...event, event_id: 'EvAnotherDelivery' }));
+      await gateway.flush();
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+      expect(gateway.dispatch.mock.calls[0]?.[0]).toMatchObject({
+        memory: 'save',
+        input: {
+          text: 'The badge is purple.',
+          workspaceId: 'TTEST1',
+          channelId: 'CTEST1',
+        },
+      });
+    });
+
+    it.each(['remember for this channel:', 'use shared notes:'])(
+      'initializes a cold bot identity before classifying %s with human authorization',
+      async (command) => {
+        mockControlAccess();
+        let initialized = false;
+        vi.mocked(SlackAdapter.prototype.initialize).mockImplementationOnce(
+          async () => {
+            initialized = true;
+          },
+        );
+        const botUserId = vi
+          .spyOn(SlackAdapter.prototype, 'botUserId', 'get')
+          .mockImplementation(() => (initialized ? 'UBOT1' : undefined));
+        const gateway = harness();
+        const event = {
+          ...envelope(),
+          authorizations: [
+            { team_id: 'TTEST1', user_id: 'UTEST1', is_bot: false },
+          ],
+        };
+        event.event.text = `<@UBOT1> ${command} Synthetic text`;
+        expect((await gateway.events(signed(event))).status).toBe(200);
+        await gateway.flush();
+        expect(SlackAdapter.prototype.initialize).toHaveBeenCalledOnce();
+        expect(gateway.dispatch).toHaveBeenCalledOnce();
+        expect(gateway.dispatch.mock.calls[0]?.[0]).toMatchObject({
+          memory: command.startsWith('remember') ? 'save' : 'read',
+          input: { text: 'Synthetic text' },
+        });
+        botUserId.mockRestore();
+      },
+    );
+
+    it('admits an ordinary mention on a cold gateway without resolving the bot identity first', async () => {
+      const botUserId = vi
+        .spyOn(SlackAdapter.prototype, 'botUserId', 'get')
+        .mockReturnValue(undefined);
+      const gateway = harness();
+      const event = {
+        ...envelope(),
+        authorizations: [
+          { team_id: 'TTEST1', user_id: 'UTEST1', is_bot: false },
+        ],
+      };
+      expect((await gateway.events(signed(event))).status).toBe(200);
+      expect(SlackAdapter.prototype.initialize).not.toHaveBeenCalled();
+      botUserId.mockRestore();
+    });
+
+    it('binds shared notes to the admitted scope and publishes a save only after the worker result', async () => {
+      mockControlAccess();
+      vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
+        'UBOT1',
+      );
+      const gateway = harness(createMockState(), true);
+      const event = envelope();
+      event.event.text =
+        '<@UBOT1> remember for this channel: The badge is purple.';
+      await gateway.events(signed(event));
+      await gateway.flush();
+      const save = workerJobSchema.parse(gateway.dispatch.mock.calls[0]![0]);
+      expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
+
+      function admission(channelId: string) {
+        const url = new URL(save.callbackUrl);
+        for (const [key, value] of Object.entries({
+          runId: save.runId,
+          generation: '1',
+          memory: 'save',
+          workspaceId: save.input.workspaceId,
+          channelId,
+          messageTs: save.input.messageTs,
+        }))
+          url.searchParams.set(key, value);
+        return new Request(url, {
+          headers: { authorization: 'Bearer ' + save.callbackToken },
+        });
+      }
+      expect((await gateway.callback(admission('CTEST2'))).status).toBe(409);
+      expect((await gateway.callback(admission('CTEST1'))).status).toBe(204);
+      const fake = result(save);
+      expect(
+        (await gateway.callback(callback(fake, save.callbackToken))).status,
+      ).toBe(409);
+      const saved = { ...fake, text: SHARED_NOTE_SAVED };
+      expect(
+        (await gateway.callback(callback(saved, save.callbackToken))).status,
+      ).toBe(202);
+      expect(
+        (await gateway.callback(callback(saved, save.callbackToken))).status,
+      ).toBe(204);
+      await gateway.flush();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
+      expect(await gateway.owner(event.event.ts)).toBeNull();
+
+      const reader = envelope();
+      reader.event.user = 'UOTHER1';
+      reader.event.text = '<@UBOT1> use shared notes: What color is the badge?';
+      await gateway.events(signed(reader));
+      await gateway.flush();
+      const read = workerJobSchema.parse(gateway.dispatch.mock.calls[1]![0]);
+      expect(read).toMatchObject({
+        memory: 'read',
+        input: {
+          text: 'What color is the badge?',
+          senderId: 'UOTHER1',
+          threadTs: reader.event.ts,
+        },
+      });
+      expect(read.session).toBeUndefined();
+      expect(read.input.threadContext).toBeUndefined();
+      expect(read.conversationId).not.toBe(save.conversationId);
+    });
+
+    it.each(['remember for this channel:', 'use shared notes:'])(
+      'refuses %s in a disabled channel or from an external or nonmember actor',
+      async (command) => {
+        mockControlAccess();
+        vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
+          'UBOT1',
+        );
+        const gateway = harness();
+        for (const { user, channel } of [
+          { user: 'UTEST1', channel: 'CTEST2' },
+          { user: 'UEXTERNAL', channel: 'CTEST1' },
+          { user: 'UNONMEMBER', channel: 'CTEST1' },
+        ]) {
+          const event = envelope();
+          Object.assign(event.event, {
+            user,
+            channel,
+            text: '<@UBOT1> ' + command + ' Synthetic text',
+          });
+          await gateway.events(signed(event));
+          await gateway.flush();
+        }
+        expect(gateway.dispatch).not.toHaveBeenCalled();
+      },
+    );
+
+    it('reports an unavailable membership check instead of refusing a shared note', async () => {
+      mockControlAccess();
+      const access = historyFetch.getMockImplementation()!;
+      historyFetch.mockImplementation(async (url, options) => {
+        if (String(url).endsWith('/conversations.members'))
+          throw new Error('Synthetic Slack outage');
+        return access(url, options);
+      });
+      vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
+        'UBOT1',
+      );
+      const gateway = harness();
+      const event = envelope();
+      event.event.text = '<@UBOT1> remember for this channel: Synthetic text';
+      expect((await gateway.events(signed(event))).status).toBe(200);
+      await gateway.flush();
+      expect(gateway.dispatch).not.toHaveBeenCalled();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledWith(
+        `slack:CTEST1:${event.event.ts}`,
+        'I could not open this channel’s shared notes. Please try again later.',
+      );
+    });
+
+    it.each([false, true])(
+      'saves only current text from an ordinary file-share reply (file exchange: %s)',
+      async (fileExchange) => {
+        const gateway = harness(createMockState(), true, undefined, {
+          fileExchange,
+          publicUrlInput: true,
+        });
+        const root = envelope();
+        await gateway.events(signed(root));
+        await gateway.flush();
+        const initial = gateway.dispatch.mock.calls[0]![0];
+        const session = {
+          seedRunId: initial.runId,
+          nativeId: randomUUID(),
+          adapterId: randomUUID(),
+          revision: 1,
+        };
+        expect(
+          (
+            await gateway.callback(
+              callback({ ...result(initial), session }, initial.callbackToken),
+            )
+          ).status,
+        ).toBe(202);
+        await gateway.flush();
+
+        mockControlAccess();
+        const reply = threadReply(root.event.ts);
+        const note = 'The badge is documented at https://example.test/fixture.';
+        await gateway.events(
+          signed({
+            ...reply,
+            event: {
+              ...reply.event,
+              text: 'remember for this channel: ' + note,
+              subtype: 'file_share',
+              files: [
+                {
+                  id: 'FTEST1',
+                  name: 'attachment.txt',
+                  mimetype: 'text/plain',
+                },
+              ],
+              ts: '1800000002.000002',
+            },
+          }),
+        );
+        await gateway.flush();
+        const [save, staged] = gateway.dispatch.mock.calls[1]!;
+        expect(save).toMatchObject({
+          memory: 'save',
+          session,
+          input: { text: note },
+        });
+        expect(save.input.attachments).toBeUndefined();
+        expect(save.input.sources).toBeUndefined();
+        expect(save.input.threadContext).toBeUndefined();
+        expect(staged).toBeUndefined();
+        expect(save.artifactOutput).toBeUndefined();
+        expect(
+          workerJobSchema.safeParse({
+            ...save,
+            input: { ...save.input, text: ' ' + note },
+          }).success,
+        ).toBe(false);
+      },
+    );
+
+    it.each([
+      ['save', true, 'remember for this channel:'],
+      ['save', false, 'remember for this channel:'],
+      ['read', true, 'use shared notes:'],
+      ['read', false, 'use shared notes:'],
+      [undefined, true, 'remember for this channel:'],
+      [undefined, false, 'remember for this channel:'],
+    ])(
+      'deduplicates %s across Slack deliveries (reply first: %s)',
+      async (memory, replyFirst, prefix) => {
+        const gateway = harness(createMockState(), true);
+        const root = envelope();
+        await gateway.events(signed(root));
+        await gateway.flush();
+        const first = gateway.dispatch.mock.calls[0]![0];
+        const session = {
+          seedRunId: first.runId,
+          nativeId: randomUUID(),
+          adapterId: randomUUID(),
+          revision: 1,
+        };
+        await gateway.callback(
+          callback({ ...result(first), session }, first.callbackToken),
+        );
+        await gateway.flush();
+
+        mockControlAccess();
+        // Slack's signed installation context is available before the
+        // gateway has initialized the bot's identity.
+        vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get')
+          .mockReturnValueOnce(undefined)
+          .mockReturnValue('UBOT1');
+        const reply = {
+          ...threadReply(root.event.ts),
+          authorizations: [
+            { team_id: 'TTEST1', user_id: 'UBOT1', is_bot: true },
+          ],
+        };
+        const requestText = memory
+          ? 'The synthetic badge is purple.'
+          : 'Discuss this with <@UBOT1>.';
+        reply.event.ts = '1800000002.000002';
+        reply.event.text =
+          '<@' +
+          (memory ? 'UBOT1' : 'UOTHER1') +
+          '> ' +
+          prefix +
+          ' ' +
+          requestText;
+        const mention = {
+          ...reply,
+          event_id: 'Ev' + randomUUID(),
+          event: { ...reply.event, type: 'app_mention' },
+        };
+        for (const delivery of replyFirst
+          ? [reply, mention]
+          : [mention, reply]) {
+          await gateway.events(signed(delivery));
+          await gateway.flush();
+        }
+        expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+        const command = gateway.dispatch.mock.calls[1]![0];
+        expect(command.memory).toBe(memory);
+        expect(command.input.text).toBe(
+          memory ? requestText : reply.event.text,
+        );
+      },
+    );
+
+    it('keeps earlier instructions and busy replies out of shared-note admission', async () => {
+      vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
+        'UBOT1',
+      );
+      const gateway = harness(createMockState(), true);
+      const root = envelope();
+      const event = envelope();
+      event.event.text = '<@UBOT1> Could you remember the earlier note?';
+      historyFetch.mockResolvedValue(
+        Response.json({
+          ok: true,
+          messages: [
+            historyMessage(
+              root.event.ts,
+              'remember for this channel: History text',
+            ),
+          ],
+        }),
+      );
+      await gateway.events(
+        signed({
+          ...event,
+          event: { ...event.event, thread_ts: root.event.ts },
+        }),
+      );
+      await gateway.flush();
+      expect(gateway.dispatch.mock.calls[0]?.[0].memory).toBeUndefined();
+      const busy = threadReply(root.event.ts);
+      busy.event.text = 'remember for this channel: Busy note';
+      await gateway.events(signed(busy));
+      await gateway.flush();
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+    });
+
     async function startControlled(
       inspectWorker: (
         run: RunRecord,
         stop: boolean,
       ) => Promise<WorkerInspection>,
       operatorIds: string[] = [],
+      releaseRecoveredWorker?: (run: RunRecord) => Promise<void>,
+      inputConfig: Parameters<typeof harness>[3] = {},
+      collectArtifact?: Parameters<typeof harness>[4],
     ) {
       mockControlAccess();
       vi.mocked(SlackAdapter.prototype.postMessage)
@@ -381,10 +753,14 @@ describe.skipIf(!redisUrl)(
         createMockState(),
         false,
         undefined,
-        {},
-        undefined,
+        inputConfig,
+        collectArtifact,
         true,
-        { inspectWorker, operatorIds },
+        {
+          inspectWorker,
+          operatorIds,
+          ...(releaseRecoveredWorker ? { releaseRecoveredWorker } : {}),
+        },
       );
       const target = { sandboxName: 'test-sandbox', sessionId: 'test-session' };
       gateway.dispatch.mockImplementationOnce(async (job) => {
@@ -593,6 +969,166 @@ describe.skipIf(!redisUrl)(
             }),
           ],
         }),
+      );
+    });
+
+    it('keeps a saved artifact retryable when its collection target turns stale', async () => {
+      const csv = Buffer.from('label,value\nsynthetic,1\n');
+      const inspect = vi.fn();
+      const { gateway, run, job } = await startControlled(
+        inspect,
+        [],
+        undefined,
+        { csvOutput: true },
+        vi.fn(),
+      );
+      const output = {
+        ...result(job),
+        artifact: { sha256: createHash('sha256').update(csv).digest('hex') },
+        session: {
+          seedRunId: job.runId,
+          nativeId: randomUUID(),
+          adapterId: randomUUID(),
+          revision: 1,
+        },
+      };
+      inspect.mockResolvedValue({
+        state: 'exited',
+        result: output,
+        artifactTarget: run.execution,
+      });
+      const claimSavedResult = vi
+        .spyOn(gateway.store, 'claimSavedResult')
+        .mockResolvedValueOnce('retry');
+      gateway.clock.now = run.deadline + 1_000;
+      expect(
+        (
+          await gateway.interactions(
+            interaction(run, STATUS_ACTION_ID, {
+              user: 'UOTHER1',
+              actionTs: '1800000061.500000',
+              sentAt: gateway.clock.now,
+            }),
+          )
+        ).status,
+      ).toBe(200);
+      await gateway.flush();
+      expect(claimSavedResult).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ runId: run.runId }),
+        output,
+        run.execution,
+      );
+      expect(await gateway.store.getRun(run.runId)).toMatchObject({
+        state: 'accepted',
+      });
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledOnce();
+    });
+
+    it('records exact exit proof and releases an expired run with no saved result', async () => {
+      const inspect = vi.fn().mockResolvedValue({ state: 'exited' as const });
+      const releaseRecoveredWorker = vi.fn(async () => {});
+      const { gateway, run } = await startControlled(
+        inspect,
+        [],
+        releaseRecoveredWorker,
+      );
+      gateway.clock.now = run.deadline + 1_000;
+      expect(
+        (
+          await gateway.interactions(
+            interaction(run, STATUS_ACTION_ID, {
+              user: 'UOTHER1',
+              actionTs: '1800000062.000000',
+              sentAt: gateway.clock.now,
+            }),
+          )
+        ).status,
+      ).toBe(200);
+      await gateway.flush();
+      expect(await gateway.store.getRun(run.runId)).toMatchObject({
+        state: 'interrupted',
+        exitConfirmed: true,
+      });
+      expect(releaseRecoveredWorker).toHaveBeenCalledOnce();
+    });
+
+    it('releases terminal recovery after a callback wins an in-flight Status inspection', async () => {
+      const entered = Promise.withResolvers<void>();
+      const proof = Promise.withResolvers<WorkerInspection>();
+      const inspect = vi.fn(async () => {
+        entered.resolve();
+        return proof.promise;
+      });
+      const releaseRecoveredWorker = vi.fn(async () => {});
+      const { gateway, run, job } = await startControlled(
+        inspect,
+        [],
+        releaseRecoveredWorker,
+      );
+      expect(
+        (await gateway.interactions(interaction(run, STATUS_ACTION_ID))).status,
+      ).toBe(200);
+      const statusTask = gateway.tasks.shift()!;
+      const status = statusTask();
+      await entered.promise;
+
+      const terminal = result(job);
+      expect(
+        (await gateway.callback(callback(terminal, job.callbackToken))).status,
+      ).toBe(202);
+      await gateway.flush();
+      expect(releaseRecoveredWorker).toHaveBeenCalledOnce();
+
+      proof.resolve({ state: 'exited', result: terminal });
+      await status;
+      expect(releaseRecoveredWorker).toHaveBeenCalledTimes(2);
+      expect(await gateway.store.getRun(run.runId)).toMatchObject({
+        state: 'completed',
+        messageId: answerTs,
+        exitConfirmed: true,
+      });
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(2);
+      expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
+        expect.any(String),
+        statusTs,
+        expect.objectContaining({
+          children: [
+            expect.objectContaining({
+              content: 'Completed. The result is in this thread.',
+            }),
+          ],
+        }),
+      );
+    });
+
+    it('reports an ended run when the worker release fails during busy recovery', async () => {
+      const releaseRecoveredWorker = vi.fn(async () => {});
+      const { gateway, run, job } = await startControlled(
+        vi.fn(),
+        [],
+        releaseRecoveredWorker,
+      );
+      const mention = envelope();
+      const reply = {
+        ...mention,
+        event: { ...mention.event, thread_ts: run.threadTs },
+      };
+      expect(
+        (await gateway.events(signed(reply, gateway.clock.now))).status,
+      ).toBe(200);
+      const busy = gateway.tasks.splice(0);
+      expect(
+        (await gateway.callback(callback(result(job), job.callbackToken)))
+          .status,
+      ).toBe(202);
+      await gateway.flush();
+      gateway.clock.now = run.deadline + 1_000;
+      releaseRecoveredWorker.mockRejectedValueOnce(new Error('unavailable'));
+      for (const task of busy) await task();
+      await gateway.flush();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
+        expect.any(String),
+        'The previous run ended. This message was not submitted. Please resend it.',
       );
     });
 
@@ -1472,6 +2008,197 @@ describe.skipIf(!redisUrl)(
       });
     });
 
+    it('recovers the artifact and releases the replacement when a lost worker callback arrives late', async () => {
+      const csv = Buffer.from('label,value\nsynthetic,1\n');
+      const collectArtifact = vi.fn(
+        async (_runId: string, target: SandboxTarget) => {
+          if (target.sessionId !== replacement.sessionId)
+            throw new Error('The original worker is unavailable');
+          return csv;
+        },
+      );
+      let failRelease = true;
+      const releaseRecoveredWorker = vi.fn(async (run: RunRecord) => {
+        if (failRelease) {
+          failRelease = false;
+          throw new Error('Synthetic recovery release outage');
+        }
+        await gateway.store.releaseRecoveryTarget(run);
+      });
+      const gateway = harness(
+        createMockState(),
+        false,
+        undefined,
+        { csvOutput: true },
+        collectArtifact,
+        false,
+        {
+          inspectWorker: async () => ({ state: 'unknown' }),
+          releaseRecoveredWorker,
+        },
+      );
+      const body = envelope();
+      await gateway.events(signed(body));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      const lost = {
+        sandboxName: 'synthetic-late-worker',
+        sessionId: randomUUID(),
+      };
+      const replacement = {
+        sandboxName: lost.sandboxName,
+        sessionId: randomUUID(),
+      };
+      await Promise.all([
+        gateway.store.enrollIdleSession(lost),
+        gateway.store.enrollIdleSession(replacement),
+      ]);
+      expect(await gateway.store.recordDispatchTarget(job, lost)).toBe(
+        'recorded',
+      );
+      expect(await gateway.store.fenceLostTarget(lost)).toBe(true);
+      expect(await gateway.store.bindRecoveryTarget(lost, replacement)).toBe(
+        true,
+      );
+      const output = {
+        ...result(job),
+        artifact: { sha256: createHash('sha256').update(csv).digest('hex') },
+        session: {
+          seedRunId: job.runId,
+          nativeId: randomUUID(),
+          adapterId: randomUUID(),
+          revision: 1,
+        },
+      };
+
+      expect(
+        (await gateway.callback(callback(output, job.callbackToken))).status,
+      ).toBe(202);
+      await gateway.flush();
+      expect(collectArtifact).toHaveBeenCalledExactlyOnceWith(
+        job.runId,
+        replacement,
+        undefined,
+      );
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenNthCalledWith(
+        2,
+        'slack:CTEST1:' + body.event.ts,
+        {
+          markdown: '',
+          files: [{ data: csv, filename: 'result.csv', mimeType: 'text/csv' }],
+        },
+      );
+      expect(releaseRecoveredWorker).toHaveBeenCalledOnce();
+      expect(await gateway.store.getRun(job.runId)).toMatchObject({
+        state: 'completed',
+        execution: lost,
+        recovery: replacement,
+      });
+      expect(await gateway.store.claimIdleStop(replacement, randomUUID())).toBe(
+        'active',
+      );
+
+      expect(
+        (await gateway.callback(callback(output, job.callbackToken))).status,
+      ).toBe(204);
+      await gateway.flush();
+      expect(releaseRecoveredWorker).toHaveBeenCalledTimes(2);
+      expect(await gateway.store.claimIdleStop(replacement, randomUUID())).toBe(
+        'claimed',
+      );
+    });
+
+    it('retries artifact collection when recovery binds after the final lookup', async () => {
+      const csv = Buffer.from('label,value\nsynthetic,1\n');
+      const lost = {
+        sandboxName: 'synthetic-racing-worker',
+        sessionId: randomUUID(),
+      };
+      const replacement = {
+        sandboxName: lost.sandboxName,
+        sessionId: randomUUID(),
+      };
+      const collectArtifact = vi.fn(
+        async (_runId: string, target: SandboxTarget) => {
+          if (target.sessionId !== replacement.sessionId)
+            throw new Error('The original worker is unavailable');
+          return csv;
+        },
+      );
+      const gateway = harness(
+        createMockState(),
+        false,
+        undefined,
+        { csvOutput: true },
+        collectArtifact,
+      );
+      const body = envelope();
+      await gateway.events(signed(body));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      await Promise.all([
+        gateway.store.enrollIdleSession(lost),
+        gateway.store.enrollIdleSession(replacement),
+      ]);
+      expect(await gateway.store.recordDispatchTarget(job, lost)).toBe(
+        'recorded',
+      );
+      const claimPublication = gateway.store.claimPublication.bind(
+        gateway.store,
+      );
+      vi.spyOn(gateway.store, 'claimPublication').mockImplementationOnce(
+        async (...args) => {
+          expect(await gateway.store.fenceLostTarget(lost)).toBe(true);
+          expect(
+            await gateway.store.bindRecoveryTarget(lost, replacement),
+          ).toBe(true);
+          return claimPublication(...args);
+        },
+      );
+      const output = {
+        ...result(job),
+        artifact: { sha256: createHash('sha256').update(csv).digest('hex') },
+        session: {
+          seedRunId: job.runId,
+          nativeId: randomUUID(),
+          adapterId: randomUUID(),
+          revision: 1,
+        },
+      };
+
+      expect(
+        (await gateway.callback(callback(output, job.callbackToken))).status,
+      ).toBe(503);
+      expect(collectArtifact).toHaveBeenCalledExactlyOnceWith(
+        job.runId,
+        lost,
+        undefined,
+      );
+      expect(await gateway.store.getRun(job.runId)).toMatchObject({
+        state: 'accepted',
+        execution: lost,
+        recovery: replacement,
+      });
+
+      expect(
+        (await gateway.callback(callback(output, job.callbackToken))).status,
+      ).toBe(202);
+      await gateway.flush();
+      expect(collectArtifact).toHaveBeenLastCalledWith(
+        job.runId,
+        replacement,
+        undefined,
+      );
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenNthCalledWith(
+        2,
+        'slack:CTEST1:' + body.event.ts,
+        {
+          markdown: '',
+          files: [{ data: csv, filename: 'result.csv', mimeType: 'text/csv' }],
+        },
+      );
+    });
+
     it('shows finishing while the final answer is still publishing, then completes', async () => {
       const gateway = harness(
         createMockState(),
@@ -2114,22 +2841,35 @@ describe.skipIf(!redisUrl)(
     );
 
     it.each([
-      [undefined, WORKER_FAILURE_REPLY],
+      [undefined, undefined, WORKER_FAILURE_REPLY],
+      [
+        undefined,
+        'provider_quota',
+        'The model provider is out of quota or rate-limited. Try again after the provider limit clears.',
+      ],
+      [
+        undefined,
+        'drive_full',
+        'Workspace storage is full. Ask an operator to free space, then retry.',
+      ],
       [
         'pdf_unreadable',
+        undefined,
         'I could not extract readable text from this PDF. Mention me again with a small text-based PDF.',
       ],
       [
         'pdf_text_too_large',
+        undefined,
         'The PDF contains more than 16 KiB of text for this test. Mention me again with a shorter PDF.',
       ],
       [
         'retained_sources_unavailable',
+        undefined,
         'I could not reopen an earlier file or link in this thread. Start a new message in the channel, mention me there, and include the files and links you still need.',
       ],
     ] as const)(
-      'posts a safe failure once for %s',
-      async (inputError, notice) => {
+      'posts a safe failure once for %s / %s',
+      async (inputError, failureCategory, notice) => {
         const gateway = harness();
         const body = envelope();
         await gateway.events(signed(body));
@@ -2139,6 +2879,7 @@ describe.skipIf(!redisUrl)(
           ...result(job),
           type: 'failed',
           inputError,
+          failureCategory,
           text: 'private provider error',
         } as const;
         expect(
@@ -2161,8 +2902,8 @@ describe.skipIf(!redisUrl)(
       },
     );
 
-    it('activates only after a real session result and routes one ordinary turn with that exact reference', async () => {
-      const gateway = harness(createMockState(), true, undefined, {
+    it('activates only after a real session result and resumes that exact session after a gateway restart', async () => {
+      let gateway = harness(createMockState(), true, undefined, {
         publicUrlInput: true,
       });
       const mention = envelope();
@@ -2204,6 +2945,16 @@ describe.skipIf(!redisUrl)(
       await gateway.flush();
       expect(gateway.dispatch).toHaveBeenCalledTimes(1);
 
+      gateway = harness(
+        createMockState(),
+        true,
+        undefined,
+        { publicUrlInput: true },
+        undefined,
+        false,
+        undefined,
+        gateway.storeNamespace,
+      );
       const next = threadReply(mention.event.ts);
       next.event.text = 'Continue using the earlier answer.';
       const duplicate = {
@@ -2218,9 +2969,9 @@ describe.skipIf(!redisUrl)(
       await gateway.events(signed(next));
       await gateway.events(signed(duplicate));
       await gateway.flush();
-      expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
       expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
-      const followup = gateway.dispatch.mock.calls[1]![0];
+      const followup = gateway.dispatch.mock.calls[0]![0];
       expect(followup).toMatchObject({
         conversationId: seed.conversationId,
         session,
@@ -2285,17 +3036,17 @@ describe.skipIf(!redisUrl)(
         signed({ ...duplicate, event_id: `Ev${randomUUID()}` }),
       );
       await gateway.flush();
-      expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
       expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(2);
 
       const later = threadReply(mention.event.ts);
       await gateway.events(signed(later));
       await gateway.flush();
-      expect(gateway.dispatch.mock.calls[2]![0].session).toEqual(updated);
+      expect(gateway.dispatch.mock.calls[1]![0].session).toEqual(updated);
 
       await gateway.events(signed(envelope()));
       await gateway.flush();
-      expect(gateway.dispatch.mock.calls[3]![0].session).toBeUndefined();
+      expect(gateway.dispatch.mock.calls[2]![0].session).toBeUndefined();
     });
 
     it('rejects ineligible ordinary events and reports a busy thread while its first run is active', async () => {
@@ -2897,6 +3648,63 @@ describe.skipIf(!redisUrl)(
         `slack:CTEST1:${body.event.ts}`,
         BUSY_REPLY,
       );
+    });
+
+    it('recovers an interrupted save in an activated thread when controls are off', async () => {
+      const stopped = vi.fn().mockResolvedValue(true);
+      const gateway = harness(createMockState(), true, stopped);
+      const original = envelope();
+      await gateway.events(signed(original));
+      await gateway.flush();
+      const first = gateway.dispatch.mock.calls[0]![0];
+      const session = {
+        seedRunId: first.runId,
+        nativeId: randomUUID(),
+        adapterId: randomUUID(),
+        revision: 1,
+      };
+      await gateway.callback(
+        callback({ ...result(first), session }, first.callbackToken),
+      );
+      await gateway.flush();
+
+      mockControlAccess();
+      const target = {
+        sandboxName: 'synthetic-worker',
+        sessionId: 'synthetic-session',
+      };
+      gateway.dispatch.mockImplementationOnce(async (job) => {
+        expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+          'recorded',
+        );
+        throw new Error('Synthetic dispatch acknowledgement loss');
+      });
+      const save = threadReply(original.event.ts);
+      save.event.ts = '1800000002.000001';
+      save.event.text = 'remember for this channel: The badge is purple.';
+      await gateway.events(signed(save));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[1]![0];
+      expect(job).toMatchObject({ memory: 'save', session });
+
+      gateway.clock.now = job.deadline;
+      const recover = threadReply(original.event.ts);
+      recover.event.ts = '1800000002.000002';
+      await gateway.events(signed(recover, gateway.clock.now));
+      await gateway.flush();
+      expect(stopped).toHaveBeenCalledExactlyOnceWith(target);
+      expect(gateway.dispatch).toHaveBeenCalledTimes(2);
+      expect(await gateway.owner(original.event.ts)).toBeNull();
+      expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
+        'slack:CTEST1:' + original.event.ts,
+        expect.stringContaining('I could not confirm the shared note save.'),
+      );
+
+      const next = threadReply(original.event.ts);
+      next.event.ts = '1800000002.000003';
+      await gateway.events(signed(next, gateway.clock.now));
+      await gateway.flush();
+      expect(gateway.dispatch.mock.calls[2]?.[0].session).toEqual(session);
     });
 
     it('releases an expired first turn only after stop proof, without replaying either event', async () => {

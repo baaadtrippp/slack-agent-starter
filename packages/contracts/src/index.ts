@@ -14,6 +14,8 @@ export type WorkerSession = z.infer<typeof workerSessionSchema>;
 
 export const slackTimestamp = z.string().regex(/^\d{10}\.\d{6}$/);
 export const slackContextSender = z.string().regex(/^[UWB][A-Z0-9]{1,31}$/);
+const slackWorkspaceId = /^T[A-Z0-9]{1,31}$/;
+const slackChannelId = /^C[A-Z0-9]{1,31}$/;
 
 export const MAX_SLACK_ATTACHMENT_METADATA = 5;
 export const MAX_THREAD_CONTEXT_MESSAGES = 20;
@@ -32,6 +34,9 @@ export const slackAttachmentSchema = z
     size: z.int().nonnegative().optional(),
   })
   .strict();
+
+export const SHARED_NOTE_BYTE_LIMIT = 512;
+export const SHARED_NOTE_SAVED = 'Saved to this channel’s shared notes.';
 
 export const MAX_SLACK_INPUT_FILES = 5;
 export const MAX_RETAINED_INPUTS = 12;
@@ -143,6 +148,7 @@ export const workerJobSchema = z
       })
       .strict(),
     session: workerSessionSchema.optional(),
+    memory: z.enum(['save', 'read']).optional(),
     csvOutput: z.literal(true).optional(),
     artifactOutput: z.literal(true).optional(),
     deadline: z.number().int().positive(),
@@ -151,6 +157,24 @@ export const workerJobSchema = z
   })
   .strict()
   .refine(({ csvOutput, artifactOutput }) => !(csvOutput && artifactOutput))
+  .refine(
+    ({ input, memory }) =>
+      !memory ||
+      (slackWorkspaceId.test(input.workspaceId) &&
+        slackChannelId.test(input.channelId)),
+  )
+  .refine(
+    ({ input, memory, csvOutput, artifactOutput }) =>
+      memory !== 'save' ||
+      (!input.threadContext &&
+        !input.attachments &&
+        !input.sources &&
+        !csvOutput &&
+        !artifactOutput &&
+        input.text === input.text.trim() &&
+        Buffer.byteLength(input.text) <= SHARED_NOTE_BYTE_LIMIT &&
+        !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(input.text)),
+  )
   .refine(({ input, session }) => {
     const messages = input.threadContext?.messages;
     return (
@@ -181,8 +205,11 @@ export const workerResultSchema = z
         'pdf_text_too_large',
         'too_many_sources',
         'retained_sources_unavailable',
+        'shared_notes_full',
+        'shared_notes_unavailable',
       ])
       .optional(),
+    failureCategory: z.enum(['provider_quota', 'drive_full']).optional(),
     artifact: z
       .object({ sha256: checksum, format: z.enum(artifactFormats).optional() })
       .strict()
@@ -190,7 +217,14 @@ export const workerResultSchema = z
     session: workerSessionSchema.optional(),
     text: z.string().min(1).max(4_000),
   })
-  .strict();
+  .strict()
+  .refine(
+    ({ type, failureCategory }) => type === 'failed' || !failureCategory,
+    {
+      message: 'A completed worker result cannot include a failure category',
+      path: ['failureCategory'],
+    },
+  );
 
 export type WorkerResult = z.infer<typeof workerResultSchema>;
 

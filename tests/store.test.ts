@@ -355,6 +355,430 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     );
   });
 
+  it('fences one lost target and holds its replacement for every affected run', async () => {
+    const lost = makeTarget('lost-shared');
+    const replacement = makeTarget('lost-replacement');
+    const unrelated = makeTarget('unrelated');
+    const first = makeRun();
+    const second = makeRun();
+    const other = makeRun();
+    await Promise.all([
+      store.admit(first),
+      store.admit(second),
+      store.admit(other),
+    ]);
+    await Promise.all([
+      store.enrollIdleSession(lost),
+      store.enrollIdleSession(replacement),
+      store.enrollIdleSession(unrelated),
+    ]);
+    expect(await store.recordDispatchTarget(makeJob(first), lost)).toBe(
+      'recorded',
+    );
+    expect(await store.recordDispatchTarget(makeJob(second), lost)).toBe(
+      'recorded',
+    );
+    expect(await store.recordDispatchTarget(makeJob(other), unrelated)).toBe(
+      'recorded',
+    );
+
+    expect(await store.fenceLostTarget(lost)).toBe(true);
+    expect(await store.fenceLostTarget(lost)).toBe(true);
+    const refused = makeRun();
+    await store.admit(refused);
+    expect(await store.recordDispatchTarget(makeJob(refused), lost)).toBe(
+      'stopping',
+    );
+    expect(await store.bindRecoveryTarget(lost, replacement)).toBe(true);
+    expect(await store.bindRecoveryTarget(lost, replacement)).toBe(true);
+    expect(await store.getRun(first.runId)).toMatchObject({
+      execution: lost,
+      recovery: replacement,
+    });
+    expect(await store.getRun(second.runId)).toMatchObject({
+      execution: lost,
+      recovery: replacement,
+    });
+    expect(await store.getRun(other.runId)).toMatchObject({
+      execution: unrelated,
+    });
+    expect(await store.getRun(other.runId)).not.toHaveProperty('recovery');
+    expect(await store.claimIdleStop(replacement, randomUUID())).toBe('active');
+    expect(await store.claimIdleStop(unrelated, randomUUID())).toBe('active');
+
+    const recoveredFirst = (await store.getRun(first.runId))!;
+    const firstResult = makeResult(first);
+    expect(await store.claimSavedResult(recoveredFirst, firstResult)).toBe(
+      'claimed',
+    );
+    expect(await store.completePublication(first, nextTimestamp())).toBe(true);
+    expect(await store.releaseDispatchTarget(first.runId, lost)).toBe(true);
+    expect(await store.claimIdleStop(replacement, randomUUID())).toBe('active');
+
+    const recoveredSecond = (await store.getRun(second.runId))!;
+    expect(
+      await store.interruptRun(recoveredSecond, recoveredSecond.deadline),
+    ).toBe(true);
+    expect(await store.getRun(second.runId)).toMatchObject({
+      state: 'interrupted',
+      execution: lost,
+      recovery: replacement,
+    });
+    expect(await store.claimIdleStop(replacement, randomUUID())).toBe(
+      'claimed',
+    );
+    expect(await store.claimIdleStop(unrelated, randomUUID())).toBe('active');
+
+    expect(await store.releaseDispatchTarget(other.runId, unrelated)).toBe(
+      true,
+    );
+  });
+
+  it('atomically releases a current recovery binding after a delayed terminal callback', async () => {
+    const lost = makeTarget('delayed-terminal');
+    const replacement = makeTarget('delayed-terminal-replacement');
+    const run = makeRun();
+    await store.admit(run);
+    await Promise.all([
+      store.enrollIdleSession(lost),
+      store.enrollIdleSession(replacement),
+    ]);
+    expect(await store.recordDispatchTarget(makeJob(run), lost)).toBe(
+      'recorded',
+    );
+    expect(await store.fenceLostTarget(lost)).toBe(true);
+    expect(await store.bindRecoveryTarget(lost, replacement)).toBe(true);
+    const bound = (await store.getRun(run.runId))!;
+    expect(await store.releaseRecoveryTarget(bound)).toBeUndefined();
+    expect(await store.claimIdleStop(replacement, randomUUID())).toBe('active');
+
+    expect(
+      await store.claimPublication(run.runId, makeResult(run), Date.now()),
+    ).toBe('claimed');
+    expect(await store.completePublication(run, nextTimestamp())).toBe(true);
+    expect(
+      await store.releaseRecoveryTarget({ ...bound, eventId: randomUUID() }),
+    ).toBeUndefined();
+    expect(await store.claimIdleStop(replacement, randomUUID())).toBe('active');
+    expect(await store.releaseRecoveryTarget(bound)).toEqual(replacement);
+    expect(await store.claimIdleStop(replacement, randomUUID())).toBe(
+      'claimed',
+    );
+    expect(
+      await state.getClient().sCard(activeDispatchKey(namespace, lost)),
+    ).toBe(0);
+  });
+
+  it('releases an ordinary terminal reservation only with confirmed exit proof', async () => {
+    const callbackTarget = makeTarget('callback-result-exit');
+    const callbackRun = makeRun();
+    await store.admit(callbackRun);
+    expect(await store.enrollIdleSession(callbackTarget)).toBe(true);
+    expect(
+      await store.recordDispatchTarget(makeJob(callbackRun), callbackTarget),
+    ).toBe('recorded');
+    const callbackObserved = (await store.getRun(callbackRun.runId))!;
+    const callbackResult = makeResult(callbackRun);
+    expect(
+      await store.claimPublication(
+        callbackRun.runId,
+        callbackResult,
+        Date.now(),
+      ),
+    ).toBe('claimed');
+    expect(await store.completePublication(callbackRun, nextTimestamp())).toBe(
+      true,
+    );
+    expect(await store.releaseRecoveryTarget(callbackObserved)).toBeUndefined();
+    expect(await store.claimIdleStop(callbackTarget, randomUUID())).toBe(
+      'active',
+    );
+    expect(await store.claimSavedResult(callbackObserved, callbackResult)).toBe(
+      'duplicate',
+    );
+    expect(await store.getRun(callbackRun.runId)).toMatchObject({
+      exitConfirmed: true,
+    });
+    expect(await store.releaseRecoveryTarget(callbackObserved)).toEqual(
+      callbackTarget,
+    );
+
+    const savedTarget = makeTarget('saved-result-exit');
+    const savedRun = makeRun();
+    await store.admit(savedRun);
+    expect(await store.enrollIdleSession(savedTarget)).toBe(true);
+    expect(
+      await store.recordDispatchTarget(makeJob(savedRun), savedTarget),
+    ).toBe('recorded');
+    const savedObserved = (await store.getRun(savedRun.runId))!;
+    expect(
+      await store.claimSavedResult(savedObserved, makeResult(savedRun)),
+    ).toBe('claimed');
+    expect(await store.completePublication(savedRun, nextTimestamp())).toBe(
+      true,
+    );
+    expect(await store.getRun(savedRun.runId)).toMatchObject({
+      exitConfirmed: true,
+    });
+    expect(
+      await store.releaseRecoveryTarget({
+        ...savedObserved,
+        eventId: randomUUID(),
+      }),
+    ).toBeUndefined();
+    expect(await store.claimIdleStop(savedTarget, randomUUID())).toBe('active');
+    expect(await store.releaseRecoveryTarget(savedObserved)).toEqual(
+      savedTarget,
+    );
+    expect(await store.claimIdleStop(savedTarget, randomUUID())).toBe(
+      'claimed',
+    );
+    const noResultTarget = makeTarget('terminal-no-result-exit');
+    const noResultRun = makeRun();
+    await store.admit(noResultRun);
+    expect(await store.enrollIdleSession(noResultTarget)).toBe(true);
+    expect(
+      await store.recordDispatchTarget(makeJob(noResultRun), noResultTarget),
+    ).toBe('recorded');
+    const noResultObserved = (await store.getRun(noResultRun.runId))!;
+    const failed: WorkerResult = {
+      ...makeResult(noResultRun),
+      type: 'failed',
+      text: 'Synthetic failure.',
+    };
+    expect(
+      await store.claimPublication(noResultRun.runId, failed, Date.now()),
+    ).toBe('claimed');
+    expect(await store.completePublication(noResultRun, nextTimestamp())).toBe(
+      true,
+    );
+    expect(await store.releaseRecoveryTarget(noResultObserved)).toBeUndefined();
+    expect(await store.claimIdleStop(noResultTarget, randomUUID())).toBe(
+      'active',
+    );
+    expect(await store.releaseRecoveryTarget(noResultObserved, true)).toEqual(
+      noResultTarget,
+    );
+    expect(await store.getRun(noResultRun.runId)).toMatchObject({
+      exitConfirmed: true,
+    });
+    expect(await store.claimIdleStop(noResultTarget, randomUUID())).toBe(
+      'claimed',
+    );
+  });
+
+  it('holds an artifact claim while its exact target is fenced for recovery', async () => {
+    const lost = makeTarget('artifact-lost');
+    const replacement = makeTarget('artifact-replacement');
+    const run = makeRun();
+    const result = makeResult(run);
+    await store.admit(run);
+    await Promise.all([
+      store.enrollIdleSession(lost),
+      store.enrollIdleSession(replacement),
+    ]);
+    expect(await store.recordDispatchTarget(makeJob(run), lost)).toBe(
+      'recorded',
+    );
+    const firstLease = randomUUID();
+    expect(await store.reserveArtifactCollection(run.runId, firstLease)).toBe(
+      true,
+    );
+    expect(await store.fenceLostTarget(lost)).toBe(true);
+    expect(
+      await store.claimPublication(
+        run.runId,
+        result,
+        Date.now(),
+        firstLease,
+        lost,
+      ),
+    ).toBe('retry');
+    const retryLease = randomUUID();
+    expect(await store.reserveArtifactCollection(run.runId, retryLease)).toBe(
+      true,
+    );
+    expect(await store.bindRecoveryTarget(lost, replacement)).toBe(true);
+    expect(
+      await store.claimPublication(
+        run.runId,
+        result,
+        Date.now(),
+        retryLease,
+        lost,
+      ),
+    ).toBe('retry');
+    const finalLease = randomUUID();
+    expect(await store.reserveArtifactCollection(run.runId, finalLease)).toBe(
+      true,
+    );
+    expect(
+      await store.claimPublication(
+        run.runId,
+        result,
+        Date.now(),
+        finalLease,
+        replacement,
+      ),
+    ).toBe('claimed');
+  });
+
+  it('keeps a saved artifact retryable when recovery moves after collection', async () => {
+    const lost = makeTarget('saved-artifact-lost');
+    const replacement = makeTarget('saved-artifact-replacement');
+    const run = makeRun();
+    const result = makeResult(run);
+    await store.admit(run);
+    await Promise.all([
+      store.enrollIdleSession(lost),
+      store.enrollIdleSession(replacement),
+    ]);
+    expect(await store.recordDispatchTarget(makeJob(run), lost)).toBe(
+      'recorded',
+    );
+    const observed = (await store.getRun(run.runId))!;
+    expect(await store.fenceLostTarget(lost)).toBe(true);
+    expect(await store.bindRecoveryTarget(lost, replacement)).toBe(true);
+
+    expect(await store.claimSavedResult(observed, result, lost)).toBe('retry');
+    expect(await store.getRun(run.runId)).toMatchObject({
+      state: 'accepted',
+      execution: lost,
+      recovery: replacement,
+    });
+    expect(await store.claimIdleStop(replacement, randomUUID())).toBe('active');
+
+    const recovered = (await store.getRun(run.runId))!;
+    expect(await store.claimSavedResult(recovered, result, replacement)).toBe(
+      'claimed',
+    );
+    expect(await store.getRun(run.runId)).toMatchObject({
+      state: 'publishing',
+      result,
+      recovery: replacement,
+    });
+  });
+
+  it('returns an original target after exact Stop proof', async () => {
+    const target = makeTarget('confirmed-stop');
+    const run = makeRun({ controls: true, statusMessageId: nextTimestamp() });
+    await store.admit(run);
+    expect(await store.enrollIdleSession(target)).toBe(true);
+    expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(
+      'recorded',
+    );
+    expect(
+      await store.requestStop({
+        runId: run.runId,
+        generation: run.generation,
+        statusMessageId: run.statusMessageId!,
+      }),
+    ).toBe('requested');
+    const stopping = (await store.getRun(run.runId))!;
+    expect(await store.confirmStopped(stopping)).toBe('confirmed');
+    expect(await store.getRun(run.runId)).toMatchObject({
+      state: 'stopped',
+      exitConfirmed: true,
+    });
+    expect(await store.releaseRecoveryTarget(stopping)).toEqual(target);
+  });
+
+  it('unsubmits a proven prelaunch failure racing Stop without a failure result', async () => {
+    const target = makeTarget('prelaunch-stop');
+    const run = makeRun({
+      controls: true,
+      statusMessageId: nextTimestamp(),
+    });
+    await store.admit(run);
+    expect(await store.enrollIdleSession(target)).toBe(true);
+    expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(
+      'recorded',
+    );
+    expect(
+      await store.requestStop({
+        runId: run.runId,
+        generation: run.generation,
+        statusMessageId: run.statusMessageId!,
+      }),
+    ).toBe('requested');
+    expect(await store.releaseDispatchTarget(run.runId, target, true)).toBe(
+      true,
+    );
+    const stopping = (await store.getRun(run.runId))!;
+    expect(stopping).toMatchObject({ state: 'stopping' });
+    expect(stopping).not.toHaveProperty('execution');
+    expect(
+      await store.claimUnsubmitted(stopping, {
+        ...makeResult(run),
+        type: 'failed',
+      }),
+    ).toBe(false);
+    expect(await store.confirmStopped(stopping)).toBe('confirmed');
+    expect(await store.getRun(run.runId)).toMatchObject({ state: 'stopped' });
+  });
+
+  it('migrates affected reservations across a second exact runtime loss', async () => {
+    const firstTarget = makeTarget('repeat-a');
+    const secondTarget = makeTarget('repeat-b');
+    const thirdTarget = makeTarget('repeat-c');
+    const first = makeRun();
+    const second = makeRun();
+    await Promise.all([store.admit(first), store.admit(second)]);
+    await Promise.all([
+      store.enrollIdleSession(firstTarget),
+      store.enrollIdleSession(secondTarget),
+      store.enrollIdleSession(thirdTarget),
+    ]);
+    expect(await store.recordDispatchTarget(makeJob(first), firstTarget)).toBe(
+      'recorded',
+    );
+    expect(await store.recordDispatchTarget(makeJob(second), firstTarget)).toBe(
+      'recorded',
+    );
+    expect(await store.fenceLostTarget(firstTarget)).toBe(true);
+    expect(await store.bindRecoveryTarget(firstTarget, secondTarget)).toBe(
+      true,
+    );
+    expect(await store.fenceLostTarget(secondTarget)).toBe(true);
+    expect(await store.bindRecoveryTarget(secondTarget, thirdTarget)).toBe(
+      true,
+    );
+
+    for (const run of [first, second])
+      expect(await store.getRun(run.runId)).toMatchObject({
+        execution: firstTarget,
+        recovery: thirdTarget,
+      });
+    expect(
+      await state.getClient().sCard(activeDispatchKey(namespace, firstTarget)),
+    ).toBe(2);
+    expect(
+      await state.getClient().sCard(activeDispatchKey(namespace, secondTarget)),
+    ).toBe(0);
+    expect(
+      await state.getClient().sCard(activeDispatchKey(namespace, thirdTarget)),
+    ).toBe(2);
+
+    const firstBound = (await store.getRun(first.runId))!;
+    expect(
+      await store.claimPublication(first.runId, makeResult(first), Date.now()),
+    ).toBe('claimed');
+    expect(await store.completePublication(first, nextTimestamp())).toBe(true);
+    expect(await store.releaseRecoveryTarget(firstBound)).toEqual(thirdTarget);
+    expect(await store.claimIdleStop(thirdTarget, randomUUID())).toBe('active');
+
+    const secondBound = (await store.getRun(second.runId))!;
+    expect(await store.interruptRun(secondBound, secondBound.deadline)).toBe(
+      true,
+    );
+    expect(await store.claimIdleStop(thirdTarget, randomUUID())).toBe(
+      'claimed',
+    );
+    expect(
+      await state.getClient().sCard(activeDispatchKey(namespace, firstTarget)),
+    ).toBe(0);
+  });
+
   it('claims a callback once and releases only its own thread lease on completion', async () => {
     const run = makeRun({ conversationId: 'd'.repeat(64) });
     await store.admit(run);
@@ -529,6 +953,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       sessionId: randomUUID(),
     };
     await store.admit(run);
+    expect(await store.enrollIdleSession(target)).toBe(true);
     expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(
       'recorded',
     );
@@ -536,8 +961,8 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     expect(bound).not.toBeNull();
     expect(await store.interruptRun(bound!, run.deadline - 1)).toBe(false);
     const interrupted = await Promise.all([
-      store.interruptRun(bound!, run.deadline),
-      store.interruptRun(bound!, run.deadline),
+      store.interruptRun(bound!, run.deadline, false, true),
+      store.interruptRun(bound!, run.deadline, false, true),
     ]);
     expect(interrupted).toEqual([true, true]);
     expect(
@@ -550,7 +975,10 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     expect(await store.getRun(run.runId)).toMatchObject({
       state: 'interrupted',
       execution: target,
+      exitConfirmed: true,
     });
+    expect(await store.releaseRecoveryTarget(bound!)).toEqual(target);
+    expect(await store.claimIdleStop(target, randomUUID())).toBe('claimed');
 
     const duplicate = await store.admit(run);
     expect(duplicate.outcome).toBe('duplicate');
@@ -711,6 +1139,10 @@ function makeTarget(label: string): SandboxTarget {
 
 function idleGateKey(namespace: string, target: SandboxTarget): string {
   return `${namespace}:idle:${target.sandboxName}:${target.sessionId}:gate`;
+}
+
+function activeDispatchKey(namespace: string, target: SandboxTarget): string {
+  return `${namespace}:idle:${target.sandboxName}:${target.sessionId}:active`;
 }
 
 function managedRuntimeKey(namespace: string, sandboxName: string): string {

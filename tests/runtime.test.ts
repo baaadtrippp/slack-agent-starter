@@ -370,6 +370,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
   const sandboxDispatchConditions = [
     'running',
     'managed idle',
+    'prelaunch failure',
+    'unmanaged exit 78',
     'stopped',
     'unrecordable',
     'stopping',
@@ -393,7 +395,10 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       const store = new RedisRunStore(observer.getClient());
       const operationId = randomUUID();
       const startResponseLost = condition === 'start response lost';
-      const managed = condition === 'managed idle';
+      const prelaunchFailure = condition === 'prelaunch failure';
+      const unmanagedSentinel = condition === 'unmanaged exit 78';
+      const managed =
+        condition === 'managed idle' || condition === 'prelaunch failure';
       const hasResult = condition === 'running' || managed;
       const driveName = 'synthetic-drive';
       const seedId = 'synthetic-seed';
@@ -414,7 +419,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       let job: WorkerJob;
       const commandWait = vi.fn().mockImplementation(async () => {
         expect(await store.claimIdleStop(target, operationId)).toBe('active');
-        if (hasResult)
+        if (hasResult && !prelaunchFailure)
           expect(
             await store.claimPublication(
               job.runId,
@@ -430,7 +435,14 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
               Date.now(),
             ),
           ).toBe('claimed');
-        return { exitCode: condition === 'uncertain exit' ? 1 : 0 };
+        return {
+          exitCode:
+            prelaunchFailure || unmanagedSentinel
+              ? 78
+              : condition === 'uncertain exit'
+                ? 1
+                : 0,
+        };
       });
       const sessionRunCommand = vi.fn().mockImplementation(async (command) => {
         job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
@@ -454,10 +466,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           status: condition === 'stopped' ? 'stopped' : 'running',
           sessionId,
           sourceSnapshotId: seedId,
-          runCommand: (command: { cmd: string }) =>
-            command.cmd === 'bash'
-              ? readiness(command)
-              : sessionRunCommand(command),
+          runCommand: (command: { detached?: boolean }) =>
+            command.detached ? sessionRunCommand(command) : readiness(command),
           stop: sessionStop,
         }),
       });
@@ -490,21 +500,62 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           hasResult ||
           condition === 'uncertain exit' ||
           condition === 'result missing' ||
-          startResponseLost
+          startResponseLost ||
+          prelaunchFailure ||
+          unmanagedSentinel
         ) {
-          expect(JSON.parse(encoded!)).toMatchObject({
-            state: startResponseLost
-              ? 'dispatch_failed'
-              : hasResult
-                ? 'publishing'
-                : 'accepted',
-            execution: target,
-          });
+          const persisted = JSON.parse(encoded!);
+          if (prelaunchFailure) {
+            expect(persisted).toMatchObject({
+              state: 'worker_failed',
+              result: {
+                type: 'failed',
+                text: expect.stringContaining('worker could not start'),
+              },
+            });
+            expect(persisted).not.toHaveProperty('execution');
+          } else
+            expect(persisted).toMatchObject({
+              state: startResponseLost
+                ? 'dispatch_failed'
+                : hasResult
+                  ? 'publishing'
+                  : 'accepted',
+              execution: target,
+            });
           expect(recorded).toMatchObject({
             state: 'accepted',
             execution: target,
           });
           expect(sessionRunCommand).toHaveBeenCalledTimes(1);
+          if (managed) {
+            expect(sessionRunCommand).toHaveBeenCalledWith(
+              expect.objectContaining({
+                cmd: 'bash',
+                sudo: true,
+                args: [
+                  '-c',
+                  expect.any(String),
+                  'hydra-worker',
+                  '/tmp/hydra-worker/run.mjs',
+                ],
+              }),
+            );
+            const launch = sessionRunCommand.mock.calls[0]![0].args[1];
+            expect(launch).toContain(
+              'sysctl -qw net.ipv6.conf.default.disable_ipv6=1 net.ipv6.conf.all.disable_ipv6=1',
+            );
+            expect(launch).toContain(
+              'read -r disabled < "$setting" || exit 78',
+            );
+            expect(launch).toContain(
+              'test ! -L /workspace && mountpoint -q /workspace',
+            );
+            expect(launch).toContain(
+              "--no-new-privs -- sh -c 'test -w /workspace && test -x /workspace' || exit 78",
+            );
+            expect(launch).toContain('if [ "$code" -eq 78 ]; then exit 79');
+          }
           expect(commandWait).toHaveBeenCalledTimes(startResponseLost ? 0 : 1);
           expect(await store.claimIdleStop(target, operationId)).toBe(
             managed
@@ -552,6 +603,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
     'staged PNG with all file types enabled',
     'staged PDF with CSV enabled',
     'write failed',
+    'Drive full with a filesystem code',
+    'Drive full with a storage response',
     'expired during staging',
   ] as const;
 
@@ -632,6 +685,14 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       let staged = false;
       const writeFiles = vi.fn().mockImplementation(async () => {
         if (outcome === 'write failed') throw new Error('Synthetic fault');
+        if (outcome === 'Drive full with a filesystem code')
+          throw Object.assign(new Error('Private storage path'), {
+            code: 'ENOSPC',
+          });
+        if (outcome === 'Drive full with a storage response')
+          throw Object.assign(new Error('Private provider details'), {
+            response: new Response(null, { status: 507 }),
+          });
         if (outcome === 'expired during staging')
           vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
         staged = true;
@@ -753,7 +814,9 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           });
           expect(postMessage).toHaveBeenLastCalledWith(
             `slack:CTEST1:${event.ts}`,
-            'The inputs could not be staged. Resend the message with its files and links to retry.',
+            outcome.startsWith('Drive full')
+              ? 'Workspace storage is full. Your request was not submitted. Ask an operator to free space, then resend your message.'
+              : 'The inputs could not be staged. Resend the message with its files and links to retry.',
           );
         }
       } finally {
@@ -830,6 +893,7 @@ function runtimeEvent(options?: {
     team_id: 'TTEST1',
     event_id: eventId,
     is_ext_shared_channel: false,
+    authorizations: [{ team_id: 'TTEST1', user_id: 'UBOT1', is_bot: true }],
     event: {
       type: 'app_mention',
       user: 'UTEST1',

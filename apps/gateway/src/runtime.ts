@@ -5,11 +5,28 @@ import { Sandbox } from '@vercel/sandbox';
 import { ConsoleLogger } from 'chat';
 import { createClient } from 'redis';
 import { collectRunArtifact } from './generated-artifact.js';
-import { createGateway } from './gateway.js';
-import { createManagedWorker } from './managed-worker.js';
+import { createGateway, normalizeFailureResult } from './gateway.js';
+import {
+  createManagedWorker,
+  MANAGED_DRIVE_WRITE_SETUP,
+  MANAGED_WORKER_PRIVILEGE_DROP,
+} from './managed-worker.js';
 import { RedisRunStore } from './store.js';
 import type { SandboxTarget } from './store.js';
 import { inspectSandboxRun } from './worker-control.js';
+
+const MANAGED_WORKER_PRELAUNCH_EXIT = 78;
+
+// The provider's domain allowlist remains the IPv4 egress boundary. Verify
+// IPv6 is disabled, then start the entire worker tree without privilege to
+// restore it. The managed image and staged files use uid/gid 1000.
+const MANAGED_WORKER_LAUNCH = [
+  'set -u',
+  `sysctl -qw net.ipv6.conf.default.disable_ipv6=1 net.ipv6.conf.all.disable_ipv6=1 || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}`,
+  `for setting in /proc/sys/net/ipv6/conf/*/disable_ipv6; do read -r disabled < "$setting" || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}; test "$disabled" = 1 || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}; done`,
+  `${MANAGED_DRIVE_WRITE_SETUP} || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}`,
+  `exec ${MANAGED_WORKER_PRIVILEGE_DROP} -- sh -c 'node "$1"; code=$?; if [ "$code" -eq ${MANAGED_WORKER_PRELAUNCH_EXIT} ]; then exit 79; fi; exit "$code"' hydra-worker "$1"`,
+].join('; ');
 
 let gateway: ReturnType<typeof createGateway> | undefined;
 
@@ -37,7 +54,7 @@ async function isSandboxStopped(target: SandboxTarget) {
   for await (const session of sessions) {
     if (session.id === target.sessionId) return session.status === 'stopped';
   }
-  return false;
+  return true;
 }
 
 function initialize() {
@@ -142,27 +159,51 @@ function initialize() {
     ...(controlsEnabled
       ? {
           inspectWorker: async (run, stop) => {
-            const exact = await inspectSandboxRun(run, stop).catch(
-              () => undefined,
-            );
-            if (exact?.state === 'exited' || exact?.state === 'stopped')
-              return exact;
+            const currentTarget = run.recovery ?? run.execution;
+            if (!run.recovery) {
+              const exact = await inspectSandboxRun(run, stop).catch(
+                () => undefined,
+              );
+              if (exact?.state === 'exited' || exact?.state === 'stopped')
+                return exact;
+            }
             if (
               !managed ||
-              !run.execution ||
-              run.execution.sandboxName !== sandboxName ||
-              !(await isSandboxStopped(run.execution))
+              !currentTarget ||
+              currentTarget.sandboxName !== sandboxName
             )
               return { state: 'unknown' };
 
-            // Only inspect a replacement after the exact original session has
-            // stopped and the existing lifecycle verifies the managed Drive.
-            const session = await managed.getSession(Date.now() + 25_000);
+            const bound = run.recovery
+              ? (
+                  await Sandbox.get({
+                    name: currentTarget.sandboxName,
+                    resume: false,
+                    signal: AbortSignal.timeout(5_000),
+                  }).catch(() => undefined)
+                )?.currentSession()
+              : undefined;
+            const useBound =
+              bound?.status === 'running' &&
+              bound.sessionId === currentTarget.sessionId;
+            // Only a verified stopped target can be rebound. An existing
+            // binding already proves that its original environment stopped.
+            const session = useBound
+              ? bound
+              : await managed.recoverSession(
+                  currentTarget,
+                  Date.now() + 25_000,
+                );
             if (!session) return { state: 'unknown' };
             const target = {
-              sandboxName: run.execution.sandboxName,
+              sandboxName: currentTarget.sandboxName,
               sessionId: session.sessionId,
             };
+            if (
+              !useBound &&
+              !(await store.bindRecoveryTarget(currentTarget, target))
+            )
+              return { state: 'unknown' };
             const token = randomUUID();
             if (!(await store.reserveRecovery(target, token)))
               return { state: 'unknown' };
@@ -191,23 +232,34 @@ function initialize() {
               if (!stop) await managed.stopIfIdle(session).catch(() => {});
             }
           },
-          releaseRecoveredWorker: async (run) => {
-            if (
-              !run.execution ||
-              !(await store.releaseDispatchTarget(run.runId, run.execution)) ||
-              !managed ||
-              run.execution.sandboxName !== sandboxName
-            )
+          releaseRecoveredWorker: async (run, reconcileExit) => {
+            let target = await store.releaseRecoveryTarget(run);
+            if (reconcileExit && !target && !run.recovery && run.execution) {
+              const inspection = await inspectSandboxRun(run, false).catch(
+                () => undefined,
+              );
+              if (inspection?.state === 'exited') {
+                if (
+                  inspection.result &&
+                  !normalizeFailureResult(run, inspection.result)
+                )
+                  await store
+                    .claimSavedResult(run, inspection.result)
+                    .catch(() => undefined);
+                target = await store.releaseRecoveryTarget(run, true);
+              }
+            }
+            if (!managed || !target || target.sandboxName !== sandboxName)
               return;
             const sandbox = await Sandbox.get({
-              name: run.execution.sandboxName,
+              name: target.sandboxName,
               resume: false,
               signal: AbortSignal.timeout(5_000),
             }).catch(() => undefined);
             const session = sandbox?.currentSession();
             if (
               session?.status === 'running' &&
-              session.sessionId === run.execution.sessionId
+              session.sessionId === target.sessionId
             )
               await managed.stopIfIdle(session).catch(() => {});
           },
@@ -217,6 +269,7 @@ function initialize() {
       ? { collectArtifact: collectRunArtifact }
       : {}),
     dispatch: async (job, stagedInputs) => {
+      if (job.memory && !managed) return 'worker-unavailable';
       if (worker.kind === 'sandbox') {
         const session = await (
           managed
@@ -283,10 +336,17 @@ function initialize() {
                 count: stagedInputs.length,
               }),
             );
-          } catch {
+          } catch (error) {
             await releaseReservation(true);
             await stopIfIdle();
-            return 'input-staging-failed';
+            const storageFull =
+              error instanceof Error &&
+              (('code' in error &&
+                (error.code === 'ENOSPC' || error.code === 'EDQUOT')) ||
+                ('response' in error &&
+                  error.response instanceof Response &&
+                  error.response.status === 507));
+            return storageFull ? 'input-storage-full' : 'input-staging-failed';
           }
         }
         if (
@@ -306,13 +366,18 @@ function initialize() {
           }
           throw new Error('Worker deadline expired');
         }
+        const entry = controlsEnabled
+          ? '/tmp/hydra-worker/supervise.mjs'
+          : '/tmp/hydra-worker/run.mjs';
+        const launch = managed
+          ? {
+              cmd: 'bash',
+              args: ['-c', MANAGED_WORKER_LAUNCH, 'hydra-worker', entry],
+              sudo: true,
+            }
+          : { cmd: 'node', args: [entry] };
         const command = await session.runCommand({
-          cmd: 'node',
-          args: [
-            controlsEnabled
-              ? '/tmp/hydra-worker/supervise.mjs'
-              : '/tmp/hydra-worker/run.mjs',
-          ],
+          ...launch,
           cwd: '/tmp/hydra-worker',
           env: {
             HYDRA_JOB: JSON.stringify(job),
@@ -330,6 +395,21 @@ function initialize() {
             ),
           });
           const current = await store.getRun(job.runId);
+          if (managed && finished.exitCode === MANAGED_WORKER_PRELAUNCH_EXIT) {
+            const released = await releaseReservation(true);
+            await stopIfIdle();
+            console.error(
+              JSON.stringify({
+                runId: job.runId,
+                phase: released
+                  ? 'worker_prelaunch_failed'
+                  : 'worker_prelaunch_release_unconfirmed',
+              }),
+            );
+            if (released && current?.state === 'accepted')
+              return 'worker-start-failed';
+            return;
+          }
           if (current?.state === 'stopping' || current?.state === 'stopped')
             return;
           if (

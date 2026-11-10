@@ -121,10 +121,11 @@ verified absent after testing.
 1. Stage matching gateway and worker builds and preserve the current route and
    rollback builds. Validate and apply the complete public-channel manifest to
    the existing app in the enabled internal channel.
-2. Start work in two threads. Have the requester stop one run and another
-   internal member refresh its existing status message. Verify that ownership
-   persists through `Stopping`, the target produces no late answer, and the
-   other run finishes on the shared Sandbox.
+2. Start work in two threads. Have the requester click Status on the target's
+   existing status message, then click Stop. Verify that ownership persists
+   through `Stopping`, the target produces no late answer, and the other run
+   finishes on the shared Sandbox. Signed gateway tests cover the Status
+   permission for a different internal member.
 3. Add and remove both thumbs on the other run's final answer. Check ordered
    feedback in gateway state and confirm that it starts no worker. Verify that
    the input and status messages have no feedback.

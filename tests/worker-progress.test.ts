@@ -1,26 +1,85 @@
 import { describe, expect, it, vi } from 'vitest';
+import { workerResultSchema } from '../packages/contracts/src/index.js';
 
 // The Sandbox entry point is plain JavaScript because it is copied directly
 // into the worker image.
 // @ts-expect-error No declaration file is shipped for the Sandbox entry point.
-import { consumeTurn } from '../apps/worker/sandbox/run.mjs';
+import * as sandboxWorker from '../apps/worker/sandbox/run.mjs';
+
+const {
+  consumeTurn,
+  durableProviderQuota,
+  isProviderQuotaSignal,
+  recoverDriveWriteFailure,
+  workerFailureCategory,
+} = sandboxWorker;
 
 type TurnEvent =
   | { type: 'status'; text: string }
   | { type: 'text_delta'; text: string; stream?: 'output' | 'thought' }
   | { type: 'tool_call'; text: string; rawInput?: unknown }
-  | { type: 'error'; message: string };
+  | {
+      type: 'error';
+      message: string;
+      code?: string;
+      detailCode?: string;
+      retryable?: boolean;
+    };
 
-function controlledTurn(events: TurnEvent[]) {
+function controlledTurn(
+  events: TurnEvent[],
+  result:
+    | { status: 'completed' }
+    | {
+        status: 'failed';
+        error: {
+          message: string;
+          code?: string;
+          detailCode?: string;
+          retryable?: boolean;
+        };
+      } = { status: 'completed' },
+) {
   return {
     events: (async function* () {
       for (const event of events) yield event;
     })(),
-    result: Promise.resolve({ status: 'completed' as const }),
+    result: Promise.resolve(result),
   };
 }
 
 describe('Sandbox worker progress', () => {
+  it('accepts bounded categories only on failed worker results', () => {
+    const result = {
+      version: 1,
+      runId: '00000000-0000-4000-8000-000000000001',
+      generation: 1,
+      eventId: '00000000-0000-4000-8000-000000000002',
+      sequence: 2,
+      type: 'failed',
+      text: 'Safe failure',
+    } as const;
+    expect(
+      workerResultSchema.safeParse({
+        ...result,
+        failureCategory: 'provider_quota',
+      }).success,
+    ).toBe(true);
+    expect(
+      workerResultSchema.safeParse({
+        ...result,
+        type: 'completed',
+        failureCategory: 'drive_full',
+      }).success,
+    ).toBe(false);
+    expect(
+      workerResultSchema.safeParse({
+        ...result,
+        failureCategory: 'private_provider_error',
+      }).success,
+    ).toBe(false);
+  });
+
   it('reports working once on the first live Pi output without exposing it', async () => {
     const reportWorking = vi.fn<() => void>();
     const outcome = await consumeTurn(
@@ -49,6 +108,138 @@ describe('Sandbox worker progress', () => {
     );
 
     expect(reportWorking).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      type: 'error' as const,
+      message: 'private provider response',
+      detailCode: 'RATE_LIMITED',
+    },
+    {
+      type: 'error' as const,
+      message: 'Provider returned HTTP status 402: private billing detail',
+    },
+  ])(
+    'classifies a bounded quota error event without returning its text',
+    async (event) => {
+      await expect(
+        consumeTurn(controlledTurn([event]), vi.fn()),
+      ).rejects.toMatchObject({ failureCategory: 'provider_quota' });
+    },
+  );
+
+  it('classifies the canonical failed turn result by its bounded detail code', async () => {
+    await expect(
+      consumeTurn(
+        controlledTurn([], {
+          status: 'failed',
+          error: {
+            message: 'private provider response',
+            detailCode: 'PROVIDER_QUOTA',
+          },
+        }),
+        vi.fn(),
+      ),
+    ).rejects.toMatchObject({ failureCategory: 'provider_quota' });
+  });
+
+  it('recognizes the pinned Pi session errorMessage without broad text matching', () => {
+    expect(
+      isProviderQuotaSignal(
+        '402: {"message":"quota exceeded for synthetic account"}',
+      ),
+    ).toBe(true);
+    expect(
+      isProviderQuotaSignal(
+        'Provider returned an error: quota exceeded for this account',
+      ),
+    ).toBe(true);
+    expect(
+      isProviderQuotaSignal('Provider is temporarily unavailable; retry later'),
+    ).toBe(false);
+    expect(
+      isProviderQuotaSignal(
+        '401: ordinary provider failure; invoice 402 is only a reference',
+      ),
+    ).toBe(false);
+    expect(isProviderQuotaSignal('quota'.repeat(1_025))).toBe(false);
+  });
+
+  it('classifies only quota and full-Drive failures', () => {
+    expect(
+      workerFailureCategory(
+        Object.assign(new Error('Synthetic full Drive'), { code: 'ENOSPC' }),
+      ),
+    ).toBe('drive_full');
+    expect(
+      workerFailureCategory(
+        Object.assign(new Error('Synthetic quota text is not authoritative'), {
+          code: 'EIO',
+        }),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('delivers a failed note-save result when its manifest cannot be written', () => {
+    const result = {
+      type: 'completed',
+      text: 'Saved to this channel’s shared notes.',
+    };
+    const full = Object.assign(new Error('Synthetic full Drive'), {
+      code: 'ENOSPC',
+    });
+
+    expect(
+      recoverDriveWriteFailure(
+        { memory: 'save', session: { seedRunId: 'retained' } },
+        result,
+        full,
+      ),
+    ).toMatchObject({
+      type: 'failed',
+      failureCategory: 'drive_full',
+    });
+    expect(result.text).not.toContain('Saved');
+    expect(() =>
+      recoverDriveWriteFailure(
+        { session: { seedRunId: 'retained' } },
+        { type: 'completed', text: 'Completed answer' },
+        full,
+      ),
+    ).toThrow('Worker state requires inspection');
+  });
+
+  it('recognizes quota only in the current durable Pi turn', () => {
+    const prior = {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '402: {"message":"old quota error"}',
+      },
+    };
+    const currentUser = { type: 'message', message: { role: 'user' } };
+    const quota = {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '429: {"message":"quota exceeded"}',
+      },
+    };
+    const generic = {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '401: ordinary provider failure',
+      },
+    };
+
+    expect(durableProviderQuota([prior, currentUser, quota], 1)).toBe(true);
+    expect(durableProviderQuota([prior, currentUser, generic], 1)).toBe(false);
+    expect(durableProviderQuota([prior], 1)).toBe(false);
   });
 
   it('reports working once when a tool call is the first live event', async () => {

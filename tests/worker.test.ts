@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { CANNED_REPLY } from '../packages/contracts/src/index.js';
+import {
+  CANNED_REPLY,
+  workerJobSchema,
+} from '../packages/contracts/src/index.js';
 import { createFakeWorker } from '../apps/worker/src/fake-worker.js';
 
 const now = 1_800_000_000_000;
@@ -50,6 +53,20 @@ function makeWorker(
 }
 
 describe('fake worker HTTP contract', () => {
+  it.each([
+    ['save', 'workspace', 'C00000001'],
+    ['read', 'T00000001', 'channel'],
+  ])(
+    'rejects invalid %s memory scope identifiers',
+    (memory, workspaceId, channelId) => {
+      const job = makeJob({ memory });
+      job.input.workspaceId = workspaceId;
+      job.input.channelId = channelId;
+
+      expect(workerJobSchema.safeParse(job).success).toBe(false);
+    },
+  );
+
   it('checks gateway admission before acknowledging a canned result', async () => {
     const fetchRequest = vi
       .fn<typeof fetch>()

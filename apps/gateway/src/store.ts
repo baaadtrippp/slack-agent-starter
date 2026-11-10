@@ -68,9 +68,12 @@ export type RunRecord = {
     | 'stopping'
     | 'stopped';
   controls?: true;
+  memory?: WorkerJob['memory'];
   session?: WorkerSession;
   result?: WorkerResult;
   execution?: SandboxTarget;
+  recovery?: SandboxTarget;
+  exitConfirmed?: true;
   blockedBy?: string;
   messageId?: string;
   progress?: WorkerProgress;
@@ -110,11 +113,13 @@ export interface RunStore {
     result: WorkerResult,
     now: number,
     artifactLease?: string,
+    artifactTarget?: SandboxTarget,
   ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry'>;
   claimSavedResult(
     observed: RunRecord,
     result: WorkerResult,
-  ): Promise<'claimed' | 'duplicate' | 'conflict'>;
+    artifactTarget?: SandboxTarget,
+  ): Promise<'claimed' | 'duplicate' | 'conflict' | 'retry'>;
   claimUnsubmitted(run: RunRecord, result: WorkerResult): Promise<boolean>;
   completePublication(run: RunRecord, messageId: string): Promise<boolean>;
   recordArtifactPublication(
@@ -153,6 +158,7 @@ export interface RunStore {
     run: RunRecord,
     now: number,
     sessionRestored?: boolean,
+    exitConfirmed?: boolean,
   ): Promise<boolean>;
 }
 
@@ -202,7 +208,7 @@ local result = cjson.decode(ARGV[2])
 if run.runId ~= ARGV[1] or run.runId ~= result.runId or run.generation ~= result.generation then
   return 'conflict'
 end
-local observed = ARGV[5] and cjson.decode(ARGV[5])
+local observed = ARGV[5] and ARGV[5] ~= '' and cjson.decode(ARGV[5])
 if ARGV[3] == 'unsubmitted' then
   if run.kind ~= 'work' or run.execution or result.type ~= 'failed' or result.session or
      redis.call('GET', KEYS[2]) ~= run.runId then return 'conflict' end
@@ -223,6 +229,10 @@ local function sameArtifact(a, b)
 end
 if run.state == 'publishing' or run.state == 'completed' or run.state == 'worker_failed' or run.state == 'publication_uncertain' then
   if run.result and run.result.eventId == result.eventId and run.result.runId == result.runId and run.result.generation == result.generation and run.result.sequence == result.sequence and run.result.type == result.type and run.result.text == result.text and sameArtifact(run.result.artifact, result.artifact) and sameSession(run.result.session, result.session) then
+    if observed and run.exitConfirmed ~= true then
+      run.exitConfirmed = true
+      redis.call('SET', KEYS[1], cjson.encode(run), 'KEEPTTL')
+    end
     return 'duplicate'
   end
   return 'conflict'
@@ -230,6 +240,22 @@ end
 if run.state ~= 'accepted' and run.state ~= 'dispatch_failed' then return 'conflict' end
 if observed and redis.call('GET', KEYS[3]) ~= run.runId then return 'conflict' end
 if ARGV[4] and ARGV[4] ~= '' and redis.call('GET', KEYS[2]) ~= ARGV[4] then return 'retry' end
+if ARGV[6] == 'artifact' then
+  local attempted = cjson.decode(ARGV[7])
+  local current = run.recovery or run.execution
+  local changed = not current or current.sandboxName ~= attempted.sandboxName or current.sessionId ~= attempted.sessionId
+  local gate = redis.call('GET', KEYS[4])
+  local lost = false
+  if gate and gate ~= 'open' then
+    local closed = cjson.decode(gate)
+    lost = closed.state == 'lost'
+  end
+  if changed or lost then
+    if redis.call('GET', KEYS[2]) == ARGV[4] then redis.call('DEL', KEYS[2]) end
+    return 'retry'
+  end
+end
+if observed then run.exitConfirmed = true end
 run.result = result
 run.state = 'publishing'
 run.statusVersion = (run.statusVersion or 0) + 1
@@ -242,7 +268,7 @@ local encoded = redis.call('GET', KEYS[1])
 if not encoded then return 0 end
 local run = cjson.decode(encoded)
 if run.state ~= 'publishing' then return 0 end
-local indexable = run.kind == 'work' and run.result.type == 'completed'
+local indexable = run.kind == 'work' and run.memory ~= 'save' and run.result.type == 'completed'
 local answerOwner = indexable and redis.call('GET', KEYS[4])
 if answerOwner and answerOwner ~= run.runId then return 0 end
 local owns = redis.call('GET', KEYS[2]) == run.runId
@@ -277,7 +303,7 @@ if not encoded then return 'conflict' end
 local run = cjson.decode(encoded)
 if run.runId ~= ARGV[1] or run.generation ~= tonumber(ARGV[2]) or
    not run.statusMessageId or run.statusMessageId ~= ARGV[3] or
-   run.kind ~= 'work' or not run.controls then return 'conflict' end
+   run.kind ~= 'work' or not run.controls or run.memory == 'save' then return 'conflict' end
 if run.state == 'stopping' or run.state == 'stopped' then return 'duplicate' end
 if run.state == 'publishing' or run.state == 'completed' or
    run.state == 'worker_failed' or run.state == 'publication_uncertain' or
@@ -323,10 +349,14 @@ if ARGV[2] ~= '' then
   redis.call('SET', KEYS[4], cjson.encode(previous))
 end
 run.state = 'stopped'
+run.exitConfirmed = true
 run.statusVersion = (run.statusVersion or 0) + 1
 redis.call('SET', KEYS[1], cjson.encode(run))
 redis.call('DEL', KEYS[2])
 if run.execution then redis.call('SREM', KEYS[3], run.runId) end
+if run.recovery then
+  redis.call('SREM', ARGV[3] .. run.recovery.sandboxName .. ':' .. run.recovery.sessionId .. ':active', run.runId)
+end
 return 'confirmed'
 `;
 
@@ -334,7 +364,7 @@ const BACKFILL_ANSWER_SCRIPT = `
 local encoded = redis.call('GET', KEYS[1])
 if not encoded then return 0 end
 local run = cjson.decode(encoded)
-if run.kind ~= 'work' or run.state ~= 'completed' or
+if run.kind ~= 'work' or run.memory == 'save' or run.state ~= 'completed' or
    not run.result or run.result.type ~= 'completed' or
    run.workspaceId ~= ARGV[1] or run.channelId ~= ARGV[2] or
    run.messageId ~= ARGV[3] or run.runId ~= ARGV[4] then return 0 end
@@ -457,12 +487,103 @@ local target = cjson.decode(ARGV[2])
 if run.runId ~= ARGV[1] or not run.execution or
    run.execution.sandboxName ~= target.sandboxName or
    run.execution.sessionId ~= target.sessionId then return 0 end
+local recovery = run.recovery
 if ARGV[3] == 'unsubmitted' and
    (run.state == 'accepted' or run.state == 'stopping') then
   run.execution = nil
+  run.recovery = nil
   redis.call('SET', KEYS[1], cjson.encode(run), 'KEEPTTL')
 end
 redis.call('SREM', KEYS[2], run.runId)
+if recovery then
+  redis.call('SREM', ARGV[4] .. recovery.sandboxName .. ':' .. recovery.sessionId .. ':active', run.runId)
+end
+return 1
+`;
+
+const RELEASE_RECOVERY_TARGET_SCRIPT = `
+local encoded = redis.call('GET', KEYS[1])
+if not encoded then return '' end
+local run = cjson.decode(encoded)
+local observed = cjson.decode(ARGV[1])
+if run.runId ~= observed.runId or run.eventId ~= observed.eventId or
+   run.generation ~= observed.generation or not run.execution or
+   not observed.execution or
+   run.execution.sandboxName ~= observed.execution.sandboxName or
+   run.execution.sessionId ~= observed.execution.sessionId then return '' end
+if run.state ~= 'completed' and run.state ~= 'worker_failed' and
+   run.state ~= 'publication_uncertain' and run.state ~= 'stopped' and
+   run.state ~= 'interrupted' then return '' end
+if ARGV[3] == '1' and run.exitConfirmed ~= true then
+  run.exitConfirmed = true
+  redis.call('SET', KEYS[1], cjson.encode(run), 'KEEPTTL')
+end
+local target = run.recovery
+if not target then
+  if run.exitConfirmed ~= true then return '' end
+  target = run.execution
+end
+redis.call('SREM', KEYS[2], run.runId)
+if run.recovery then
+  redis.call('SREM', ARGV[2] .. run.recovery.sandboxName .. ':' .. run.recovery.sessionId .. ':active', run.runId)
+end
+return cjson.encode(target)
+`;
+
+const FENCE_LOST_TARGET_SCRIPT = `
+local gate = redis.call('GET', KEYS[1])
+if gate == 'open' then
+  redis.call('SET', KEYS[1], cjson.encode({state = 'lost'}))
+  return 1
+end
+if not gate then return 0 end
+local closed = cjson.decode(gate)
+return closed.state == 'lost' and 1 or 0
+`;
+
+const BIND_RECOVERY_TARGET_SCRIPT = `
+local gate = redis.call('GET', KEYS[1])
+if not gate or gate == 'open' or cjson.decode(gate).state ~= 'lost' then return 0 end
+if redis.call('GET', KEYS[3]) ~= 'open' then return 0 end
+local old = cjson.decode(ARGV[1])
+local replacement = cjson.decode(ARGV[2])
+local ids = redis.call('SMEMBERS', KEYS[2])
+for _, id in ipairs(ids) do
+  local key = ARGV[3] .. id
+  local encoded = redis.call('GET', key)
+  if not encoded then
+    redis.call('SREM', KEYS[2], id)
+  else
+    local run = cjson.decode(encoded)
+    local current = run.recovery or run.execution
+    local original = run.execution and
+      run.execution.sandboxName == old.sandboxName and
+      run.execution.sessionId == old.sessionId
+    local replay = original and run.recovery and
+      run.recovery.sandboxName == replacement.sandboxName and
+      run.recovery.sessionId == replacement.sessionId
+    if not current then
+      redis.call('SREM', KEYS[2], id)
+    elseif (current.sandboxName ~= old.sandboxName or
+            current.sessionId ~= old.sessionId) and not replay then
+      if not original then redis.call('SREM', KEYS[2], id) end
+    elseif run.state == 'accepted' or run.state == 'dispatch_failed' or
+           run.state == 'stopping' then
+      if not replay then
+        local migrated = run.recovery ~= nil
+        run.recovery = replacement
+        redis.call('SET', key, cjson.encode(run), 'KEEPTTL')
+        if migrated then redis.call('SREM', KEYS[2], id) end
+      end
+      redis.call('SADD', KEYS[4], id)
+    else
+      redis.call('SREM', KEYS[2], id)
+      if run.recovery then
+        redis.call('SREM', ARGV[4] .. run.recovery.sandboxName .. ':' .. run.recovery.sessionId .. ':active', id)
+      end
+    end
+  end
+end
 return 1
 `;
 
@@ -493,7 +614,8 @@ local current = cjson.decode(encoded)
 local old = cjson.decode(ARGV[1])
 if current.runId ~= old.runId or current.eventId ~= old.eventId or current.generation ~= old.generation or
    current.workspaceId ~= old.workspaceId or current.channelId ~= old.channelId or
-   current.threadTs ~= old.threadTs or current.controls ~= old.controls then return 0 end
+   current.threadTs ~= old.threadTs or current.controls ~= old.controls or
+   current.memory ~= old.memory then return 0 end
 if current.execution or old.execution then
   if not current.execution or not old.execution or
      current.execution.sandboxName ~= old.execution.sandboxName or
@@ -507,12 +629,18 @@ if current.state == 'interrupted' then return owner and 0 or 1 end
 if owner ~= current.runId then return 0 end
 if current.kind ~= 'work' or
    (current.state ~= 'accepted' and current.state ~= 'dispatch_failed') or
-   (current.session and current.execution and (ARGV[3] ~= '1' or not current.controls)) or current.result or
+   (current.session and current.execution and current.memory ~= 'save' and
+    (ARGV[3] ~= '1' or not current.controls)) or current.result or
    current.deadline > tonumber(ARGV[2]) then return 0 end
 current.state = 'interrupted'
+if ARGV[5] == '1' then current.exitConfirmed = true end
 current.statusVersion = (current.statusVersion or 0) + 1
 redis.call('SET', KEYS[1], cjson.encode(current))
 redis.call('DEL', KEYS[2])
+if current.execution then redis.call('SREM', KEYS[3], current.runId) end
+if current.recovery then
+  redis.call('SREM', ARGV[4] .. current.recovery.sandboxName .. ':' .. current.recovery.sessionId .. ':active', current.runId)
+end
 return 1
 `;
 
@@ -671,6 +799,10 @@ export class RedisRunStore implements RunStore {
     return `${this.namespace}:idle:${target.sandboxName}:${target.sessionId}:active`;
   }
 
+  private activeDispatchPrefix(): string {
+    return `${this.namespace}:idle:`;
+  }
+
   async admit(
     candidate: RunRecord,
     continuationOnly = false,
@@ -823,15 +955,26 @@ export class RedisRunStore implements RunStore {
     result: WorkerResult,
     now: number,
     artifactLease?: string,
+    artifactTarget?: SandboxTarget,
   ): Promise<'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry'> {
     return (await this.execute((client) =>
       client.eval(CLAIM_SCRIPT, {
-        keys: [this.runKey(runId), this.csvCollectionKey(runId)],
+        keys: [
+          this.runKey(runId),
+          this.csvCollectionKey(runId),
+          `${this.runKey(runId)}:no-owner`,
+          artifactTarget
+            ? this.idleGateKey(artifactTarget)
+            : `${this.runKey(runId)}:no-execution`,
+        ],
         arguments: [
           runId,
           JSON.stringify(result),
           String(now),
-          ...(artifactLease ? [artifactLease] : []),
+          artifactLease ?? '',
+          '',
+          artifactLease && artifactTarget ? 'artifact' : '',
+          artifactTarget ? JSON.stringify(artifactTarget) : '',
         ],
       }),
     )) as 'claimed' | 'duplicate' | 'conflict' | 'expired' | 'retry';
@@ -840,7 +983,8 @@ export class RedisRunStore implements RunStore {
   async claimSavedResult(
     observed: RunRecord,
     result: WorkerResult,
-  ): Promise<'claimed' | 'duplicate' | 'conflict'> {
+    artifactTarget?: SandboxTarget,
+  ): Promise<'claimed' | 'duplicate' | 'conflict' | 'retry'> {
     return (await this.execute((client) =>
       client.eval(CLAIM_SCRIPT, {
         keys: [
@@ -851,6 +995,9 @@ export class RedisRunStore implements RunStore {
             observed.channelId,
             observed.threadTs,
           ),
+          artifactTarget
+            ? this.idleGateKey(artifactTarget)
+            : `${this.runKey(observed.runId)}:no-execution`,
         ],
         arguments: [
           observed.runId,
@@ -858,9 +1005,11 @@ export class RedisRunStore implements RunStore {
           'saved',
           '',
           JSON.stringify(observed),
+          artifactTarget ? 'artifact' : '',
+          artifactTarget ? JSON.stringify(artifactTarget) : '',
         ],
       }),
-    )) as 'claimed' | 'duplicate' | 'conflict';
+    )) as 'claimed' | 'duplicate' | 'conflict' | 'retry';
   }
 
   async claimUnsubmitted(
@@ -999,6 +1148,7 @@ export class RedisRunStore implements RunStore {
         arguments: [
           JSON.stringify(observed),
           completedSession ? JSON.stringify(completedSession) : '',
+          this.activeDispatchPrefix(),
         ],
       }),
     )) as 'confirmed' | 'duplicate' | 'conflict';
@@ -1195,11 +1345,31 @@ export class RedisRunStore implements RunStore {
               runId,
               JSON.stringify(target),
               unsubmitted ? 'unsubmitted' : '',
+              this.activeDispatchPrefix(),
             ],
           }),
         ),
       ) === 1
     );
+  }
+
+  async releaseRecoveryTarget(
+    run: RunRecord,
+    exitConfirmed = false,
+  ): Promise<SandboxTarget | undefined> {
+    if (!run.execution) return;
+    const encoded = await this.execute((client) =>
+      client.eval(RELEASE_RECOVERY_TARGET_SCRIPT, {
+        keys: [this.runKey(run.runId), this.activeDispatchKey(run.execution!)],
+        arguments: [
+          JSON.stringify(run),
+          this.activeDispatchPrefix(),
+          exitConfirmed ? '1' : '0',
+        ],
+      }),
+    );
+    if (typeof encoded !== 'string' || !encoded) return;
+    return JSON.parse(encoded) as SandboxTarget;
   }
 
   async enrollIdleSession(target: SandboxTarget): Promise<boolean> {
@@ -1209,6 +1379,57 @@ export class RedisRunStore implements RunStore {
           client.eval(ENROLL_IDLE_SESSION_SCRIPT, {
             keys: [this.idleGateKey(target), this.activeDispatchKey(target)],
             arguments: [],
+          }),
+        ),
+      ) === 1
+    );
+  }
+
+  async fenceLostTarget(target: SandboxTarget): Promise<boolean> {
+    return (
+      Number(
+        await this.execute((client) =>
+          client.eval(FENCE_LOST_TARGET_SCRIPT, {
+            keys: [this.idleGateKey(target)],
+            arguments: [],
+          }),
+        ),
+      ) === 1
+    );
+  }
+
+  async isLostTarget(target: SandboxTarget): Promise<boolean> {
+    const gate = await this.execute((client) =>
+      client.get(this.idleGateKey(target)),
+    );
+    if (typeof gate !== 'string' || gate === 'open') return false;
+    try {
+      return (JSON.parse(gate) as { state?: string }).state === 'lost';
+    } catch {
+      return false;
+    }
+  }
+
+  async bindRecoveryTarget(
+    target: SandboxTarget,
+    replacement: SandboxTarget,
+  ): Promise<boolean> {
+    return (
+      Number(
+        await this.execute((client) =>
+          client.eval(BIND_RECOVERY_TARGET_SCRIPT, {
+            keys: [
+              this.idleGateKey(target),
+              this.activeDispatchKey(target),
+              this.idleGateKey(replacement),
+              this.activeDispatchKey(replacement),
+            ],
+            arguments: [
+              JSON.stringify(target),
+              JSON.stringify(replacement),
+              this.runPrefix(),
+              this.activeDispatchPrefix(),
+            ],
           }),
         ),
       ) === 1
@@ -1274,6 +1495,7 @@ export class RedisRunStore implements RunStore {
     run: RunRecord,
     now: number,
     sessionRestored = false,
+    exitConfirmed = false,
   ): Promise<boolean> {
     return (
       Number(
@@ -1282,11 +1504,16 @@ export class RedisRunStore implements RunStore {
             keys: [
               this.runKey(run.runId),
               this.ownerKey(run.workspaceId, run.channelId, run.threadTs),
+              run.execution
+                ? this.activeDispatchKey(run.execution)
+                : `${this.runKey(run.runId)}:no-execution`,
             ],
             arguments: [
               JSON.stringify(run),
               String(now),
               sessionRestored ? '1' : '0',
+              this.activeDispatchPrefix(),
+              exitConfirmed ? '1' : '0',
             ],
           }),
         ),

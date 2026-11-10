@@ -16,6 +16,8 @@ import { z } from 'zod';
 import {
   MAX_RETAINED_INPUTS,
   MAX_SLACK_INPUT_FILES,
+  SHARED_NOTE_BYTE_LIMIT,
+  SHARED_NOTE_SAVED,
   WORKER_FAILURE_REPLY,
   workerCallbackSchema,
   workerResultSchema,
@@ -79,7 +81,13 @@ type GatewayOptions = {
   dispatch: (
     job: WorkerJob,
     stagedInputs?: Buffer[],
-  ) => Promise<void | 'worker-unavailable' | 'input-staging-failed'>;
+  ) => Promise<
+    | void
+    | 'worker-unavailable'
+    | 'worker-start-failed'
+    | 'input-staging-failed'
+    | 'input-storage-full'
+  >;
   collectArtifact?: (
     runId: string,
     target: SandboxTarget,
@@ -87,7 +95,10 @@ type GatewayOptions = {
   ) => Promise<Buffer>;
   isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>;
   inspectWorker?: (run: RunRecord, stop: boolean) => Promise<WorkerInspection>;
-  releaseRecoveredWorker?: (run: RunRecord) => Promise<void>;
+  releaseRecoveredWorker?: (
+    run: RunRecord,
+    reconcileExit?: boolean,
+  ) => Promise<void>;
   schedule: (task: () => Promise<void>) => void;
   now?: () => number;
 };
@@ -118,6 +129,7 @@ function statusText(run: RunRecord) {
         ? 'Working…'
         : 'Starting: worker startup is unconfirmed. The outcome is uncertain; ask the operator to inspect this run.';
     case 'interrupted':
+      if (run.memory === 'save') return SHARED_NOTE_UNCONFIRMED_REPLY;
       return run.controls
         ? 'Failed: work ended without a confirmed result. Mention me again to try a fresh run.'
         : 'Failed: the worker environment stopped without a confirmed result. Mention me again to try a fresh run.';
@@ -131,9 +143,19 @@ export const RECOVERED_REPLY =
 
 export const WORKER_UNAVAILABLE_REPLY =
   'The worker is unavailable. Your message was not submitted. Mention me again when the worker is ready.';
+export const WORKER_START_FAILURE_REPLY =
+  'The worker could not start. Your message was not submitted. Mention me again when the worker is ready.';
 
 const INPUT_STAGING_FAILURE_REPLY =
   'The inputs could not be staged. Resend the message with its files and links to retry.';
+const INPUT_STORAGE_FULL_REPLY =
+  'Workspace storage is full. Your request was not submitted. Ask an operator to free space, then resend your message.';
+const WORKER_STORAGE_FULL_REPLY =
+  'Workspace storage is full. Ask an operator to free space, then retry.';
+const SHARED_NOTE_STORAGE_FULL_REPLY =
+  'Workspace storage is full. Check the channel’s shared notes before resending your request.';
+const WORKER_QUOTA_REPLY =
+  'The model provider is out of quota or rate-limited. Try again after the provider limit clears.';
 const UNSUPPORTED_FILE_REPLY =
   'Attach a supported Slack-hosted UTF-8 text, Markdown, source, JSON, CSV, text-based PDF, or enabled image file.';
 const THREAD_CONTEXT_UNAVAILABLE_REPLY =
@@ -144,6 +166,13 @@ const PDF_TEXT_TOO_LARGE_REPLY =
   'The PDF contains more than 16 KiB of text for this test. Mention me again with a shorter PDF.';
 const RETAINED_SOURCES_UNAVAILABLE_REPLY =
   'I could not reopen an earlier file or link in this thread. Start a new message in the channel, mention me there, and include the files and links you still need.';
+
+const SHARED_NOTE_UNCONFIRMED_REPLY =
+  'I could not confirm the shared note save. Check the channel’s shared notes before resending it.';
+const SHARED_NOTE_FULL_REPLY =
+  'This channel’s shared notes are full. The existing notes are still available.';
+const SHARED_NOTES_UNAVAILABLE_REPLY =
+  'I could not open this channel’s shared notes. Please try again later.';
 
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_EVENT_BYTES = 256 * 1024;
@@ -166,6 +195,16 @@ const threadReplyEnvelope = z.object({
   }),
 });
 
+const eventAuthorizations = z.object({
+  authorizations: z.array(
+    z.object({
+      team_id: z.string(),
+      user_id: z.string(),
+      is_bot: z.boolean(),
+    }),
+  ),
+});
+
 function parseThreadReply(raw: unknown) {
   const parsed = threadReplyEnvelope.safeParse(raw);
   if (!parsed.success) return;
@@ -183,6 +222,48 @@ function parseThreadReply(raw: unknown) {
     text: event.text,
     raw: event,
   };
+}
+
+export function normalizeFailureResult(run: RunRecord, result: WorkerResult) {
+  if (result.type !== 'failed') return;
+  if (result.session || result.artifact) return 400;
+  if (result.failureCategory === 'provider_quota') {
+    result.text = WORKER_QUOTA_REPLY;
+    return;
+  }
+  if (result.failureCategory === 'drive_full') {
+    result.text =
+      run.memory === 'save'
+        ? SHARED_NOTE_STORAGE_FULL_REPLY
+        : WORKER_STORAGE_FULL_REPLY;
+    return;
+  }
+  if (run.memory === 'save') {
+    result.text =
+      result.inputError === 'shared_notes_full'
+        ? SHARED_NOTE_FULL_REPLY
+        : SHARED_NOTE_UNCONFIRMED_REPLY;
+    return;
+  }
+  if (
+    run.memory === 'read' &&
+    result.inputError === 'shared_notes_unavailable'
+  ) {
+    result.text = SHARED_NOTES_UNAVAILABLE_REPLY;
+    return;
+  }
+  result.text =
+    result.inputError === 'pdf_unreadable'
+      ? PDF_UNREADABLE_REPLY
+      : result.inputError === 'pdf_text_too_large'
+        ? PDF_TEXT_TOO_LARGE_REPLY
+        : result.inputError === 'too_many_sources'
+          ? 'This thread has reached its ' +
+            MAX_RETAINED_INPUTS +
+            '-source limit. Start a new thread to add more files or links.'
+          : result.inputError === 'retained_sources_unavailable'
+            ? RETAINED_SOURCES_UNAVAILABLE_REPLY
+            : WORKER_FAILURE_REPLY;
 }
 
 export function createGateway({
@@ -216,7 +297,7 @@ export function createGateway({
     });
   let bot = createBot();
 
-  async function initializeBot() {
+  async function initializeBot(timeoutMs = 15_000) {
     const current = bot;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -230,7 +311,7 @@ export function createGateway({
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error('Chat initialization timed out')),
-            15_000,
+            timeoutMs,
           );
         }),
       ]);
@@ -301,7 +382,7 @@ export function createGateway({
       (active || run.state === 'stopping' || run.state === 'publishing')
         ? [
             Actions([
-              ...(active
+              ...(active && run.memory !== 'save'
                 ? [
                     Button({
                       id: STOP_ACTION_ID,
@@ -385,6 +466,7 @@ export function createGateway({
       if (
         config.controlsEnabled &&
         run.kind === 'work' &&
+        run.memory !== 'save' &&
         result.type === 'completed'
       ) {
         await store
@@ -417,6 +499,7 @@ export function createGateway({
       );
       await publishingStatus;
       await renderStatus(run.runId);
+      await releaseRecoveredWorker?.(run).catch(() => {});
       return;
     }
 
@@ -483,6 +566,7 @@ export function createGateway({
     }
     await publishingStatus;
     await renderStatus(run.runId);
+    await releaseRecoveredWorker?.(run).catch(() => {});
   }
 
   async function publishNotice(
@@ -523,27 +607,22 @@ export function createGateway({
     const completed =
       inspection?.state === 'stopped' ? inspection.completed : undefined;
     if (completed && validateResult(run, completed)) return;
-    await store.confirmStopped(run, completed?.session);
+    const confirmed = await store.confirmStopped(run, completed?.session);
+    if (confirmed !== 'conflict') await releaseRecoveredWorker?.(run);
   }
 
   function validateResult(run: RunRecord, result: WorkerResult) {
-    if (result.type === 'failed') {
-      if (result.session || result.artifact) return 400;
-      result.text =
-        result.inputError === 'pdf_unreadable'
-          ? PDF_UNREADABLE_REPLY
-          : result.inputError === 'pdf_text_too_large'
-            ? PDF_TEXT_TOO_LARGE_REPLY
-            : result.inputError === 'too_many_sources'
-              ? 'This thread has reached its ' +
-                MAX_RETAINED_INPUTS +
-                '-source limit. Start a new thread to add more files or links.'
-              : result.inputError === 'retained_sources_unavailable'
-                ? RETAINED_SOURCES_UNAVAILABLE_REPLY
-                : WORKER_FAILURE_REPLY;
+    if (result.type === 'failed') return normalizeFailureResult(run, result);
+    if (result.inputError || result.failureCategory) return 400;
+    if (run.memory === 'save') {
+      if (
+        result.session ||
+        result.artifact ||
+        result.text !== SHARED_NOTE_SAVED
+      )
+        return 409;
       return;
     }
-    if (result.inputError) return 400;
     const expected = run.session;
     const received = result.session;
     if (
@@ -560,18 +639,33 @@ export function createGateway({
   }
 
   async function readArtifact(
-    run: Pick<RunRecord, 'runId' | 'execution'>,
+    run: Pick<RunRecord, 'runId' | 'execution' | 'recovery'>,
     result: WorkerResult,
+    onAttempt?: (target: SandboxTarget) => void,
   ) {
-    if (!result.artifact || !run.execution || !collectArtifact) return;
-    const bytes = await collectArtifact(
-      run.runId,
-      run.execution,
-      result.artifact.format,
-    ).catch(() => undefined);
-    return bytes && digest(bytes) === result.artifact.sha256
-      ? bytes
-      : undefined;
+    const collect = collectArtifact;
+    const artifact = result.artifact;
+    if (!artifact || !run.execution || !collect) return;
+    const getRecovery = async () =>
+      (await store.getRun(run.runId).catch(() => undefined))?.recovery;
+    const target = (await getRecovery()) ?? run.recovery ?? run.execution;
+    const readFrom = (execution: SandboxTarget) => {
+      onAttempt?.(execution);
+      return collect(run.runId, execution, artifact.format).catch(
+        () => undefined,
+      );
+    };
+    let bytes = await readFrom(target);
+    if (!bytes) {
+      const moved = await getRecovery();
+      if (
+        moved &&
+        (moved.sandboxName !== target.sandboxName ||
+          moved.sessionId !== target.sessionId)
+      )
+        bytes = await readFrom(moved);
+    }
+    return bytes && digest(bytes) === artifact.sha256 ? bytes : undefined;
   }
 
   function supportsArtifact(result: WorkerResult) {
@@ -586,6 +680,18 @@ export function createGateway({
     try {
       if (run.state === 'stopping') {
         await confirmStop(run, rendering);
+        return;
+      }
+      if (
+        [
+          'completed',
+          'worker_failed',
+          'publication_uncertain',
+          'interrupted',
+          'stopped',
+        ].includes(run.state)
+      ) {
+        await releaseRecoveredWorker?.(run, true).catch(() => {});
         return;
       }
       if (run.state !== 'accepted' && run.state !== 'dispatch_failed') return;
@@ -606,29 +712,45 @@ export function createGateway({
             validateResult(run, result)
           )
             return;
-          const bytes = inspection.artifactTarget
+          const artifactSupported = supportsArtifact(result);
+          let artifactTarget = artifactSupported
+            ? inspection.artifactTarget
+            : undefined;
+          const bytes = artifactTarget
             ? inspection.artifactBytes
-            : supportsArtifact(result)
-              ? await readArtifact(run, result)
+            : artifactSupported
+              ? await readArtifact(run, result, (target) => {
+                  artifactTarget = target;
+                })
               : undefined;
           const artifact =
             bytes && digest(bytes) === result.artifact?.sha256
               ? bytes
               : undefined;
-          if ((await store.claimSavedResult(run, result)) === 'claimed') {
+          const saved = await store.claimSavedResult(
+            run,
+            result,
+            artifactTarget,
+          );
+          if (saved === 'claimed') {
             try {
               await publish(run, result, artifact);
             } finally {
               await releaseRecoveredWorker?.(run);
             }
-          }
+          } else if (saved === 'duplicate') await releaseRecoveredWorker?.(run);
           return;
         }
       }
       if (
         run.deadline <= now() &&
         exited &&
-        (await store.interruptRun(run, now(), sessionRestored))
+        (await store.interruptRun(
+          (await store.getRun(run.runId)) ?? run,
+          now(),
+          sessionRestored,
+          true,
+        ))
       )
         await releaseRecoveredWorker?.(run);
     } finally {
@@ -648,6 +770,10 @@ export function createGateway({
       previous.threadTs !== run.threadTs
     )
       return false;
+    const saving = previous.memory === 'save';
+    const recoveryReply = saving
+      ? SHARED_NOTE_UNCONFIRMED_REPLY + ' This message was not submitted.'
+      : RECOVERED_REPLY;
     if (previous.controls && config.controlsEnabled) {
       if (previous.deadline <= now()) await reconcileStatus(previous);
       const current = await store.getRun(previous.runId);
@@ -655,7 +781,7 @@ export function createGateway({
         current?.state === 'interrupted' &&
         (await store.interruptRun(current, now()))
       )
-        return RECOVERED_REPLY;
+        return recoveryReply;
       if (
         current &&
         ['completed', 'worker_failed', 'stopped'].includes(current.state) &&
@@ -667,7 +793,7 @@ export function createGateway({
     if (!isSandboxStopped || !previous.execution) return false;
     if (previous.state !== 'interrupted') {
       if (
-        previous.session ||
+        (previous.session && !saving) ||
         previous.deadline > now() ||
         (previous.state !== 'accepted' && previous.state !== 'dispatch_failed')
       )
@@ -679,7 +805,7 @@ export function createGateway({
       .interruptRun(previous, now())
       .catch(() => store.interruptRun(previous, now()));
     if (recovered) await renderStatus(previous.runId);
-    return recovered && RECOVERED_REPLY;
+    return recovered && recoveryReply;
   }
 
   function channelEnabled(workspaceId: string, channelId: string) {
@@ -767,8 +893,9 @@ export function createGateway({
         run.threadTs !== action.threadTs ||
         run.statusMessageId !== action.messageTs ||
         (action.actionId === STOP_ACTION_ID &&
-          run.senderId !== action.userId &&
-          !config.operatorIds?.includes(action.userId)) ||
+          (run.memory === 'save' ||
+            (run.senderId !== action.userId &&
+              !config.operatorIds?.includes(action.userId)))) ||
         !(await actorAllowed(action.channelId, action.userId).catch(
           () => false,
         ))
@@ -866,6 +993,51 @@ export function createGateway({
           : undefined;
     if (!input) return new Response(null, { status: 200 });
 
+    const currentText = input.text.trimStart();
+    const commandPattern =
+      /^(remember for this channel:|use shared notes:)([\s\S]*)$/i;
+    const mentionMatch = currentText.match(/^<@([UW][A-Z0-9]+)>\s+/);
+    // Only a shared-note command needs to know which user the mention names.
+    const leadingMention =
+      mentionMatch &&
+      commandPattern.test(currentText.slice(mentionMatch[0].length))
+        ? mentionMatch
+        : null;
+    // The same Slack message can arrive as a reply and a mention. On a cold
+    // gateway, the signed envelope identifies the installed bot before admission.
+    let botUserId =
+      slack.botUserId ??
+      (leadingMention
+        ? eventAuthorizations
+            .safeParse(mention ? JSON.parse(body) : payload.raw)
+            .data?.authorizations.find(
+              (authorization) =>
+                authorization.is_bot &&
+                authorization.team_id === config.workspaceId,
+            )?.user_id
+        : undefined);
+    if (leadingMention && !botUserId) {
+      try {
+        await initializeBot(2_200);
+      } catch {
+        return new Response(null, { status: 503 });
+      }
+      botUserId = slack.botUserId;
+      if (!botUserId) return new Response(null, { status: 503 });
+    }
+    const botMention =
+      leadingMention && leadingMention[1] === botUserId ? leadingMention : null;
+    const command =
+      !mention || botMention
+        ? currentText.slice(botMention?.[0].length ?? 0).match(commandPattern)
+        : null;
+    const memory = command
+      ? command[1]!.toLowerCase() === 'remember for this channel:'
+        ? 'save'
+        : 'read'
+      : undefined;
+    const saving = memory === 'save';
+
     const rawEvent = input.raw;
     const attachedFiles = rawEvent?.files;
     const hasFiles = Array.isArray(attachedFiles) && attachedFiles.length > 0;
@@ -878,7 +1050,9 @@ export function createGateway({
     };
     const fileInputEnabled = Object.values(enabledFiles).some(Boolean);
     const fileShare =
-      fileInputEnabled && rawEvent?.subtype === 'file_share' && hasFiles;
+      (fileInputEnabled || saving) &&
+      rawEvent?.subtype === 'file_share' &&
+      hasFiles;
     if (
       input.teamId !== config.workspaceId ||
       !config.channelIds.includes(input.channelId) ||
@@ -897,7 +1071,7 @@ export function createGateway({
       rawEvent.bot_id ||
       rawEvent.bot_profile ||
       (rawEvent.subtype !== undefined && !fileShare) ||
-      (!mention && !fileInputEnabled && hasFiles) ||
+      (!mention && !saving && !fileInputEnabled && hasFiles) ||
       (rawEvent.user_team !== undefined &&
         rawEvent.user_team !== config.workspaceId) ||
       (rawEvent.team !== undefined && rawEvent.team !== config.workspaceId) ||
@@ -937,6 +1111,7 @@ export function createGateway({
       callbackHash: digest(callbackToken),
       kind: 'work',
       state: 'accepted',
+      ...(memory ? { memory } : {}),
       ...(config.controlsEnabled && inspectWorker ? { controls: true } : {}),
     };
     let admission;
@@ -1001,9 +1176,46 @@ export function createGateway({
             );
           return;
         }
-        const links = config.publicUrlInput
-          ? currentMessageLinks(input.text)
-          : [];
+        let text = input.text;
+        if (command) {
+          const allowed = await actorAllowed(run.channelId, run.senderId).catch(
+            () => undefined,
+          );
+          if (allowed === undefined) {
+            await publishNotice(run, 'failed', SHARED_NOTES_UNAVAILABLE_REPLY);
+            return;
+          }
+          if (botMention && allowed) await initializeBot();
+          if (!allowed || (botMention && botMention[1] !== slack.botUserId)) {
+            await publishNotice(
+              run,
+              'failed',
+              'Shared notes are available to internal members of this enabled channel.',
+            );
+            return;
+          }
+          text = command[2]!.trim();
+          if (memory === 'save') text = unescapeSlackText(text).trim();
+          if (
+            !text ||
+            (memory === 'save' &&
+              (Buffer.byteLength(text) > SHARED_NOTE_BYTE_LIMIT ||
+                /[\p{Cc}\p{Zl}\p{Zp}]/u.test(text)))
+          ) {
+            await publishNotice(
+              run,
+              'failed',
+              memory === 'save'
+                ? 'Put the note on one line after “remember for this channel:”, up to 512 UTF-8 bytes.'
+                : 'Put your question after “use shared notes:”.',
+            );
+            return;
+          }
+        }
+        const links =
+          !saving && config.publicUrlInput
+            ? currentMessageLinks(input.text)
+            : [];
         const publicUrl = links[0];
         if (links.length > 1) {
           await publishNotice(
@@ -1014,7 +1226,8 @@ export function createGateway({
           return;
         }
 
-        const files = fileInputEnabled && hasFiles ? attachedFiles : [];
+        const files =
+          !saving && fileInputEnabled && hasFiles ? attachedFiles : [];
         if (files.length > MAX_SLACK_INPUT_FILES) {
           await publishNotice(
             run,
@@ -1057,7 +1270,12 @@ export function createGateway({
         }
 
         let threadContext: WorkerJob['input']['threadContext'];
-        if (mention && !run.session && run.threadTs !== run.messageTs) {
+        if (
+          !saving &&
+          mention &&
+          !run.session &&
+          run.threadTs !== run.messageTs
+        ) {
           threadContext = await loadThreadContext(run, config.botToken).catch(
             () => undefined,
           );
@@ -1085,7 +1303,9 @@ export function createGateway({
           );
         }
 
-        const attachments = slackAttachmentMetadata(attachedFiles);
+        const attachments = saving
+          ? undefined
+          : slackAttachmentMetadata(attachedFiles);
         acknowledgement = acknowledge(run);
         const job: WorkerJob = {
           version: 1,
@@ -1093,8 +1313,8 @@ export function createGateway({
           conversationId: run.conversationId,
           generation: run.generation,
           input: {
-            text: input.text.trim()
-              ? input.text
+            text: text.trim()
+              ? text
               : 'Use the attached files for this thread.',
             senderId: run.senderId,
             workspaceId: run.workspaceId,
@@ -1106,9 +1326,10 @@ export function createGateway({
             ...(sources.length ? { sources } : {}),
           },
           ...(run.session ? { session: run.session } : {}),
-          ...(config.fileExchange
+          ...(memory ? { memory } : {}),
+          ...(!saving && config.fileExchange
             ? { artifactOutput: true }
-            : config.csvOutput
+            : !saving && config.csvOutput
               ? { csvOutput: true }
               : {}),
           deadline: run.deadline,
@@ -1121,9 +1342,13 @@ export function createGateway({
         const notice =
           dispatchOutcome === 'worker-unavailable'
             ? WORKER_UNAVAILABLE_REPLY
-            : dispatchOutcome === 'input-staging-failed'
-              ? INPUT_STAGING_FAILURE_REPLY
-              : undefined;
+            : dispatchOutcome === 'worker-start-failed'
+              ? WORKER_START_FAILURE_REPLY
+              : dispatchOutcome === 'input-storage-full'
+                ? INPUT_STORAGE_FULL_REPLY
+                : dispatchOutcome === 'input-staging-failed'
+                  ? INPUT_STAGING_FAILURE_REPLY
+                  : undefined;
         if (notice && !(await publishNotice(run, 'failed', notice)))
           console.error(
             JSON.stringify({
@@ -1208,6 +1433,16 @@ export function createGateway({
         Number(url.searchParams.get('generation')),
       );
       if (auth instanceof Response) return auth;
+      const memory = url.searchParams.get('memory') ?? undefined;
+      if (
+        auth.memory !== memory ||
+        (memory &&
+          (!channelEnabled(auth.workspaceId, auth.channelId) ||
+            url.searchParams.get('workspaceId') !== auth.workspaceId ||
+            url.searchParams.get('channelId') !== auth.channelId ||
+            url.searchParams.get('messageTs') !== auth.messageTs))
+      )
+        return new Response(null, { status: 409 });
       return new Response(null, {
         status:
           auth.state === 'accepted' || auth.state === 'dispatch_failed'
@@ -1245,6 +1480,7 @@ export function createGateway({
     const claimAt = now();
     let artifact: Buffer | undefined;
     let artifactLease: string | undefined;
+    let artifactTarget: SandboxTarget | undefined;
     if (
       supportsArtifact(result) &&
       collectArtifact &&
@@ -1261,7 +1497,9 @@ export function createGateway({
       if (!reserved) return new Response(null, { status: 503 });
 
       // Collect before the worker can exit and release its Sandbox reservation.
-      artifact = await readArtifact(run, result);
+      artifact = await readArtifact(run, result, (target) => {
+        artifactTarget = target;
+      });
     }
     let claim;
     try {
@@ -1271,6 +1509,7 @@ export function createGateway({
         result,
         claimAt,
         artifactLease,
+        artifactTarget,
       );
     } catch {
       console.error(
@@ -1282,7 +1521,10 @@ export function createGateway({
       return new Response(null, { status: 503 });
     }
     if (claim === 'duplicate') {
-      schedule(() => renderStatus(run.runId));
+      schedule(async () => {
+        await releaseRecoveredWorker?.(run).catch(() => {});
+        await renderStatus(run.runId);
+      });
       return new Response(null, { status: 204 });
     }
     if (claim === 'expired') return new Response(null, { status: 410 });

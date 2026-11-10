@@ -27,9 +27,11 @@ npm install --prefix /tmp/hydra-worker --no-audit --no-fund --ignore-scripts \
 ```
 
 Copy [`sandbox/run.mjs`](sandbox/run.mjs),
-[`sandbox/supervise.mjs`](sandbox/supervise.mjs), and
-[`sandbox/control.mjs`](sandbox/control.mjs) into `/tmp/hydra-worker` with the
-same filenames. Configure the Sandbox firewall for the gateway origin and
+[`sandbox/supervise.mjs`](sandbox/supervise.mjs),
+[`sandbox/control.mjs`](sandbox/control.mjs), and
+[`sandbox/shared-notes.mjs`](sandbox/shared-notes.mjs) into `/tmp/hydra-worker`
+with the same filenames. Verify `flock` from util-linux is available for shared
+notes writes. Configure the Sandbox firewall for the gateway origin and
 OpenRouter. Inject the model key through the OpenRouter egress rule. The command
 receives only a placeholder key, the selected model and the admitted job. Keep
 the Sandbox's `NODE_EXTRA_CA_CERTS` available for Pi's TLS connection to the

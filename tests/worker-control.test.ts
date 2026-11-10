@@ -264,6 +264,85 @@ describe('Sandbox worker control', () => {
     await rm(paths.root, { recursive: true, force: true });
   });
 
+  test.skipIf(process.platform !== 'linux').each([
+    [
+      'interrupted memory save with an inconsistent native session',
+      false,
+      2,
+      'Native session was not restored',
+    ],
+    [
+      'completed memory save with an inconsistent native session',
+      true,
+      2,
+      'Native session was not restored',
+    ],
+    [
+      'interrupted memory save with a missing adapter entry',
+      false,
+      1,
+      'Adapter session changed',
+    ],
+    [
+      'completed memory save with a missing adapter entry',
+      true,
+      1,
+      'Adapter session changed',
+    ],
+  ])(
+    'refuses to report %s as safe',
+    async (_case, completed, revision, error) => {
+      const paths = await fixture();
+      const runId = randomUUID();
+      const seedRunId = randomUUID();
+      const nativeId = randomUUID();
+      const worker = join(paths.root, 'interrupted-memory-worker.mjs');
+      const sessions = join(paths.workspace, 'runs', seedRunId, 'pi-sessions');
+      await mkdir(join(paths.workspace, 'runs', runId));
+      await mkdir(sessions, { recursive: true });
+      await writeFile(
+        join(sessions, 'session.jsonl'),
+        JSON.stringify({ type: 'session', id: nativeId }) + '\n',
+      );
+      if (completed)
+        await writeFile(
+          join(paths.workspace, 'runs', runId, 'result.json'),
+          JSON.stringify({
+            version: 1,
+            runId,
+            generation: 1,
+            type: 'completed',
+          }),
+        );
+      await writeFile(worker, 'process.exit(0)');
+      try {
+        await expect(
+          supervise(
+            {
+              version: 1,
+              runId,
+              generation: 1,
+              memory: 'save',
+              session: {
+                seedRunId,
+                nativeId,
+                adapterId: randomUUID(),
+                revision,
+              },
+            },
+            {
+              ...paths,
+              worker,
+              readIdentity: () => new Promise(() => {}),
+            },
+          ),
+        ).rejects.toThrow(error);
+      } finally {
+        await rm(paths.root, { recursive: true, force: true });
+      }
+    },
+  );
+
   test.skipIf(process.platform !== 'linux')(
     'registers the exact control before releasing worker admission',
     async () => {
@@ -463,10 +542,7 @@ process.once('message', async (message) => {
           {
             ...paths,
             worker,
-            readIdentity: async () => {
-              await delay(200);
-              return '1';
-            },
+            readIdentity: () => new Promise(() => {}),
           },
         ),
       ).resolves.toEqual(
@@ -534,9 +610,16 @@ process.once('message', () => {
       const paths = await fixture();
       const runId = randomUUID();
       const worker = join(paths.root, 'stuck-worker.mjs');
+      const ready = join(paths.root, 'signal-handler-ready');
       await writeFile(
         worker,
-        "process.on('SIGTERM', () => {}); process.on('message', () => process.disconnect()); setInterval(() => {}, 1000);",
+        `
+import { writeFileSync } from 'node:fs';
+process.on('SIGTERM', () => {});
+process.on('message', () => process.disconnect());
+writeFileSync(${JSON.stringify(ready)}, '1');
+setInterval(() => {}, 1000);
+`,
       );
       const supervised = supervise(
         { version: 1, runId, generation: 1 },
@@ -547,29 +630,41 @@ process.once('message', () => {
           proveGroup: () => {},
         },
       );
-      let status;
-      for (let attempt = 0; attempt < 50; attempt += 1) {
-        status = await controlRun(request(runId, 'status'), paths);
-        if (status.state === 'running') break;
-        await delay(20);
+      try {
+        let status;
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          status = await controlRun(request(runId, 'status'), paths);
+          // The supervisor registers the group before the child handles signals.
+          if (
+            status.state === 'running' &&
+            (await readFile(ready, 'utf8').catch(() => undefined)) === '1'
+          )
+            break;
+          await delay(20);
+        }
+        expect(status?.state).toBe('running');
+        expect(await readFile(ready, 'utf8')).toBe('1');
+        await expect(
+          controlRun(request(runId, 'cancel'), paths),
+        ).resolves.toEqual(
+          expect.objectContaining({
+            state: 'exited',
+            forced: true,
+            targetPgid: expect.any(Number),
+            processesExited: true,
+            sessionSafe: 'uncommitted',
+          }),
+        );
+        await expect(supervised).resolves.toEqual(
+          expect.objectContaining({ forced: true, stopRequested: true }),
+        );
+      } finally {
+        await controlRun(request(runId, 'cancel'), paths).catch(() => {});
+        await supervised.catch(() => {});
+        await rm(paths.root, { recursive: true, force: true });
       }
-      expect(status?.state).toBe('running');
-      await expect(
-        controlRun(request(runId, 'cancel'), paths),
-      ).resolves.toEqual(
-        expect.objectContaining({
-          state: 'exited',
-          forced: true,
-          targetPgid: expect.any(Number),
-          processesExited: true,
-          sessionSafe: 'uncommitted',
-        }),
-      );
-      await expect(supervised).resolves.toEqual(
-        expect.objectContaining({ forced: true, stopRequested: true }),
-      );
-      await rm(paths.root, { recursive: true, force: true });
     },
+    10_000,
   );
 
   test.skipIf(process.platform !== 'linux')(

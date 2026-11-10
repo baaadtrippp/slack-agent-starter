@@ -1,7 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { Drive, Sandbox } from '@vercel/sandbox';
 import type { Session } from '@vercel/sandbox';
-import type { ManagedRuntime, RedisRunStore } from './store.js';
+import type { ManagedRuntime, RedisRunStore, SandboxTarget } from './store.js';
+
+export const MANAGED_WORKER_PRIVILEGE_DROP =
+  'setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs';
+
+export const MANAGED_DRIVE_WRITE_SETUP = [
+  'test ! -L /workspace',
+  'mountpoint -q /workspace',
+  'if [ "$(stat -c %u:%g -- /workspace)" != "1000:1000" ]; then chown --no-dereference -- 1000:1000 /workspace; fi',
+  `${MANAGED_WORKER_PRIVILEGE_DROP} -- sh -c 'test -w /workspace && test -x /workspace'`,
+].join(' && ');
 
 type ManagedWorkerConfig = {
   sandboxName: string;
@@ -60,11 +70,14 @@ export function createManagedWorker(
       cmd: 'bash',
       args: [
         '-c',
-        'set -eu; mountpoint -q /workspace; cd /tmp/hydra-worker; test -x node_modules/.bin/pi; test -x node_modules/.bin/pi-acp; node --check run.mjs' +
+        `set -eu; ${MANAGED_DRIVE_WRITE_SETUP} || exit 1; exec ${MANAGED_WORKER_PRIVILEGE_DROP} -- bash -c "$1"`,
+        'hydra-readiness',
+        'set -eu; cd /tmp/hydra-worker; test -x node_modules/.bin/pi; test -x node_modules/.bin/pi-acp; command -v flock >/dev/null; command -v sysctl >/dev/null; node --check run.mjs; node --check shared-notes.mjs' +
           (controlsEnabled
             ? '; node --check supervise.mjs; node --check control.mjs'
             : ''),
       ],
+      sudo: true,
       timeoutMs: 3_000,
       signal,
     });
@@ -73,6 +86,18 @@ export function createManagedWorker(
       ? await store.enrollIdleSession(target(session))
       : await store.isIdleSessionOpen(target(session));
     if (!enrolled) return;
+    if (
+      previous &&
+      (await store.isLostTarget({
+        sandboxName,
+        sessionId: previous.sessionId,
+      })) &&
+      !(await store.bindRecoveryTarget(
+        { sandboxName, sessionId: previous.sessionId },
+        target(session),
+      ))
+    )
+      return;
 
     const updated = await store.compareManagedRuntime(sandboxName, previous, {
       phase: 'ready',
@@ -80,6 +105,24 @@ export function createManagedWorker(
       driveId: drive.driveId,
     });
     if (updated) return session;
+  }
+
+  async function fenceStoppedReplacement(
+    previous: ManagedRuntime,
+    replacement: SandboxTarget,
+  ) {
+    if (await store.isLostTarget(replacement)) return true;
+    if (!(await store.enrollIdleSession(replacement)))
+      return store.isLostTarget(replacement);
+    const prior = { sandboxName, sessionId: previous.sessionId };
+    // Preserve every reservation from the original target before replacing
+    // the stopped intermediate session, even if activation never bound it.
+    if (
+      (await store.isLostTarget(prior)) &&
+      !(await store.bindRecoveryTarget(prior, replacement))
+    )
+      return store.isLostTarget(replacement);
+    return store.fenceLostTarget(replacement);
   }
 
   async function getSession(deadline: number) {
@@ -97,22 +140,37 @@ export function createManagedWorker(
     )
       return;
 
-    if (!current || current.phase === 'starting')
+    const session = sandbox.currentSession();
+    const detached =
+      session.status === 'stopped' &&
+      !drive.currentSessionId &&
+      !drive.currentSandboxName;
+    if (
+      !current ||
+      (current.phase === 'starting' &&
+        (!detached || session.sessionId === current.sessionId))
+    )
       return activate(sandbox, drive, current, signal);
 
-    const session = sandbox.currentSession();
-    if (session.sessionId !== current.sessionId) return;
-    if (isReadySession(session, drive)) return session;
-    if (
-      session.status !== 'stopped' ||
-      drive.currentSessionId ||
-      drive.currentSandboxName
-    )
+    if (current.phase === 'ready' && session.sessionId !== current.sessionId)
       return;
+    if (isReadySession(session, drive)) return session;
+    if (!detached) return;
+    const stoppedTarget = target(session);
+    if (current.phase === 'starting') {
+      if (
+        session.sourceSnapshotId !== seedId ||
+        !(await fenceStoppedReplacement(current, stoppedTarget))
+      )
+        return;
+    } else if (!(await store.isLostTarget(stoppedTarget))) {
+      // An unexpected stop keeps active reservations for the next activation.
+      await store.fenceLostTarget(stoppedTarget);
+    }
 
     const starting: ManagedRuntime = {
       phase: 'starting',
-      sessionId: current.sessionId,
+      sessionId: session.sessionId,
       driveId: current.driveId,
       operationId: randomUUID(),
     };
@@ -140,6 +198,76 @@ export function createManagedWorker(
     );
   }
 
+  async function recoverSession(lost: SandboxTarget, deadline: number) {
+    if (lost.sandboxName !== sandboxName) return;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return;
+    const signal = AbortSignal.timeout(Math.min(25_000, remaining));
+    const [sandbox, drive, current] = await Promise.all([
+      Sandbox.get({ name: sandboxName, resume: false, signal }),
+      Drive.get({ name: driveName, signal }),
+      store.getManagedRuntime(sandboxName),
+    ]);
+    if (
+      !matchesSeedAndMount(sandbox, drive) ||
+      !current ||
+      current.driveId !== drive.driveId
+    )
+      return;
+    if (current.sessionId !== lost.sessionId) return getSession(deadline);
+    if (current.phase === 'starting') return getSession(deadline);
+
+    let lostConfirmed = true;
+    const sessions = await sandbox.listSessions({ signal });
+    for await (const session of sessions) {
+      if (session.id !== lost.sessionId) continue;
+      lostConfirmed = session.status === 'stopped';
+      break;
+    }
+    if (!lostConfirmed) return;
+
+    const observed = sandbox.currentSession();
+    const replacementAlreadyRunning =
+      observed.sessionId !== lost.sessionId && isReadySession(observed, drive);
+    if (
+      !replacementAlreadyRunning &&
+      (observed.status !== 'stopped' ||
+        drive.currentSessionId ||
+        drive.currentSandboxName)
+    )
+      return;
+    if (!(await store.fenceLostTarget(lost))) return;
+
+    const starting: ManagedRuntime = {
+      phase: 'starting',
+      sessionId: lost.sessionId,
+      driveId: current.driveId,
+      operationId: randomUUID(),
+    };
+    const claimed = await store
+      .compareManagedRuntime(sandboxName, current, starting)
+      .catch(() => store.compareManagedRuntime(sandboxName, current, starting));
+    if (!claimed) return getSession(deadline);
+    if (signal.aborted) {
+      await store.compareManagedRuntime(sandboxName, starting, current);
+      return;
+    }
+
+    if (replacementAlreadyRunning)
+      return activate(sandbox, drive, starting, signal);
+    const replacement = await Sandbox.get({
+      name: sandboxName,
+      resume: true,
+      signal,
+    });
+    return activate(
+      replacement,
+      await Drive.get({ name: driveName, signal }),
+      starting,
+      signal,
+    );
+  }
+
   async function stopIfIdle(session: Session) {
     const exact = target(session);
     const operationId = randomUUID();
@@ -150,5 +278,5 @@ export function createManagedWorker(
       await session.stop({ signal: AbortSignal.timeout(20_000) });
   }
 
-  return { getSession, stopIfIdle };
+  return { getSession, recoverSession, stopIfIdle };
 }
