@@ -380,12 +380,13 @@ worker snapshot and Drive until accepted work is terminal and the rollback has
 been checked. A gateway and worker built from different revisions are not a
 supported steady state.
 
-For complete teardown, first disable Slack Event Subscriptions and Interactivity
-or uninstall the app. Wait until every status message in the channel shows a
-final state. Then run the destructive cleanup with the same private record and a
-fresh OIDC token for the same Vercel project. From the clone, in a new shell,
-restore the paths from section 3. Use the newer record path if setup was
-retried.
+For complete teardown, first disable Slack Event Subscriptions so no new run
+starts. Keep Interactivity enabled and the app installed until every status
+message in the channel shows a final state; press Status on any that stay
+unfinished to recover them. Then disable Interactivity and run the destructive
+cleanup with the same private record and a fresh OIDC token for the same Vercel
+project. From the clone, in a new shell, restore the paths from section 3. Use
+the newer record path if setup was retried.
 
 ```sh
 source scripts/use-toolchain.sh
