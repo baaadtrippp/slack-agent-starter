@@ -163,9 +163,12 @@ chmod 600 "$SETUP_ENV"
 `SANDBOX_REGION` is optional and defaults to `iad1`. The Drive and both
 Sandboxes use the same region with no failover regions.
 
-Run setup from the repository root.
+Run setup from the repository root. Node lets variables already exported in the
+shell override `--env-file`, so the first line clears any that the file also
+sets, such as a `REDIS_URL` from another project.
 
 ```sh
+unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$SETUP_ENV")
 node --env-file="$SETUP_ENV" \
   apps/gateway/scripts/bootstrap-worker.mjs setup "$WORKER_RECORD"
 chmod 600 "$WORKER_RECORD"
@@ -383,10 +386,12 @@ supported steady state.
 For complete teardown, first disable Slack Event Subscriptions so no new run
 starts. Keep Interactivity enabled and the app installed until every status
 message in the channel shows a final state; press Status on any that stay
-unfinished to recover them. Then disable Interactivity and run the destructive
-cleanup with the same private record and a fresh OIDC token for the same Vercel
-project. From the clone, in a new shell, restore the paths from section 3. Use
-the newer record path if setup was retried.
+unfinished to recover them. A run whose status post failed has no message, so
+also wait until Vercel's Sandbox view shows no running session for the named
+worker Sandbox. Then disable Interactivity and run the destructive cleanup with
+the same private record and a fresh OIDC token for the same Vercel project. From
+the clone, in a new shell, restore the paths from section 3. Use the newer
+record path if setup was retried.
 
 ```sh
 source scripts/use-toolchain.sh
@@ -405,6 +410,7 @@ only the same `VERCEL_PROJECT_ID` used for setup. Then run cleanup:
 
 ```sh
 chmod 600 "$CLEANUP_ENV"
+unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$CLEANUP_ENV")
 node --env-file="$CLEANUP_ENV" \
   apps/gateway/scripts/bootstrap-worker.mjs cleanup "$WORKER_RECORD"
 ```
