@@ -394,10 +394,16 @@ starts. Keep Interactivity enabled and the app installed until every status
 message in the channel shows a final state; press Status on any that stay
 unfinished to recover them. A run whose status post failed has no message, so
 also wait until Vercel's Sandbox view shows no running session for the named
-worker Sandbox. Then disable Interactivity and run the destructive cleanup with
-the same private record and a fresh OIDC token for the same Vercel project. From
-the clone, in a new shell, restore the paths from section 3. Use the newer
-record path if setup was retried.
+worker Sandbox.
+
+Cleanup permanently removes all native sessions, work, results, retained inputs,
+and shared notes on the Drive. Export anything that must be kept before you
+continue.
+
+Then disable Interactivity and run the destructive cleanup with the same private
+record and a fresh OIDC token for the same Vercel project. From the clone, in a
+new shell, restore the paths from section 3. Use the newer record path if setup
+was retried.
 
 ```sh
 source scripts/use-toolchain.sh
@@ -424,9 +430,7 @@ chmod 600 "$CLEANUP_ENV"
 ```
 
 Cleanup verifies removal of the recorded worker Sandbox, seed Sandbox, startup
-snapshot, and Drive. It permanently removes all native sessions, work, results,
-retained inputs, and shared notes on that Drive. Export anything that must be
-kept before cleanup. Cleanup marks the worker record retired before deletion, so
+snapshot, and Drive. Cleanup marks the worker record retired before deletion, so
 any later setup must use a new worker record path.
 
 Remove the gateway deployment or project, revoke the OpenRouter key, uninstall
