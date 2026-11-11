@@ -97,7 +97,9 @@ For each slice, link evidence and label it as one of:
   doubles;
 - **provider integration** — real provider behavior without Slack's live
   boundary;
-- **live Slack** — an authorized end-to-end Slack/model run.
+- **live Slack** — an authorized run through the real Slack app and workspace. A
+  row whose run used a fake or synthetic worker says so; such a run proves the
+  Slack boundary only, not Pi or a model.
 
 State exactly what ran. A fake worker proves gateway routing and error behavior,
 not real Pi behavior. A local webhook fixture proves signature handling logic,
