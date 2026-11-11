@@ -1,8 +1,7 @@
 # V1 quickstart
 
-This is the authoritative installation path for the public v1 stack. The
-milestone documents record development evidence and the fake worker remains test
-scaffolding. Neither is a deployment path.
+This is the authoritative installation path for the public v1 stack. The fake
+worker is test scaffolding, not a deployment path.
 
 The completed installation uses one new Vercel gateway project, one dedicated
 Upstash Redis database, one capped OpenRouter key and model, one Slack app in
