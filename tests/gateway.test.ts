@@ -28,7 +28,6 @@ import {
 } from '../apps/gateway/src/slack-controls.js';
 import { RedisRunStore } from '../apps/gateway/src/store.js';
 import type { RunRecord, SandboxTarget } from '../apps/gateway/src/store.js';
-import { createFakeWorker } from '../apps/worker/src/fake-worker.js';
 import {
   SHARED_NOTE_SAVED,
   WORKER_FAILURE_REPLY,
@@ -3901,40 +3900,6 @@ describe.skipIf(!redisUrl)(
       expect(await gateway.store.getRun(job.runId)).toMatchObject({
         state: 'completed',
       });
-    });
-
-    it('completes the fake-worker HTTP contract through the real gateway callback and SDK Redis state', async () => {
-      const gateway = harness(redis);
-      const workerTasks: Array<Promise<unknown>> = [];
-      const worker = createFakeWorker({
-        origin: 'https://gateway.example',
-        now: () => gateway.clock.now,
-        waitUntil: (task) => workerTasks.push(task),
-        fetch: async (input, init) =>
-          gateway.callback(new Request(input, init)),
-      });
-      gateway.dispatch.mockImplementation(async (job) => {
-        const response = await worker(
-          new Request('https://worker.example/api/fake', {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              authorization: `Bearer ${job.callbackToken}`,
-            },
-            body: JSON.stringify(job),
-          }),
-        );
-        expect(response.status).toBe(202);
-      });
-      await gateway.events(signed(envelope()));
-      await gateway.flush();
-      await Promise.all(workerTasks);
-      await gateway.flush();
-      const job = gateway.dispatch.mock.calls[0]![0];
-      expect(await gateway.store.getRun(job.runId)).toMatchObject({
-        state: 'completed',
-      });
-      expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
     });
 
     it('records uncertainty when the publication-state write fails', async () => {

@@ -219,7 +219,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       throw new Error('TCP proxy did not bind');
 
     vi.stubEnv('GATEWAY_ORIGIN', 'https://gateway.example');
-    vi.stubEnv('FAKE_WORKER_URL', 'https://gateway.example/api/worker/fake');
+    vi.stubEnv('SANDBOX_WORKER_NAME', 'synthetic-worker');
+    vi.stubEnv('OPENROUTER_MODEL', 'synthetic/model');
     vi.stubEnv('SLACK_ENABLED_CHANNEL_IDS', 'CTEST1');
     vi.stubEnv('SLACK_SIGNING_SECRET', 'synthetic-signing-secret');
     vi.stubEnv('SLACK_BOT_TOKEN', 'synthetic-bot-token');
@@ -292,7 +293,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
   }, 10_000);
 
   it('completes publication when Slack initialization and posting each take longer than one second', async () => {
-    await configureRuntime(undefined, false);
+    await configureRuntime(false);
     const { SlackAdapter } = await import('@chat-adapter/slack');
     const initialize = vi
       .spyOn(SlackAdapter.prototype, 'initialize')
@@ -311,15 +312,45 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       threadId: 'slack:CTEST1:1800000000.000001',
       raw: {},
     });
-    let job: WorkerJob | undefined;
-    vi.stubGlobal(
-      'fetch',
-      vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
-        job = JSON.parse(String(init?.body)) as WorkerJob;
-        return new Response(null, { status: 202 });
-      }),
-    );
     const { handle } = await import('../apps/gateway/src/runtime.js');
+    let job: WorkerJob | undefined;
+    let callbackStatus: number | undefined;
+    const sessionId = randomUUID();
+    // The Sandbox worker delivers its result callback before it exits.
+    sandboxGet.mockResolvedValue({
+      currentSession: () => ({
+        status: 'running',
+        sessionId,
+        runCommand: async (command: { env: { HYDRA_JOB: string } }) => {
+          job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
+          const callback = new Request(
+            'https://gateway.example/api/worker/callback',
+            {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                authorization: `Bearer ${job.callbackToken}`,
+              },
+              body: JSON.stringify({
+                version: 1,
+                runId: job.runId,
+                generation: 1,
+                eventId: randomUUID(),
+                sequence: 1,
+                type: 'completed',
+                text: 'Synthetic delayed Slack result',
+              }),
+            },
+          );
+          return {
+            wait: async () => {
+              callbackStatus = (await handle(callback, 'callback')).status;
+              return { exitCode: 0 };
+            },
+          };
+        },
+      }),
+    });
     const event = runtimeEvent();
     const observer = createRedisState({
       url: redisUrl!,
@@ -331,28 +362,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       expect(response.status).toBe(200);
       await drainBackground();
       expect(job).toBeDefined();
-      expect(initialize).toHaveBeenCalledTimes(1);
-      const callback = await handle(
-        new Request('https://gateway.example/api/worker/callback', {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            authorization: `Bearer ${job!.callbackToken}`,
-          },
-          body: JSON.stringify({
-            version: 1,
-            runId: job!.runId,
-            generation: 1,
-            eventId: randomUUID(),
-            sequence: 1,
-            type: 'completed',
-            text: 'Synthetic delayed Slack result',
-          }),
-        }),
-        'callback',
-      );
-      expect(callback.status).toBe(202);
-      await drainBackground();
+      expect(callbackStatus).toBe(202);
       expect(initialize).toHaveBeenCalledTimes(1);
       const encoded = await observer
         .getClient()
@@ -363,6 +373,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       });
     } finally {
       await cleanupRuntimeRun(observer, event);
+      const key = `slack-agent:m1:idle:synthetic-worker:${sessionId}`;
+      await observer.getClient().del([key + ':gate', key + ':active']);
       await observer.disconnect();
     }
   }, 10_000);
@@ -383,7 +395,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
   it.each(sandboxDispatchConditions)(
     'uses the exact %s Sandbox session safely',
     async (condition) => {
-      await configureRuntime('synthetic-worker');
+      await configureRuntime();
       const observer = createRedisState({
         url: redisUrl!,
         keyPrefix: `runtime-sandbox-observer:${randomUUID()}`,
@@ -611,7 +623,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
   it.each(stagingOutcomes)(
     'handles %s before Sandbox worker launch',
     async (outcome) => {
-      await configureRuntime('synthetic-worker');
+      await configureRuntime();
       const bareIpv6 = outcome === 'staged bare IPv6 URL';
       const explicitIpv6 = outcome === 'staged explicit IPv6 URL with period';
       const uppercaseExplicitIpv6 =
@@ -844,16 +856,15 @@ async function retryUntil<T>(action: () => Promise<T | null>): Promise<T> {
   throw new Error('Runtime did not recover before the test deadline');
 }
 
-async function configureRuntime(sandboxName?: string, mockSlack = true) {
+async function configureRuntime(mockSlack = true) {
   background.splice(0);
   sandboxGet.mockReset();
   driveGet.mockReset();
   vi.stubEnv('GATEWAY_ORIGIN', 'https://gateway.example');
-  vi.stubEnv('SANDBOX_WORKER_NAME', sandboxName ?? '');
+  vi.stubEnv('SANDBOX_WORKER_NAME', 'synthetic-worker');
   vi.stubEnv('SANDBOX_MANAGED_DRIVE', '');
   vi.stubEnv('SANDBOX_MANAGED_SEED', '');
-  if (sandboxName) vi.stubEnv('OPENROUTER_MODEL', 'synthetic/model');
-  else vi.stubEnv('FAKE_WORKER_URL', 'https://worker.example/api/fake');
+  vi.stubEnv('OPENROUTER_MODEL', 'synthetic/model');
   vi.stubEnv('SLACK_ENABLED_CHANNEL_IDS', 'CTEST1');
   vi.stubEnv('SLACK_SIGNING_SECRET', 'synthetic-signing-secret');
   vi.stubEnv('SLACK_BOT_TOKEN', 'synthetic-bot-token');

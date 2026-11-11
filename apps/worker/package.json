@@ -2,8 +2,5 @@
   "name": "@slack-agent-starter/worker",
   "version": "0.0.0",
   "private": true,
-  "type": "module",
-  "dependencies": {
-    "@vercel/functions": "3.10.5"
-  }
+  "type": "module"
 }

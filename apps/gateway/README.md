@@ -3,9 +3,8 @@
 Follow the [v1 quickstart](../../docs/service-setup.md) for the managed Pi
 worker, Vercel project settings, Slack manifest, and gateway configuration.
 
-The fake HTTP worker and the unmanaged, prewarmed Sandbox are historical
-milestone fixtures. The coordinated commands below are for operators of the
-managed worker.
+The unmanaged, prewarmed Sandbox is a historical milestone fixture. The
+coordinated commands below are for operators of the managed worker.
 
 ## Coordinated idle stop
 
