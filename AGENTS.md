@@ -50,10 +50,6 @@ For a non-trivial change, write a short tracer-bullet spec before code:
 5. observable evidence and whether it is deterministic, provider integration, or
    live Slack evidence.
 
-Phase 0 contains repository, tooling, configuration, CI, documentation, and
-service-readiness work only. Do not add Slack handlers, a worker host, an LLM
-loop, runtime connectors, or user features until phase 0 has been reviewed.
-
 ## Implementation rules
 
 - Write the minimum code required by the selected slice. Do not add speculative
@@ -61,6 +57,10 @@ loop, runtime connectors, or user features until phase 0 has been reviewed.
 - Make surgical changes and follow the existing style. Do not refactor adjacent
   code or remove pre-existing material unless the task requires it.
 - Remove imports, variables, and files made obsolete by your own change.
+- When a change replaces a switch or mode, delete the old one in the same PR.
+- A PR adds at most 400 lines, not counting `pnpm-lock.yaml`; deletions do not
+  count. Measure with `git diff --numstat origin/main...HEAD`. Split larger work
+  into consecutive PRs.
 - Exact-pin compatibility-sensitive runtime and agent packages. Keep the
   repository toolchain pinned.
 - Keep secrets, `.env` files, authentication state, `.vercel`, native sessions,
