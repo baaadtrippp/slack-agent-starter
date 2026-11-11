@@ -152,7 +152,6 @@ export interface RunStore {
   recordDispatchTarget(
     job: WorkerJob,
     target: SandboxTarget,
-    managed?: boolean,
   ): Promise<'recorded' | 'conflict' | 'stopping' | 'unavailable'>;
   interruptRun(
     run: RunRecord,
@@ -360,17 +359,6 @@ end
 return 'confirmed'
 `;
 
-const BACKFILL_ANSWER_SCRIPT = `
-local encoded = redis.call('GET', KEYS[1])
-if not encoded then return 0 end
-local run = cjson.decode(encoded)
-if run.kind ~= 'work' or run.memory == 'save' or run.state ~= 'completed' or
-   not run.result or run.result.type ~= 'completed' or
-   run.workspaceId ~= ARGV[1] or run.channelId ~= ARGV[2] or
-   run.messageId ~= ARGV[3] or run.runId ~= ARGV[4] then return 0 end
-return redis.call('SET', KEYS[2], run.runId, 'NX') and 1 or 0
-`;
-
 const RECORD_FEEDBACK_SCRIPT = `
 local answerRunId = redis.call('GET', KEYS[1])
 local run
@@ -444,15 +432,13 @@ if run.kind ~= 'work' or run.state ~= 'accepted' or run.execution then return 'c
 if redis.call('GET', KEYS[2]) ~= run.runId then return 'conflict' end
 local gate = redis.call('GET', KEYS[3])
 if gate and gate ~= 'open' then return 'stopping' end
+if not gate then return 'unavailable' end
 local target = cjson.decode(ARGV[3])
-if ARGV[4] == '1' then
-  if not gate then return 'unavailable' end
-  local managedEncoded = redis.call('GET', KEYS[5])
-  if not managedEncoded then return 'unavailable' end
-  local managed = cjson.decode(managedEncoded)
-  if managed.phase ~= 'ready' or managed.sessionId ~= target.sessionId then
-    return 'unavailable'
-  end
+local managedEncoded = redis.call('GET', KEYS[5])
+if not managedEncoded then return 'unavailable' end
+local managed = cjson.decode(managedEncoded)
+if managed.phase ~= 'ready' or managed.sessionId ~= target.sessionId then
+  return 'unavailable'
 end
 run.execution = target
 redis.call('SET', KEYS[1], cjson.encode(run))
@@ -1154,49 +1140,6 @@ export class RedisRunStore implements RunStore {
     )) as 'confirmed' | 'duplicate' | 'conflict';
   }
 
-  /** Rebuilds reverse lookup entries from exact, confirmed final publications. */
-  async backfillPublishedAnswers() {
-    let count = 0;
-    let cursor = '0';
-    const prefix = this.runPrefix();
-    do {
-      const page = await this.execute((client) =>
-        client.scan(cursor, { MATCH: prefix + '*', COUNT: 100 }),
-      );
-      cursor = page.cursor;
-      for (const key of page.keys) {
-        const id = key.slice(prefix.length);
-        if (!/^[0-9a-f-]{36}$/i.test(id)) continue;
-        const run = await this.getRun(id);
-        if (
-          run?.kind !== 'work' ||
-          run.state !== 'completed' ||
-          run.result?.type !== 'completed' ||
-          !/^\d{10}\.\d{6}$/.test(run.messageId ?? '') ||
-          run.runId !== id ||
-          !run.messageId
-        )
-          continue;
-        count += Number(
-          await this.execute((client) =>
-            client.eval(BACKFILL_ANSWER_SCRIPT, {
-              keys: [
-                key,
-                this.answerKey({
-                  workspaceId: run.workspaceId,
-                  channelId: run.channelId,
-                  messageId: run.messageId!,
-                }),
-              ],
-              arguments: [run.workspaceId, run.channelId, run.messageId!, id],
-            }),
-          ),
-        );
-      }
-    } while (cursor !== '0');
-    return count;
-  }
-
   async getPublishedAnswer(reference: AnswerRef): Promise<RunRecord | null> {
     const runId = await this.execute((client) =>
       client.get(this.answerKey(reference)),
@@ -1267,7 +1210,6 @@ export class RedisRunStore implements RunStore {
   async recordDispatchTarget(
     job: WorkerJob,
     target: SandboxTarget,
-    managed = false,
   ): Promise<'recorded' | 'conflict' | 'stopping' | 'unavailable'> {
     return (await this.execute((client) =>
       client.eval(RECORD_DISPATCH_TARGET_SCRIPT, {
@@ -1282,12 +1224,7 @@ export class RedisRunStore implements RunStore {
           this.activeDispatchKey(target),
           this.managedRuntimeKey(target.sandboxName),
         ],
-        arguments: [
-          job.runId,
-          String(job.generation),
-          JSON.stringify(target),
-          managed ? '1' : '0',
-        ],
+        arguments: [job.runId, String(job.generation), JSON.stringify(target)],
       }),
     )) as 'recorded' | 'conflict' | 'stopping' | 'unavailable';
   }

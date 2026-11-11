@@ -128,7 +128,7 @@ describe.skipIf(!redisUrl)('F07 Redis progress and status state', () => {
     const run = makeRun();
     const target = makeTarget();
     await store.admit(run);
-    expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(run), target)).toBe(
       'recorded',
     );
     const progress = makeProgress(run);
@@ -166,14 +166,14 @@ describe.skipIf(!redisUrl)('F07 Redis progress and status state', () => {
 
     const expired = makeRun();
     await store.admit(expired);
-    await store.recordDispatchTarget(makeJob(expired), makeTarget());
+    await recordReadyDispatch(store, makeJob(expired), makeTarget());
     expect(
       await store.claimProgress(makeProgress(expired), expired.deadline),
     ).toBe('expired');
 
     const displaced = makeRun();
     await store.admit(displaced);
-    await store.recordDispatchTarget(makeJob(displaced), makeTarget());
+    await recordReadyDispatch(store, makeJob(displaced), makeTarget());
     await state.getClient().set(ownerKey(namespace, displaced), randomUUID());
     expect(
       await store.claimProgress(
@@ -186,7 +186,7 @@ describe.skipIf(!redisUrl)('F07 Redis progress and status state', () => {
   it('lets terminal state win before progress and after a newer owner is admitted', async () => {
     const run = makeRun();
     await store.admit(run);
-    await store.recordDispatchTarget(makeJob(run), makeTarget());
+    await recordReadyDispatch(store, makeJob(run), makeTarget());
     const terminal = makeResult(run);
     expect(
       await store.claimPublication(run.runId, terminal, run.deadline - 1),
@@ -216,7 +216,7 @@ describe.skipIf(!redisUrl)('F07 Redis progress and status state', () => {
     await store.admit(run);
     await store.claimStatusCreation(run.runId);
     await store.recordStatusMessage(run.runId, nextTimestamp());
-    await store.recordDispatchTarget(makeJob(run), makeTarget());
+    await recordReadyDispatch(store, makeJob(run), makeTarget());
     const firstVersion = (await store.getRun(run.runId))!.statusVersion!;
     const firstToken = randomUUID();
     const secondToken = randomUUID();
@@ -329,4 +329,20 @@ function makeResult(run: RunRecord): WorkerResult {
 
 function ownerKey(namespace: string, run: RunRecord): string {
   return `${namespace}:owner:${run.workspaceId}:${run.channelId}:${run.threadTs}`;
+}
+
+// Production records a dispatch only for an enrolled session that the managed
+// runtime marks ready.
+async function recordReadyDispatch(
+  store: RedisRunStore,
+  job: WorkerJob,
+  target: SandboxTarget,
+) {
+  await store.enrollIdleSession(target);
+  await store.compareManagedRuntime(
+    target.sandboxName,
+    await store.getManagedRuntime(target.sandboxName),
+    { phase: 'ready', sessionId: target.sessionId, driveId: 'synthetic-drive' },
+  );
+  return store.recordDispatchTarget(job, target);
 }

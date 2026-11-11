@@ -303,7 +303,7 @@ describe.skipIf(!redisUrl)('managed worker replacement', () => {
     const fresh = makeRun();
     await store.admit(fresh);
     expect(
-      await store.recordDispatchTarget(makeJob(fresh), replacementTarget, true),
+      await store.recordDispatchTarget(makeJob(fresh), replacementTarget),
     ).toBe('recorded');
     expect(await store.getRun(active.runId)).toMatchObject({
       recovery: replacementTarget,

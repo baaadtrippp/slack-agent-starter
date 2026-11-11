@@ -88,14 +88,14 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       { sandboxName: 'synthetic-b', sessionId: randomUUID() },
     ];
     const bound = await Promise.all(
-      targets.map((target) => store.recordDispatchTarget(makeJob(run), target)),
+      targets.map((target) => recordReadyDispatch(store, makeJob(run), target)),
     );
     expect(bound.sort()).toEqual(['conflict', 'recorded']);
 
     const saved = await store.getRun(run.runId);
     expect(targets).toContainEqual(saved?.execution);
     expect(
-      await store.recordDispatchTarget(makeJob(run), {
+      await recordReadyDispatch(store, makeJob(run), {
         sandboxName: 'synthetic-c',
         sessionId: randomUUID(),
       }),
@@ -106,7 +106,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       messageTs: nextTimestamp(),
     });
     expect((await store.admit(busy)).outcome).toBe('busy');
-    expect(await store.recordDispatchTarget(makeJob(busy), targets[0]!)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(busy), targets[0]!)).toBe(
       'conflict',
     );
   });
@@ -173,11 +173,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     const unavailableRun = makeRun();
     await store.admit(unavailableRun);
     expect(
-      await store.recordDispatchTarget(
-        makeJob(unavailableRun),
-        unavailable,
-        true,
-      ),
+      await store.recordDispatchTarget(makeJob(unavailableRun), unavailable),
     ).toBe('unavailable');
 
     const starting = makeTarget('managed-starting');
@@ -191,7 +187,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     });
     expect(await store.enrollIdleSession(starting)).toBe(true);
     expect(
-      await store.recordDispatchTarget(makeJob(startingRun), starting, true),
+      await store.recordDispatchTarget(makeJob(startingRun), starting),
     ).toBe('unavailable');
 
     const stale = makeTarget('managed-stale');
@@ -203,9 +199,9 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       driveId: randomUUID(),
     });
     expect(await store.enrollIdleSession(stale)).toBe(true);
-    expect(
-      await store.recordDispatchTarget(makeJob(staleRun), stale, true),
-    ).toBe('unavailable');
+    expect(await store.recordDispatchTarget(makeJob(staleRun), stale)).toBe(
+      'unavailable',
+    );
 
     const closed = makeTarget('managed-closed');
     const closedRun = makeRun();
@@ -216,9 +212,9 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       driveId: randomUUID(),
     });
     expect(await store.isIdleSessionOpen(closed)).toBe(false);
-    expect(
-      await store.recordDispatchTarget(makeJob(closedRun), closed, true),
-    ).toBe('unavailable');
+    expect(await store.recordDispatchTarget(makeJob(closedRun), closed)).toBe(
+      'unavailable',
+    );
 
     const ready = makeTarget('managed-ready');
     const readyRun = makeRun();
@@ -230,9 +226,9 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     });
     expect(await store.enrollIdleSession(ready)).toBe(true);
     expect(await store.isIdleSessionOpen(ready)).toBe(true);
-    expect(
-      await store.recordDispatchTarget(makeJob(readyRun), ready, true),
-    ).toBe('recorded');
+    expect(await store.recordDispatchTarget(makeJob(readyRun), ready)).toBe(
+      'recorded',
+    );
 
     const stopping = makeTarget('managed-stopping');
     const stoppingRun = makeRun();
@@ -246,15 +242,16 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     expect(await store.claimIdleStop(stopping, randomUUID())).toBe('claimed');
     expect(await store.isIdleSessionOpen(stopping)).toBe(false);
     expect(
-      await store.recordDispatchTarget(makeJob(stoppingRun), stopping, true),
+      await store.recordDispatchTarget(makeJob(stoppingRun), stopping),
     ).toBe('stopping');
 
-    const unmanaged = makeTarget('unmanaged');
-    const unmanagedRun = makeRun();
-    await store.admit(unmanagedRun);
+    const unrecorded = makeTarget('managed-unrecorded');
+    const unrecordedRun = makeRun();
+    await store.admit(unrecordedRun);
+    expect(await store.enrollIdleSession(unrecorded)).toBe(true);
     expect(
-      await store.recordDispatchTarget(makeJob(unmanagedRun), unmanaged),
-    ).toBe('recorded');
+      await store.recordDispatchTarget(makeJob(unrecordedRun), unrecorded),
+    ).toBe('unavailable');
   });
 
   it('serializes dispatch and idle stop in either race order without reopening', async () => {
@@ -264,7 +261,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     expect(await store.enrollIdleSession(dispatchFirst)).toBe(true);
     expect(await store.enrollIdleSession(dispatchFirst)).toBe(true);
     expect(
-      await store.recordDispatchTarget(makeJob(firstRun), dispatchFirst),
+      await recordReadyDispatch(store, makeJob(firstRun), dispatchFirst),
     ).toBe('recorded');
     expect(
       await store.claimIdleStop(dispatchFirst, 'operation-dispatch-first'),
@@ -294,27 +291,12 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       'claimed',
     );
     expect(
-      await store.recordDispatchTarget(makeJob(secondRun), stopFirst),
+      await recordReadyDispatch(store, makeJob(secondRun), stopFirst),
     ).toBe('stopping');
     expect(await store.getRun(secondRun.runId)).not.toHaveProperty('execution');
     expect(await store.releaseDispatchTarget(secondRun.runId, stopFirst)).toBe(
       false,
     );
-
-    const unenrolled = makeTarget('unenrolled');
-    const thirdRun = makeRun();
-    await store.admit(thirdRun);
-    expect(
-      await store.recordDispatchTarget(makeJob(thirdRun), unenrolled),
-    ).toBe('recorded');
-    expect(await store.claimIdleStop(unenrolled, 'operation-unenrolled')).toBe(
-      'unenrolled',
-    );
-    expect(await store.enrollIdleSession(unenrolled)).toBe(false);
-    expect(await store.releaseDispatchTarget(thirdRun.runId, unenrolled)).toBe(
-      true,
-    );
-    expect(await store.enrollIdleSession(unenrolled)).toBe(true);
   });
 
   it('waits for every exact active reservation before claiming idle stop', async () => {
@@ -324,10 +306,10 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     const second = makeRun();
     await Promise.all([store.admit(first), store.admit(second)]);
     expect(await store.enrollIdleSession(target)).toBe(true);
-    expect(await store.recordDispatchTarget(makeJob(first), target)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(first), target)).toBe(
       'recorded',
     );
-    expect(await store.recordDispatchTarget(makeJob(second), target)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(second), target)).toBe(
       'recorded',
     );
     expect(await store.claimIdleStop(target, 'operation-shared')).toBe(
@@ -372,13 +354,13 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       store.enrollIdleSession(replacement),
       store.enrollIdleSession(unrelated),
     ]);
-    expect(await store.recordDispatchTarget(makeJob(first), lost)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(first), lost)).toBe(
       'recorded',
     );
-    expect(await store.recordDispatchTarget(makeJob(second), lost)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(second), lost)).toBe(
       'recorded',
     );
-    expect(await store.recordDispatchTarget(makeJob(other), unrelated)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(other), unrelated)).toBe(
       'recorded',
     );
 
@@ -386,7 +368,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     expect(await store.fenceLostTarget(lost)).toBe(true);
     const refused = makeRun();
     await store.admit(refused);
-    expect(await store.recordDispatchTarget(makeJob(refused), lost)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(refused), lost)).toBe(
       'stopping',
     );
     expect(await store.bindRecoveryTarget(lost, replacement)).toBe(true);
@@ -443,7 +425,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       store.enrollIdleSession(lost),
       store.enrollIdleSession(replacement),
     ]);
-    expect(await store.recordDispatchTarget(makeJob(run), lost)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(run), lost)).toBe(
       'recorded',
     );
     expect(await store.fenceLostTarget(lost)).toBe(true);
@@ -475,7 +457,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     await store.admit(callbackRun);
     expect(await store.enrollIdleSession(callbackTarget)).toBe(true);
     expect(
-      await store.recordDispatchTarget(makeJob(callbackRun), callbackTarget),
+      await recordReadyDispatch(store, makeJob(callbackRun), callbackTarget),
     ).toBe('recorded');
     const callbackObserved = (await store.getRun(callbackRun.runId))!;
     const callbackResult = makeResult(callbackRun);
@@ -508,7 +490,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     await store.admit(savedRun);
     expect(await store.enrollIdleSession(savedTarget)).toBe(true);
     expect(
-      await store.recordDispatchTarget(makeJob(savedRun), savedTarget),
+      await recordReadyDispatch(store, makeJob(savedRun), savedTarget),
     ).toBe('recorded');
     const savedObserved = (await store.getRun(savedRun.runId))!;
     expect(
@@ -538,7 +520,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     await store.admit(noResultRun);
     expect(await store.enrollIdleSession(noResultTarget)).toBe(true);
     expect(
-      await store.recordDispatchTarget(makeJob(noResultRun), noResultTarget),
+      await recordReadyDispatch(store, makeJob(noResultRun), noResultTarget),
     ).toBe('recorded');
     const noResultObserved = (await store.getRun(noResultRun.runId))!;
     const failed: WorkerResult = {
@@ -577,7 +559,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       store.enrollIdleSession(lost),
       store.enrollIdleSession(replacement),
     ]);
-    expect(await store.recordDispatchTarget(makeJob(run), lost)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(run), lost)).toBe(
       'recorded',
     );
     const firstLease = randomUUID();
@@ -633,7 +615,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       store.enrollIdleSession(lost),
       store.enrollIdleSession(replacement),
     ]);
-    expect(await store.recordDispatchTarget(makeJob(run), lost)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(run), lost)).toBe(
       'recorded',
     );
     const observed = (await store.getRun(run.runId))!;
@@ -664,7 +646,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     const run = makeRun({ controls: true, statusMessageId: nextTimestamp() });
     await store.admit(run);
     expect(await store.enrollIdleSession(target)).toBe(true);
-    expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(run), target)).toBe(
       'recorded',
     );
     expect(
@@ -691,7 +673,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     });
     await store.admit(run);
     expect(await store.enrollIdleSession(target)).toBe(true);
-    expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(run), target)).toBe(
       'recorded',
     );
     expect(
@@ -729,10 +711,10 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       store.enrollIdleSession(secondTarget),
       store.enrollIdleSession(thirdTarget),
     ]);
-    expect(await store.recordDispatchTarget(makeJob(first), firstTarget)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(first), firstTarget)).toBe(
       'recorded',
     );
-    expect(await store.recordDispatchTarget(makeJob(second), firstTarget)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(second), firstTarget)).toBe(
       'recorded',
     );
     expect(await store.fenceLostTarget(firstTarget)).toBe(true);
@@ -937,7 +919,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       'expired',
     );
     expect(
-      await store.recordDispatchTarget(makeJob(run), {
+      await recordReadyDispatch(store, makeJob(run), {
         sandboxName: 'synthetic-refusal',
         sessionId: randomUUID(),
       }),
@@ -954,7 +936,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     };
     await store.admit(run);
     expect(await store.enrollIdleSession(target)).toBe(true);
-    expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(run), target)).toBe(
       'recorded',
     );
     const bound = await store.getRun(run.runId);
@@ -1004,7 +986,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       sandboxName: 'synthetic-current',
       sessionId: randomUUID(),
     };
-    await store.recordDispatchTarget(makeJob(changed), target);
+    await recordReadyDispatch(store, makeJob(changed), target);
     const bound = (await store.getRun(changed.runId))!;
     expect(
       await store.interruptRun(
@@ -1025,7 +1007,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
       },
     });
     await store.admit(native);
-    await store.recordDispatchTarget(makeJob(native), target);
+    await recordReadyDispatch(store, makeJob(native), target);
     expect(
       await store.interruptRun(
         (await store.getRun(native.runId))!,
@@ -1035,7 +1017,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
 
     const withResult = makeRun();
     await store.admit(withResult);
-    await store.recordDispatchTarget(makeJob(withResult), target);
+    await recordReadyDispatch(store, makeJob(withResult), target);
     expect(
       await store.claimPublication(
         withResult.runId,
@@ -1052,7 +1034,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
 
     const noLongerOwned = makeRun();
     await store.admit(noLongerOwned);
-    await store.recordDispatchTarget(makeJob(noLongerOwned), target);
+    await recordReadyDispatch(store, makeJob(noLongerOwned), target);
     const stale = (await store.getRun(noLongerOwned.runId))!;
     const replacementOwner = randomUUID();
     const ownerKey = `${namespace}:owner:${noLongerOwned.workspaceId}:${noLongerOwned.channelId}:${noLongerOwned.threadTs}`;
@@ -1062,7 +1044,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
 
     const failedDispatch = makeRun();
     await store.admit(failedDispatch);
-    await store.recordDispatchTarget(makeJob(failedDispatch), target);
+    await recordReadyDispatch(store, makeJob(failedDispatch), target);
     expect(await store.failDispatch(failedDispatch.runId)).toBe(true);
     expect(
       await store.interruptRun(
@@ -1147,4 +1129,20 @@ function activeDispatchKey(namespace: string, target: SandboxTarget): string {
 
 function managedRuntimeKey(namespace: string, sandboxName: string): string {
   return `${namespace}:runtime:${sandboxName}:managed`;
+}
+
+// Production records a dispatch only for an enrolled session that the managed
+// runtime marks ready.
+async function recordReadyDispatch(
+  store: RedisRunStore,
+  job: WorkerJob,
+  target: SandboxTarget,
+) {
+  await store.enrollIdleSession(target);
+  await store.compareManagedRuntime(
+    target.sandboxName,
+    await store.getManagedRuntime(target.sandboxName),
+    { phase: 'ready', sessionId: target.sessionId, driveId: 'synthetic-drive' },
+  );
+  return store.recordDispatchTarget(job, target);
 }

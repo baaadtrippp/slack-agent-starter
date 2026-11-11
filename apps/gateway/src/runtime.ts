@@ -63,10 +63,8 @@ function initialize() {
     throw new Error('GATEWAY_ORIGIN must be a bare HTTPS origin');
   const sandboxName = required('SANDBOX_WORKER_NAME');
   const model = required('OPENROUTER_MODEL');
-  const managedDrive = process.env.SANDBOX_MANAGED_DRIVE;
-  const managedSeed = process.env.SANDBOX_MANAGED_SEED;
-  if ((managedDrive || managedSeed) && (!managedDrive || !managedSeed))
-    throw new Error('Managed worker requires both a Drive and a startup seed');
+  const managedDrive = required('SANDBOX_MANAGED_DRIVE');
+  const managedSeed = required('SANDBOX_MANAGED_SEED');
   const channelIds = required('SLACK_ENABLED_CHANNEL_IDS')
     .split(',')
     .map((id) => id.trim());
@@ -121,18 +119,15 @@ function initialize() {
     logger: new ConsoleLogger('silent'),
   });
   const store = new RedisRunStore(client);
-  const managed =
-    managedDrive && managedSeed
-      ? createManagedWorker(
-          {
-            sandboxName,
-            driveName: managedDrive,
-            seedId: managedSeed,
-            controlsEnabled,
-          },
-          store,
-        )
-      : undefined;
+  const managed = createManagedWorker(
+    {
+      sandboxName,
+      driveName: managedDrive,
+      seedId: managedSeed,
+      controlsEnabled,
+    },
+    store,
+  );
   return createGateway({
     config,
     state,
@@ -149,11 +144,7 @@ function initialize() {
               if (exact?.state === 'exited' || exact?.state === 'stopped')
                 return exact;
             }
-            if (
-              !managed ||
-              !currentTarget ||
-              currentTarget.sandboxName !== sandboxName
-            )
+            if (!currentTarget || currentTarget.sandboxName !== sandboxName)
               return { state: 'unknown' };
 
             const bound = run.recovery
@@ -231,8 +222,7 @@ function initialize() {
                 target = await store.releaseRecoveryTarget(run, true);
               }
             }
-            if (!managed || !target || target.sandboxName !== sandboxName)
-              return;
+            if (!target || target.sandboxName !== sandboxName) return;
             const sandbox = await Sandbox.get({
               name: target.sandboxName,
               resume: false,
@@ -251,23 +241,16 @@ function initialize() {
       ? { collectArtifact: collectRunArtifact }
       : {}),
     dispatch: async (job, stagedInputs) => {
-      if (job.memory && !managed) return 'worker-unavailable';
-      const session = await (
-        managed
-          ? managed.getSession(job.deadline)
-          : Sandbox.get({
-              name: sandboxName,
-              resume: false,
-              signal: AbortSignal.timeout(15_000),
-            }).then((sandbox) => sandbox.currentSession())
-      ).catch(() => undefined);
+      const session = await managed
+        .getSession(job.deadline)
+        .catch(() => undefined);
       if (session?.status !== 'running') return 'worker-unavailable';
       const target = {
         sandboxName,
         sessionId: session.sessionId,
       };
       const stopIfIdle = () =>
-        managed?.stopIfIdle(session).catch(() => {
+        managed.stopIfIdle(session).catch(() => {
           console.error(
             JSON.stringify({
               runId: job.runId,
@@ -275,11 +258,7 @@ function initialize() {
             }),
           );
         });
-      const reservation = await store.recordDispatchTarget(
-        job,
-        target,
-        Boolean(managed),
-      );
+      const reservation = await store.recordDispatchTarget(job, target);
       if (reservation === 'stopping') await stopIfIdle();
       if (reservation === 'stopping' || reservation === 'unavailable')
         return 'worker-unavailable';
@@ -350,15 +329,10 @@ function initialize() {
       const entry = controlsEnabled
         ? '/tmp/hydra-worker/supervise.mjs'
         : '/tmp/hydra-worker/run.mjs';
-      const launch = managed
-        ? {
-            cmd: 'bash',
-            args: ['-c', MANAGED_WORKER_LAUNCH, 'hydra-worker', entry],
-            sudo: true,
-          }
-        : { cmd: 'node', args: [entry] };
       const command = await session.runCommand({
-        ...launch,
+        cmd: 'bash',
+        args: ['-c', MANAGED_WORKER_LAUNCH, 'hydra-worker', entry],
+        sudo: true,
         cwd: '/tmp/hydra-worker',
         env: {
           HYDRA_JOB: JSON.stringify(job),
@@ -376,7 +350,7 @@ function initialize() {
           ),
         });
         const current = await store.getRun(job.runId);
-        if (managed && finished.exitCode === MANAGED_WORKER_PRELAUNCH_EXIT) {
+        if (finished.exitCode === MANAGED_WORKER_PRELAUNCH_EXIT) {
           const released = await releaseReservation(true);
           await stopIfIdle();
           console.error(

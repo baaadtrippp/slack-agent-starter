@@ -220,6 +220,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
 
     vi.stubEnv('GATEWAY_ORIGIN', 'https://gateway.example');
     vi.stubEnv('SANDBOX_WORKER_NAME', 'synthetic-worker');
+    vi.stubEnv('SANDBOX_MANAGED_DRIVE', 'synthetic-drive');
+    vi.stubEnv('SANDBOX_MANAGED_SEED', 'synthetic-seed');
     vi.stubEnv('OPENROUTER_MODEL', 'synthetic/model');
     vi.stubEnv('SLACK_ENABLED_CHANNEL_IDS', 'CTEST1');
     vi.stubEnv('SLACK_SIGNING_SECRET', 'synthetic-signing-secret');
@@ -317,39 +319,36 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
     let callbackStatus: number | undefined;
     const sessionId = randomUUID();
     // The Sandbox worker delivers its result callback before it exits.
-    sandboxGet.mockResolvedValue({
-      currentSession: () => ({
-        status: 'running',
-        sessionId,
-        runCommand: async (command: { env: { HYDRA_JOB: string } }) => {
-          job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
-          const callback = new Request(
-            'https://gateway.example/api/worker/callback',
-            {
-              method: 'POST',
-              headers: {
-                'content-type': 'application/json',
-                authorization: `Bearer ${job.callbackToken}`,
-              },
-              body: JSON.stringify({
-                version: 1,
-                runId: job.runId,
-                generation: 1,
-                eventId: randomUUID(),
-                sequence: 1,
-                type: 'completed',
-                text: 'Synthetic delayed Slack result',
-              }),
+    mockManagedSandbox({
+      sessionId,
+      runCommand: async (command: { env: { HYDRA_JOB: string } }) => {
+        job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
+        const callback = new Request(
+          'https://gateway.example/api/worker/callback',
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              authorization: `Bearer ${job.callbackToken}`,
             },
-          );
-          return {
-            wait: async () => {
-              callbackStatus = (await handle(callback, 'callback')).status;
-              return { exitCode: 0 };
-            },
-          };
-        },
-      }),
+            body: JSON.stringify({
+              version: 1,
+              runId: job.runId,
+              generation: 1,
+              eventId: randomUUID(),
+              sequence: 1,
+              type: 'completed',
+              text: 'Synthetic delayed Slack result',
+            }),
+          },
+        );
+        return {
+          wait: async () => {
+            callbackStatus = (await handle(callback, 'callback')).status;
+            return { exitCode: 0 };
+          },
+        };
+      },
     });
     const event = runtimeEvent();
     const observer = createRedisState({
@@ -358,6 +357,13 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
     });
     await observer.connect();
     try {
+      const { RedisRunStore } = await import('../apps/gateway/src/store.js');
+      expect(
+        await new RedisRunStore(observer.getClient()).enrollIdleSession({
+          sandboxName: 'synthetic-worker',
+          sessionId,
+        }),
+      ).toBe(true);
       const response = await handle(event.request, 'events');
       expect(response.status).toBe(200);
       await drainBackground();
@@ -381,9 +387,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
 
   const sandboxDispatchConditions = [
     'running',
-    'managed idle',
     'prelaunch failure',
-    'unmanaged exit 78',
     'stopped',
     'unrecordable',
     'stopping',
@@ -408,25 +412,19 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       const operationId = randomUUID();
       const startResponseLost = condition === 'start response lost';
       const prelaunchFailure = condition === 'prelaunch failure';
-      const unmanagedSentinel = condition === 'unmanaged exit 78';
-      const managed =
-        condition === 'managed idle' || condition === 'prelaunch failure';
-      const hasResult = condition === 'running' || managed;
-      const driveName = 'synthetic-drive';
-      const seedId = 'synthetic-seed';
-      if (managed) {
-        vi.stubEnv('SANDBOX_MANAGED_DRIVE', driveName);
-        vi.stubEnv('SANDBOX_MANAGED_SEED', seedId);
-        driveGet.mockResolvedValue({
-          name: driveName,
-          driveId: 'synthetic-drive-id',
-          currentSessionId: sessionId,
-          currentSandboxName: target.sandboxName,
-        });
-      }
+      const hasResult = condition === 'running' || prelaunchFailure;
       expect(await store.enrollIdleSession(target)).toBe(true);
-      if (condition === 'stopping')
+      if (condition === 'stopping') {
         expect(await store.claimIdleStop(target, operationId)).toBe('claimed');
+        // A ready runtime skips activation, so dispatch meets the stop fence.
+        expect(
+          await store.compareManagedRuntime(target.sandboxName, null, {
+            phase: 'ready',
+            sessionId,
+            driveId: 'synthetic-drive-id',
+          }),
+        ).toBe(true);
+      }
       let recorded: unknown;
       let job: WorkerJob;
       const commandWait = vi.fn().mockImplementation(async () => {
@@ -448,12 +446,11 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
             ),
           ).toBe('claimed');
         return {
-          exitCode:
-            prelaunchFailure || unmanagedSentinel
-              ? 78
-              : condition === 'uncertain exit'
-                ? 1
-                : 0,
+          exitCode: prelaunchFailure
+            ? 78
+            : condition === 'uncertain exit'
+              ? 1
+              : 0,
         };
       });
       const sessionRunCommand = vi.fn().mockImplementation(async (command) => {
@@ -466,22 +463,14 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           throw new Error('Synthetic command start response lost');
         return { wait: commandWait };
       });
-      const sandboxRunCommand = vi.fn();
-      const sessionStop = vi.fn().mockResolvedValue(undefined);
-      const readiness = vi.fn().mockResolvedValue({ exitCode: 0 });
-      sandboxGet.mockResolvedValue({
-        runCommand: sandboxRunCommand,
-        persistent: false,
-        currentSnapshotId: seedId,
-        mounts: { '/workspace': { mode: 'read-write', drive: driveName } },
-        currentSession: () => ({
-          status: condition === 'stopped' ? 'stopped' : 'running',
-          sessionId,
-          sourceSnapshotId: seedId,
-          runCommand: (command: { detached?: boolean }) =>
-            command.detached ? sessionRunCommand(command) : readiness(command),
-          stop: sessionStop,
-        }),
+      const {
+        readiness,
+        stop: sessionStop,
+        sandboxRunCommand,
+      } = mockManagedSandbox({
+        status: condition === 'stopped' ? 'stopped' : 'running',
+        sessionId,
+        runCommand: sessionRunCommand,
       });
       if (condition === 'unrecordable')
         vi.spyOn(
@@ -513,8 +502,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           condition === 'uncertain exit' ||
           condition === 'result missing' ||
           startResponseLost ||
-          prelaunchFailure ||
-          unmanagedSentinel
+          prelaunchFailure
         ) {
           const persisted = JSON.parse(encoded!);
           if (prelaunchFailure) {
@@ -540,41 +528,33 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
             execution: target,
           });
           expect(sessionRunCommand).toHaveBeenCalledTimes(1);
-          if (managed) {
-            expect(sessionRunCommand).toHaveBeenCalledWith(
-              expect.objectContaining({
-                cmd: 'bash',
-                sudo: true,
-                args: [
-                  '-c',
-                  expect.any(String),
-                  'hydra-worker',
-                  '/tmp/hydra-worker/run.mjs',
-                ],
-              }),
-            );
-            const launch = sessionRunCommand.mock.calls[0]![0].args[1];
-            expect(launch).toContain(
-              'sysctl -qw net.ipv6.conf.default.disable_ipv6=1 net.ipv6.conf.all.disable_ipv6=1',
-            );
-            expect(launch).toContain(
-              'read -r disabled < "$setting" || exit 78',
-            );
-            expect(launch).toContain(
-              'test ! -L /workspace && mountpoint -q /workspace',
-            );
-            expect(launch).toContain(
-              "--no-new-privs -- sh -c 'test -w /workspace && test -x /workspace' || exit 78",
-            );
-            expect(launch).toContain('if [ "$code" -eq 78 ]; then exit 79');
-          }
+          expect(sessionRunCommand).toHaveBeenCalledWith(
+            expect.objectContaining({
+              cmd: 'bash',
+              sudo: true,
+              args: [
+                '-c',
+                expect.any(String),
+                'hydra-worker',
+                '/tmp/hydra-worker/run.mjs',
+              ],
+            }),
+          );
+          const launch = sessionRunCommand.mock.calls[0]![0].args[1];
+          expect(launch).toContain(
+            'sysctl -qw net.ipv6.conf.default.disable_ipv6=1 net.ipv6.conf.all.disable_ipv6=1',
+          );
+          expect(launch).toContain('read -r disabled < "$setting" || exit 78');
+          expect(launch).toContain(
+            'test ! -L /workspace && mountpoint -q /workspace',
+          );
+          expect(launch).toContain(
+            "--no-new-privs -- sh -c 'test -w /workspace && test -x /workspace' || exit 78",
+          );
+          expect(launch).toContain('if [ "$code" -eq 78 ]; then exit 79');
           expect(commandWait).toHaveBeenCalledTimes(startResponseLost ? 0 : 1);
           expect(await store.claimIdleStop(target, operationId)).toBe(
-            managed
-              ? 'stopping'
-              : condition === 'running'
-                ? 'claimed'
-                : 'active',
+            hasResult ? 'stopping' : 'active',
           );
         } else {
           expect(JSON.parse(encoded!)).toMatchObject({
@@ -586,16 +566,16 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           expect(JSON.parse(encoded!)).not.toHaveProperty('execution');
           expect(sessionRunCommand).not.toHaveBeenCalled();
         }
-        expect(readiness).toHaveBeenCalledTimes(managed ? 1 : 0);
-        expect(sessionStop).toHaveBeenCalledTimes(managed ? 1 : 0);
+        expect(readiness).toHaveBeenCalledTimes(
+          condition === 'stopped' || condition === 'stopping' ? 0 : 1,
+        );
+        expect(sessionStop).toHaveBeenCalledTimes(
+          hasResult || condition === 'stopping' ? 1 : 0,
+        );
       } finally {
         await cleanupRuntimeRun(observer, event, runId);
         const key = `slack-agent:m1:idle:synthetic-worker:${sessionId}`;
         await observer.getClient().del([key + ':gate', key + ':active']);
-        if (managed)
-          await observer
-            .getClient()
-            .del('slack-agent:m1:runtime:synthetic-worker:managed');
         await observer.disconnect();
         vi.restoreAllMocks();
       }
@@ -716,13 +696,10 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
         return { wait: async () => ({ exitCode: 1 }) };
       });
-      sandboxGet.mockResolvedValue({
-        currentSession: () => ({
-          status: 'running',
-          sessionId,
-          writeFiles,
-          runCommand,
-        }),
+      const { stop: sessionStop } = mockManagedSandbox({
+        sessionId,
+        writeFiles,
+        runCommand,
       });
       const { SlackAdapter } = await import('@chat-adapter/slack');
       vi.spyOn(SlackAdapter.prototype, 'initialize').mockResolvedValue();
@@ -818,9 +795,11 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
           );
         } else {
           expect(runCommand).not.toHaveBeenCalled();
+          // The gateway released the reservation and stopped the idle worker.
           expect(await store.claimIdleStop(target, randomUUID())).toBe(
-            'claimed',
+            'stopping',
           );
+          expect(sessionStop).toHaveBeenCalledTimes(1);
           expect(await store.getRun(runId!)).toMatchObject({
             state: 'worker_failed',
           });
@@ -862,8 +841,8 @@ async function configureRuntime(mockSlack = true) {
   driveGet.mockReset();
   vi.stubEnv('GATEWAY_ORIGIN', 'https://gateway.example');
   vi.stubEnv('SANDBOX_WORKER_NAME', 'synthetic-worker');
-  vi.stubEnv('SANDBOX_MANAGED_DRIVE', '');
-  vi.stubEnv('SANDBOX_MANAGED_SEED', '');
+  vi.stubEnv('SANDBOX_MANAGED_DRIVE', 'synthetic-drive');
+  vi.stubEnv('SANDBOX_MANAGED_SEED', 'synthetic-seed');
   vi.stubEnv('OPENROUTER_MODEL', 'synthetic/model');
   vi.stubEnv('SLACK_ENABLED_CHANNEL_IDS', 'CTEST1');
   vi.stubEnv('SLACK_SIGNING_SECRET', 'synthetic-signing-secret');
@@ -888,6 +867,41 @@ async function configureRuntime(mockSlack = true) {
       raw: {},
     });
   }
+}
+
+// The managed worker verifies the startup seed, Drive mount, and readiness
+// before it sends detached worker commands to the exact session.
+function mockManagedSandbox(session: {
+  sessionId: string;
+  runCommand: (command: never) => unknown;
+  [field: string]: unknown;
+}) {
+  const readiness = vi.fn().mockResolvedValue({ exitCode: 0 });
+  const stop = vi.fn().mockResolvedValue(undefined);
+  const sandboxRunCommand = vi.fn();
+  driveGet.mockResolvedValue({
+    name: 'synthetic-drive',
+    driveId: 'synthetic-drive-id',
+    currentSessionId: session.sessionId,
+    currentSandboxName: 'synthetic-worker',
+  });
+  sandboxGet.mockResolvedValue({
+    runCommand: sandboxRunCommand,
+    persistent: false,
+    currentSnapshotId: 'synthetic-seed',
+    mounts: { '/workspace': { mode: 'read-write', drive: 'synthetic-drive' } },
+    currentSession: () => ({
+      status: 'running',
+      sourceSnapshotId: 'synthetic-seed',
+      stop,
+      ...session,
+      runCommand: (command: { detached?: boolean }) =>
+        command.detached
+          ? session.runCommand(command as never)
+          : readiness(command),
+    }),
+  });
+  return { readiness, stop, sandboxRunCommand };
 }
 
 function runtimeEvent(options?: {
@@ -962,6 +976,7 @@ async function cleanupRuntimeRun(
     eventKey,
     `slack-agent:m1:message:TTEST1:CTEST1:${event.ts}`,
     `slack-agent:m1:owner:TTEST1:CTEST1:${event.ts}`,
+    'slack-agent:m1:runtime:synthetic-worker:managed',
   ];
   if (runId) {
     const runKey = `slack-agent:m1:run:${runId}`;
