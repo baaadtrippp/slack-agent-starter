@@ -7,4 +7,7 @@ allowBuilds:
   koffi: true
 
 engineStrict: true
+# Supply-chain guard: wait 3 days (pnpm's default is 1) before using a new release.
+# For an urgent security fix, add its exact version to minimumReleaseAgeExclude.
+minimumReleaseAge: 4320
 strictPeerDependencies: true
