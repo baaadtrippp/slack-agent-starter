@@ -247,8 +247,5 @@ export const workerCallbackSchema = z.union([
   workerProgressSchema,
 ]);
 
-export const CANNED_REPLY =
-  'Gateway round trip complete. The agent runtime is not connected yet.';
-
 export const WORKER_FAILURE_REPLY =
   'The agent could not finish this run. You can retry by mentioning it again.';

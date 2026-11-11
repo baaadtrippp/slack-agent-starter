@@ -1,7 +1,6 @@
 # V1 quickstart
 
-This is the authoritative installation path for the public v1 stack. The fake
-worker is test scaffolding, not a deployment path.
+This is the authoritative installation path for the public v1 stack.
 
 The completed installation uses one new Vercel gateway project, one dedicated
 Upstash Redis database, one capped OpenRouter key and model, one Slack app in
@@ -237,8 +236,7 @@ printed by setup must be copied exactly.
 | `SLACK_STOP_OPERATOR_IDS`     | optional comma-separated internal user IDs allowed to stop other users' runs |
 
 Do not set `OPENROUTER_API_KEY`, `VERCEL_OIDC_TOKEN`, or `VERCEL_PROJECT_ID` in
-the gateway. Remove `FAKE_WORKER_URL` if an earlier experiment set it. Vercel
-supplies runtime project authentication to the Sandbox SDK.
+the gateway. Vercel supplies runtime project authentication to the Sandbox SDK.
 
 Deploy the gateway from the clean clone.
 

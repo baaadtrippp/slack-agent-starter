@@ -42,12 +42,6 @@ before callback delivery. The managed runtime stops the Sandbox after verified
 idle and creates a fresh session from the same snapshot and Drive for the next
 turn.
 
-## Historical fake worker
-
-`api/fake.ts` and `src/fake-worker.ts` are deterministic gateway test
-scaffolding. They return a canned answer and use no model, Sandbox, or Drive. Do
-not deploy an `apps/worker` Vercel project for v1.
-
 Cleanup permanently deletes the worker Sandbox, seed Sandbox, startup snapshot,
 and Drive recorded by the bootstrap. It does not delete the gateway deployment,
 Slack app, OpenRouter key, Redis database, or Redis records. Use it only after

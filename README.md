@@ -22,10 +22,6 @@ accounts.
   egress policy is configured to inject the model key without storing it in the
   worker.
 
-The fake Vercel worker under `apps/worker/api/fake.ts` remains deterministic
-test scaffolding for the earliest milestone. It is not an installation path and
-does not prove Pi, Sandbox, Drive, or OpenRouter behavior.
-
 ## Documentation
 
 - [V1 quickstart](docs/service-setup.md)
