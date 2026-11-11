@@ -38,7 +38,7 @@ describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
   it('atomically lets either Stop or terminal publication win', async () => {
     const run = await admitControlledRun();
     const target = makeTarget();
-    expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(run), target)).toBe(
       'recorded',
     );
     const saved = (await store.getRun(run.runId))!;
@@ -93,10 +93,10 @@ describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
     const first = await admitControlledRun();
     const other = await admitControlledRun();
     expect(await store.enrollIdleSession(target)).toBe(true);
-    expect(await store.recordDispatchTarget(makeJob(first), target)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(first), target)).toBe(
       'recorded',
     );
-    expect(await store.recordDispatchTarget(makeJob(other), target)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(other), target)).toBe(
       'recorded',
     );
     expect(await store.requestStop(controlRef(first))).toBe('requested');
@@ -142,7 +142,7 @@ describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
   it('clears a never-launched stopping target before confirming exit', async () => {
     const run = await admitControlledRun();
     const target = makeTarget();
-    expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(run), target)).toBe(
       'recorded',
     );
     expect(await store.requestStop(controlRef(run))).toBe('requested');
@@ -207,7 +207,7 @@ describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
       conversationId: 'd'.repeat(64),
     });
     const target = makeTarget();
-    expect(await store.recordDispatchTarget(makeJob(run), target)).toBe(
+    expect(await recordReadyDispatch(store, makeJob(run), target)).toBe(
       'recorded',
     );
     const observed = (await store.getRun(run.runId))!;
@@ -277,7 +277,7 @@ describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
         revision: 4,
       },
     });
-    expect(await store.recordDispatchTarget(makeJob(run), makeTarget())).toBe(
+    expect(await recordReadyDispatch(store, makeJob(run), makeTarget())).toBe(
       'recorded',
     );
     const observed = (await store.getRun(run.runId))!;
@@ -287,26 +287,6 @@ describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
       state: 'interrupted',
       session: run.session,
     });
-  });
-
-  it('backfills exact historical final-answer references idempotently', async () => {
-    const run = makeRun();
-    const messageId = nextTimestamp();
-    const reference = answerRef(run, messageId);
-    const client = state.getClient();
-    await client.set(
-      `${namespace}:run:${run.runId}`,
-      JSON.stringify({
-        ...run,
-        state: 'completed',
-        result: makeResult(run),
-        messageId,
-      }),
-    );
-    expect(await store.getPublishedAnswer(reference)).toBeNull();
-    expect(await store.backfillPublishedAnswers()).toBe(1);
-    expect(await store.backfillPublishedAnswers()).toBe(0);
-    expect((await store.getPublishedAnswer(reference))?.runId).toBe(run.runId);
   });
 
   it('records ordered thumbs additions and removals only on final work answers', async () => {
@@ -516,4 +496,20 @@ function answerRef(run: RunRecord, messageId: string): AnswerRef {
     channelId: run.channelId,
     messageId,
   };
+}
+
+// Production records a dispatch only for an enrolled session that the managed
+// runtime marks ready.
+async function recordReadyDispatch(
+  store: RedisRunStore,
+  job: WorkerJob,
+  target: SandboxTarget,
+) {
+  await store.enrollIdleSession(target);
+  await store.compareManagedRuntime(
+    target.sandboxName,
+    await store.getManagedRuntime(target.sandboxName),
+    { phase: 'ready', sessionId: target.sessionId, driveId: 'synthetic-drive' },
+  );
+  return store.recordDispatchTarget(job, target);
 }

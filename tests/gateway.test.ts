@@ -763,7 +763,7 @@ describe.skipIf(!redisUrl)(
       );
       const target = { sandboxName: 'test-sandbox', sessionId: 'test-session' };
       gateway.dispatch.mockImplementationOnce(async (job) => {
-        expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+        expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
           'recorded',
         );
       });
@@ -2052,7 +2052,7 @@ describe.skipIf(!redisUrl)(
         gateway.store.enrollIdleSession(lost),
         gateway.store.enrollIdleSession(replacement),
       ]);
-      expect(await gateway.store.recordDispatchTarget(job, lost)).toBe(
+      expect(await recordReadyDispatch(gateway.store, job, lost)).toBe(
         'recorded',
       );
       expect(await gateway.store.fenceLostTarget(lost)).toBe(true);
@@ -2139,7 +2139,7 @@ describe.skipIf(!redisUrl)(
         gateway.store.enrollIdleSession(lost),
         gateway.store.enrollIdleSession(replacement),
       ]);
-      expect(await gateway.store.recordDispatchTarget(job, lost)).toBe(
+      expect(await recordReadyDispatch(gateway.store, job, lost)).toBe(
         'recorded',
       );
       const claimPublication = gateway.store.claimPublication.bind(
@@ -2265,7 +2265,7 @@ describe.skipIf(!redisUrl)(
       );
       const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
       gateway.dispatch.mockImplementation(async (job) => {
-        expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+        expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
           'recorded',
         );
       });
@@ -2342,7 +2342,7 @@ describe.skipIf(!redisUrl)(
       );
       const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
       gateway.dispatch.mockImplementation(async (job) => {
-        await gateway.store.recordDispatchTarget(job, target);
+        await recordReadyDispatch(gateway.store, job, target);
       });
       await gateway.events(signed(envelope()));
       await gateway.flush();
@@ -2395,7 +2395,7 @@ describe.skipIf(!redisUrl)(
       );
       const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
       gateway.dispatch.mockImplementation(async (job) => {
-        await gateway.store.recordDispatchTarget(job, target);
+        await recordReadyDispatch(gateway.store, job, target);
       });
       await gateway.events(signed(envelope()));
       await gateway.flush();
@@ -2548,7 +2548,7 @@ describe.skipIf(!redisUrl)(
       await gateway.flush();
       const job = gateway.dispatch.mock.calls[0]![0];
       const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
-      expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+      expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
         'recorded',
       );
       const output: WorkerResult = {
@@ -2645,7 +2645,7 @@ describe.skipIf(!redisUrl)(
       expect(job.csvOutput).toBe(true);
       const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
       if (outcome !== 'execution target missing')
-        expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+        expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
           'recorded',
         );
       const output: WorkerResult = {
@@ -2783,7 +2783,7 @@ describe.skipIf(!redisUrl)(
           sandboxName: 'test-worker',
           sessionId: 'test-session',
         };
-        expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+        expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
           'recorded',
         );
         const output: WorkerResult = {
@@ -3673,7 +3673,7 @@ describe.skipIf(!redisUrl)(
         sessionId: 'synthetic-session',
       };
       gateway.dispatch.mockImplementationOnce(async (job) => {
-        expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+        expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
           'recorded',
         );
         throw new Error('Synthetic dispatch acknowledgement loss');
@@ -3722,7 +3722,7 @@ describe.skipIf(!redisUrl)(
           throw new Error('Synthetic Redis acknowledgement loss');
         });
       gateway.dispatch.mockImplementationOnce(async (job) => {
-        expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+        expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
           'recorded',
         );
         throw new Error('Synthetic dispatch acknowledgement loss');
@@ -3813,7 +3813,7 @@ describe.skipIf(!redisUrl)(
         const gateway = harness(createMockState(), true, stopped);
         if (reason !== 'unbound') {
           gateway.dispatch.mockImplementationOnce(async (job) => {
-            expect(await gateway.store.recordDispatchTarget(job, target)).toBe(
+            expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
               'recorded',
             );
           });
@@ -3964,3 +3964,19 @@ describe.skipIf(!redisUrl)(
     });
   },
 );
+
+// Production records a dispatch only for an enrolled session that the managed
+// runtime marks ready.
+async function recordReadyDispatch(
+  store: RedisRunStore,
+  job: WorkerJob,
+  target: SandboxTarget,
+) {
+  await store.enrollIdleSession(target);
+  await store.compareManagedRuntime(
+    target.sandboxName,
+    await store.getManagedRuntime(target.sandboxName),
+    { phase: 'ready', sessionId: target.sessionId, driveId: 'synthetic-drive' },
+  );
+  return store.recordDispatchTarget(job, target);
+}
