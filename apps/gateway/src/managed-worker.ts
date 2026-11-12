@@ -17,14 +17,13 @@ type ManagedWorkerConfig = {
   sandboxName: string;
   driveName: string;
   seedId: string;
-  controlsEnabled?: boolean;
 };
 
 export function createManagedWorker(
   config: ManagedWorkerConfig,
   store: RedisRunStore,
 ) {
-  const { sandboxName, driveName, seedId, controlsEnabled } = config;
+  const { sandboxName, driveName, seedId } = config;
   const target = (session: Session) => ({
     sandboxName,
     sessionId: session.sessionId,
@@ -72,10 +71,7 @@ export function createManagedWorker(
         '-c',
         `set -eu; ${MANAGED_DRIVE_WRITE_SETUP} || exit 1; exec ${MANAGED_WORKER_PRIVILEGE_DROP} -- bash -c "$1"`,
         'hydra-readiness',
-        'set -eu; cd /tmp/hydra-worker; test -x node_modules/.bin/pi; test -x node_modules/.bin/pi-acp; command -v flock >/dev/null; command -v sysctl >/dev/null; node --check run.mjs; node --check shared-notes.mjs' +
-          (controlsEnabled
-            ? '; node --check supervise.mjs; node --check control.mjs'
-            : ''),
+        'set -eu; cd /tmp/hydra-worker; test -x node_modules/.bin/pi; test -x node_modules/.bin/pi-acp; command -v flock >/dev/null; command -v sysctl >/dev/null; node --check run.mjs; node --check shared-notes.mjs; node --check supervise.mjs; node --check control.mjs',
       ],
       sudo: true,
       timeoutMs: 3_000,

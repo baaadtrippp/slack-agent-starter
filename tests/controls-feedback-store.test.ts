@@ -107,7 +107,6 @@ describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
     const next = makeRun({
       threadTs: first.threadTs,
       messageTs: nextTimestamp(),
-      controls: true,
     });
     expect((await store.admit(next)).outcome).toBe('accepted');
     expect(await store.confirmStopped(stopping)).toBe('conflict');
@@ -117,7 +116,6 @@ describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
           makeRun({
             threadTs: first.threadTs,
             messageTs: nextTimestamp(),
-            controls: true,
           }),
         )
       ).outcome,
@@ -236,14 +234,13 @@ describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
         conversationId: run.conversationId,
         threadTs: run.threadTs,
         messageTs: nextTimestamp(),
-        controls: true,
       }),
     );
     expect(next.outcome).toBe('accepted');
     expect(next.run.session).toEqual(session);
   });
 
-  it('reconciles only controls-enabled expired runs without a dispatch target', async () => {
+  it('reconciles an expired run without a dispatch target', async () => {
     const session: WorkerSession = {
       seedRunId: randomUUID(),
       nativeId: randomUUID(),
@@ -257,14 +254,6 @@ describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
     });
     expect(await store.interruptRun(controlled, Date.now())).toBe(true);
     expect((await store.getRun(controlled.runId))?.state).toBe('interrupted');
-
-    const historical = makeRun({
-      deadline: Date.now() - 1,
-      session,
-    });
-    await store.admit(historical);
-    expect(await store.interruptRun(historical, Date.now())).toBe(false);
-    expect((await store.getRun(historical.runId))?.state).toBe('accepted');
   });
 
   it('requires a restored-session proof to release an expired bound resumed run', async () => {
@@ -406,7 +395,7 @@ describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
   async function admitControlledRun(
     overrides: Partial<RunRecord> = {},
   ): Promise<RunRecord> {
-    const candidate = makeRun({ controls: true, ...overrides });
+    const candidate = makeRun(overrides);
     expect((await store.admit(candidate)).outcome).toBe('accepted');
     expect(await store.claimStatusCreation(candidate.runId)).toBe(true);
     expect(

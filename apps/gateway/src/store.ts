@@ -67,7 +67,6 @@ export type RunRecord = {
     | 'interrupted'
     | 'stopping'
     | 'stopped';
-  controls?: true;
   memory?: WorkerJob['memory'];
   session?: WorkerSession;
   result?: WorkerResult;
@@ -302,7 +301,7 @@ if not encoded then return 'conflict' end
 local run = cjson.decode(encoded)
 if run.runId ~= ARGV[1] or run.generation ~= tonumber(ARGV[2]) or
    not run.statusMessageId or run.statusMessageId ~= ARGV[3] or
-   run.kind ~= 'work' or not run.controls or run.memory == 'save' then return 'conflict' end
+   run.kind ~= 'work' or run.memory == 'save' then return 'conflict' end
 if run.state == 'stopping' or run.state == 'stopped' then return 'duplicate' end
 if run.state == 'publishing' or run.state == 'completed' or
    run.state == 'worker_failed' or run.state == 'publication_uncertain' or
@@ -600,14 +599,12 @@ local current = cjson.decode(encoded)
 local old = cjson.decode(ARGV[1])
 if current.runId ~= old.runId or current.eventId ~= old.eventId or current.generation ~= old.generation or
    current.workspaceId ~= old.workspaceId or current.channelId ~= old.channelId or
-   current.threadTs ~= old.threadTs or current.controls ~= old.controls or
+   current.threadTs ~= old.threadTs or
    current.memory ~= old.memory then return 0 end
 if current.execution or old.execution then
   if not current.execution or not old.execution or
      current.execution.sandboxName ~= old.execution.sandboxName or
      current.execution.sessionId ~= old.execution.sessionId then return 0 end
-elseif not current.controls then
-  return 0
 end
 local owner = redis.call('GET', KEYS[2])
 -- A retry reports the thread available only while no newer run owns it.
@@ -616,7 +613,7 @@ if owner ~= current.runId then return 0 end
 if current.kind ~= 'work' or
    (current.state ~= 'accepted' and current.state ~= 'dispatch_failed') or
    (current.session and current.execution and current.memory ~= 'save' and
-    (ARGV[3] ~= '1' or not current.controls)) or current.result or
+    ARGV[3] ~= '1') or current.result or
    current.deadline > tonumber(ARGV[2]) then return 0 end
 current.state = 'interrupted'
 if ARGV[5] == '1' then current.exitConfirmed = true end

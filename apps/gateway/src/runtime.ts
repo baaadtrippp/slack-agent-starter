@@ -70,7 +70,6 @@ function initialize() {
     .map((id) => id.trim());
   if (channelIds.some((id) => !/^C[A-Z0-9]+$/.test(id)))
     throw new Error('Invalid enabled channel configuration');
-  const controlsEnabled = process.env.SLACK_CONTROLS_AND_FEEDBACK === '1';
   const operatorIds =
     process.env.SLACK_STOP_OPERATOR_IDS?.split(',')
       .map((id) => id.trim())
@@ -80,14 +79,12 @@ function initialize() {
   )
     throw new Error('Invalid Stop operator configuration');
   const config = {
-    controlsEnabled,
     operatorIds,
     signingSecret: required('SLACK_SIGNING_SECRET'),
     botToken: required('SLACK_BOT_TOKEN'),
     workspaceId: required('SLACK_WORKSPACE_ID'),
     channelIds,
     origin: origin.origin,
-    threadResume: process.env.SLACK_THREAD_RESUME === '1',
     fileExchange: process.env.SLACK_FILE_EXCHANGE === '1',
     jpegInput: process.env.SLACK_JPEG_INPUT === '1',
     pngInput: process.env.SLACK_PNG_INPUT === '1',
@@ -121,7 +118,6 @@ function initialize() {
       sandboxName,
       driveName: managedDrive,
       seedId: managedSeed,
-      controlsEnabled,
     },
     store,
   );
@@ -130,105 +126,93 @@ function initialize() {
     state,
     store,
     isSandboxStopped,
-    ...(controlsEnabled
-      ? {
-          inspectWorker: async (run, stop) => {
-            const currentTarget = run.recovery ?? run.execution;
-            if (!run.recovery) {
-              const exact = await inspectSandboxRun(run, stop).catch(
-                () => undefined,
-              );
-              if (exact?.state === 'exited' || exact?.state === 'stopped')
-                return exact;
-            }
-            if (!currentTarget || currentTarget.sandboxName !== sandboxName)
-              return { state: 'unknown' };
+    inspectWorker: async (run, stop) => {
+      const currentTarget = run.recovery ?? run.execution;
+      if (!run.recovery) {
+        const exact = await inspectSandboxRun(run, stop).catch(() => undefined);
+        if (exact?.state === 'exited' || exact?.state === 'stopped')
+          return exact;
+      }
+      if (!currentTarget || currentTarget.sandboxName !== sandboxName)
+        return { state: 'unknown' };
 
-            const bound = run.recovery
-              ? (
-                  await Sandbox.get({
-                    name: currentTarget.sandboxName,
-                    resume: false,
-                    signal: AbortSignal.timeout(5_000),
-                  }).catch(() => undefined)
-                )?.currentSession()
-              : undefined;
-            const useBound =
-              bound?.status === 'running' &&
-              bound.sessionId === currentTarget.sessionId;
-            // Only a verified stopped target can be rebound. An existing
-            // binding already proves that its original environment stopped.
-            const session = useBound
-              ? bound
-              : await managed.recoverSession(
-                  currentTarget,
-                  Date.now() + 25_000,
-                );
-            if (!session) return { state: 'unknown' };
-            const target = {
-              sandboxName: currentTarget.sandboxName,
-              sessionId: session.sessionId,
-            };
-            if (
-              !useBound &&
-              !(await store.bindRecoveryTarget(currentTarget, target))
-            )
-              return { state: 'unknown' };
-            const token = randomUUID();
-            if (!(await store.reserveRecovery(target, token)))
-              return { state: 'unknown' };
-            try {
-              const inspection = await inspectSandboxRun(run, stop, session);
-              if (
-                config.fileExchange &&
-                inspection.state === 'exited' &&
-                inspection.result?.artifact
-              ) {
-                const bytes = await collectRunArtifact(
-                  run.runId,
-                  target,
-                  inspection.result.artifact.format,
-                ).catch(() => undefined);
-                if (bytes) return { ...inspection, artifactBytes: bytes };
-              }
-              return inspection;
-            } finally {
-              await store.finishRecovery(target, token);
-              if (!stop) await managed.stopIfIdle(session).catch(() => {});
-            }
-          },
-          releaseRecoveredWorker: async (run, reconcileExit) => {
-            let target = await store.releaseRecoveryTarget(run);
-            if (reconcileExit && !target && !run.recovery && run.execution) {
-              const inspection = await inspectSandboxRun(run, false).catch(
-                () => undefined,
-              );
-              if (inspection?.state === 'exited') {
-                if (
-                  inspection.result &&
-                  !normalizeFailureResult(run, inspection.result)
-                )
-                  await store
-                    .claimSavedResult(run, inspection.result)
-                    .catch(() => undefined);
-                target = await store.releaseRecoveryTarget(run, true);
-              }
-            }
-            if (!target || target.sandboxName !== sandboxName) return;
-            const sandbox = await Sandbox.get({
-              name: target.sandboxName,
+      const bound = run.recovery
+        ? (
+            await Sandbox.get({
+              name: currentTarget.sandboxName,
               resume: false,
               signal: AbortSignal.timeout(5_000),
-            }).catch(() => undefined);
-            const session = sandbox?.currentSession();
-            if (
-              session?.status === 'running' &&
-              session.sessionId === target.sessionId
-            )
-              await managed.stopIfIdle(session).catch(() => {});
-          },
+            }).catch(() => undefined)
+          )?.currentSession()
+        : undefined;
+      const useBound =
+        bound?.status === 'running' &&
+        bound.sessionId === currentTarget.sessionId;
+      // Only a verified stopped target can be rebound. An existing
+      // binding already proves that its original environment stopped.
+      const session = useBound
+        ? bound
+        : await managed.recoverSession(currentTarget, Date.now() + 25_000);
+      if (!session) return { state: 'unknown' };
+      const target = {
+        sandboxName: currentTarget.sandboxName,
+        sessionId: session.sessionId,
+      };
+      if (!useBound && !(await store.bindRecoveryTarget(currentTarget, target)))
+        return { state: 'unknown' };
+      const token = randomUUID();
+      if (!(await store.reserveRecovery(target, token)))
+        return { state: 'unknown' };
+      try {
+        const inspection = await inspectSandboxRun(run, stop, session);
+        if (
+          config.fileExchange &&
+          inspection.state === 'exited' &&
+          inspection.result?.artifact
+        ) {
+          const bytes = await collectRunArtifact(
+            run.runId,
+            target,
+            inspection.result.artifact.format,
+          ).catch(() => undefined);
+          if (bytes) return { ...inspection, artifactBytes: bytes };
         }
-      : {}),
+        return inspection;
+      } finally {
+        await store.finishRecovery(target, token);
+        if (!stop) await managed.stopIfIdle(session).catch(() => {});
+      }
+    },
+    releaseRecoveredWorker: async (run, reconcileExit) => {
+      let target = await store.releaseRecoveryTarget(run);
+      if (reconcileExit && !target && !run.recovery && run.execution) {
+        const inspection = await inspectSandboxRun(run, false).catch(
+          () => undefined,
+        );
+        if (inspection?.state === 'exited') {
+          if (
+            inspection.result &&
+            !normalizeFailureResult(run, inspection.result)
+          )
+            await store
+              .claimSavedResult(run, inspection.result)
+              .catch(() => undefined);
+          target = await store.releaseRecoveryTarget(run, true);
+        }
+      }
+      if (!target || target.sandboxName !== sandboxName) return;
+      const sandbox = await Sandbox.get({
+        name: target.sandboxName,
+        resume: false,
+        signal: AbortSignal.timeout(5_000),
+      }).catch(() => undefined);
+      const session = sandbox?.currentSession();
+      if (
+        session?.status === 'running' &&
+        session.sessionId === target.sessionId
+      )
+        await managed.stopIfIdle(session).catch(() => {});
+    },
     ...(config.fileExchange ? { collectArtifact: collectRunArtifact } : {}),
     dispatch: async (job, stagedInputs) => {
       const session = await managed
@@ -299,10 +283,7 @@ function initialize() {
           return storageFull ? 'input-storage-full' : 'input-staging-failed';
         }
       }
-      if (
-        controlsEnabled &&
-        (await store.getRun(job.runId))?.state === 'stopping'
-      ) {
+      if ((await store.getRun(job.runId))?.state === 'stopping') {
         // No provider launch has been attempted by this dispatch.
         await releaseReservation(true);
         return;
@@ -316,12 +297,14 @@ function initialize() {
         }
         throw new Error('Worker deadline expired');
       }
-      const entry = controlsEnabled
-        ? '/tmp/hydra-worker/supervise.mjs'
-        : '/tmp/hydra-worker/run.mjs';
       const command = await session.runCommand({
         cmd: 'bash',
-        args: ['-c', MANAGED_WORKER_LAUNCH, 'hydra-worker', entry],
+        args: [
+          '-c',
+          MANAGED_WORKER_LAUNCH,
+          'hydra-worker',
+          '/tmp/hydra-worker/supervise.mjs',
+        ],
         sudo: true,
         cwd: '/tmp/hydra-worker',
         env: {

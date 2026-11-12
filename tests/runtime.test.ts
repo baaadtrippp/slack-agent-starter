@@ -339,6 +339,12 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
               sequence: 1,
               type: 'completed',
               text: 'Synthetic delayed Slack result',
+              session: {
+                seedRunId: job.runId,
+                nativeId: randomUUID(),
+                adapterId: randomUUID(),
+                revision: 1,
+              },
             }),
           },
         );
@@ -536,7 +542,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
                 '-c',
                 expect.any(String),
                 'hydra-worker',
-                '/tmp/hydra-worker/run.mjs',
+                '/tmp/hydra-worker/supervise.mjs',
               ],
             }),
           );

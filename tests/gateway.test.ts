@@ -104,8 +104,6 @@ function signed(body: unknown, sentAt = initialTime, secret = signingSecret) {
 
 function harness(
   sdkState: StateAdapter = createMockState(),
-  threadResume = false,
-  isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>,
   inputConfig: {
     fileExchange?: boolean;
     jpegInput?: boolean;
@@ -142,25 +140,17 @@ function harness(
       workspaceId: 'TTEST1',
       channelIds: ['CTEST1'],
       origin: 'https://gateway.example',
-      threadResume,
       ...inputConfig,
-      ...(controls
-        ? { controlsEnabled: true, operatorIds: controls.operatorIds ?? [] }
-        : {}),
+      operatorIds: controls?.operatorIds ?? [],
     },
     state: sdkState,
     store,
     dispatch,
-    ...(isSandboxStopped ? { isSandboxStopped } : {}),
     ...(collectArtifact ? { collectArtifact } : {}),
-    ...(controls
-      ? {
-          inspectWorker: controls.inspectWorker,
-          ...(controls.releaseRecoveredWorker
-            ? { releaseRecoveredWorker: controls.releaseRecoveredWorker }
-            : {}),
-        }
-      : {}),
+    inspectWorker:
+      controls?.inspectWorker ?? (async () => ({ state: 'unknown' })),
+    releaseRecoveredWorker:
+      controls?.releaseRecoveredWorker ?? (async () => {}),
     schedule: (task) => tasks.push(task),
     now: () => clock.now,
   });
@@ -198,6 +188,18 @@ function result(job: WorkerJob): WorkerResult {
     sequence: 1,
     type: 'completed',
     text: 'Synthetic worker answer.',
+    ...(job.memory === 'save'
+      ? {}
+      : {
+          session: job.session
+            ? { ...job.session, revision: job.session.revision + 1 }
+            : {
+                seedRunId: job.runId,
+                nativeId: randomUUID(),
+                adapterId: randomUUID(),
+                revision: 1,
+              },
+        }),
   };
 }
 
@@ -215,6 +217,14 @@ function progress(job: WorkerJob, eventId = randomUUID()) {
 const statusTs = '1800000001.000001';
 const answerTs = '1800000002.000001';
 const controlNow = initialTime + 3_000;
+
+function statusCard(text: string) {
+  return expect.objectContaining({
+    children: expect.arrayContaining([
+      expect.objectContaining({ content: text }),
+    ]),
+  });
+}
 
 function interaction(
   run: RunRecord,
@@ -443,7 +453,7 @@ describe.skipIf(!redisUrl)(
       vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
         'UBOT1',
       );
-      const gateway = harness(createMockState(), true);
+      const gateway = harness();
       const event = envelope();
       event.event.text =
         '<@UBOT1> remember for this channel: The badge is purple.';
@@ -555,7 +565,7 @@ describe.skipIf(!redisUrl)(
     it.each([false, true])(
       'saves only current text from an ordinary file-share reply (file exchange: %s)',
       async (fileExchange) => {
-        const gateway = harness(createMockState(), true, undefined, {
+        const gateway = harness(createMockState(), {
           fileExchange,
           publicUrlInput: true,
         });
@@ -630,7 +640,7 @@ describe.skipIf(!redisUrl)(
     ])(
       'deduplicates %s across Slack deliveries (reply first: %s)',
       async (memory, replyFirst, prefix) => {
-        const gateway = harness(createMockState(), true);
+        const gateway = harness();
         const root = envelope();
         await gateway.events(signed(root));
         await gateway.flush();
@@ -693,7 +703,7 @@ describe.skipIf(!redisUrl)(
       vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
         'UBOT1',
       );
-      const gateway = harness(createMockState(), true);
+      const gateway = harness();
       const root = envelope();
       const event = envelope();
       event.event.text = '<@UBOT1> Could you remember the earlier note?';
@@ -730,8 +740,8 @@ describe.skipIf(!redisUrl)(
       ) => Promise<WorkerInspection>,
       operatorIds: string[] = [],
       releaseRecoveredWorker?: (run: RunRecord) => Promise<void>,
-      inputConfig: Parameters<typeof harness>[3] = {},
-      collectArtifact?: Parameters<typeof harness>[4],
+      inputConfig: Parameters<typeof harness>[1] = {},
+      collectArtifact?: Parameters<typeof harness>[2],
     ) {
       mockControlAccess();
       vi.mocked(SlackAdapter.prototype.postMessage)
@@ -747,8 +757,6 @@ describe.skipIf(!redisUrl)(
         });
       const gateway = harness(
         createMockState(),
-        false,
-        undefined,
         inputConfig,
         collectArtifact,
         true,
@@ -1355,14 +1363,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('acknowledges an accepted mention after the HTTP response with one eyes reaction and one status', async () => {
-      const gateway = harness(
-        createMockState(),
-        false,
-        undefined,
-        {},
-        undefined,
-        true,
-      );
+      const gateway = harness(createMockState(), {}, undefined, true);
       const body = envelope();
       const response = await gateway.events(signed(body));
 
@@ -1402,14 +1403,7 @@ describe.skipIf(!redisUrl)(
       initialize.mockRejectedValueOnce(
         new Error('Synthetic initialization timeout'),
       );
-      const gateway = harness(
-        createMockState(),
-        false,
-        undefined,
-        {},
-        undefined,
-        true,
-      );
+      const gateway = harness(createMockState(), {}, undefined, true);
       const body = envelope();
 
       expect((await gateway.events(signed(body))).status).toBe(200);
@@ -1447,14 +1441,7 @@ describe.skipIf(!redisUrl)(
           await reaction.promise;
         },
       );
-      const gateway = harness(
-        createMockState(),
-        false,
-        undefined,
-        {},
-        undefined,
-        true,
-      );
+      const gateway = harness(createMockState(), {}, undefined, true);
       const body = envelope();
       expect((await gateway.events(signed(body))).status).toBe(200);
       let backgroundFinished = false;
@@ -1483,14 +1470,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('dispatches while Slack is slow and reconciles completion after the status ID is saved', async () => {
-      const gateway = harness(
-        createMockState(),
-        false,
-        undefined,
-        {},
-        undefined,
-        true,
-      );
+      const gateway = harness(createMockState(), {}, undefined, true);
       const statusStarted = Promise.withResolvers<void>();
       const statusPost = Promise.withResolvers<{
         id: string;
@@ -1549,19 +1529,12 @@ describe.skipIf(!redisUrl)(
       expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
         `slack:CTEST1:${body.event.ts}`,
         '1800000001.000001',
-        'Completed. The result is in this thread.',
+        statusCard('Completed. The result is in this thread.'),
       );
     });
 
     it('does not acknowledge refused, bot, or busy input as another accepted run', async () => {
-      const gateway = harness(
-        createMockState(),
-        true,
-        undefined,
-        {},
-        undefined,
-        true,
-      );
+      const gateway = harness(createMockState(), {}, undefined, true);
       const accepted = envelope();
       await gateway.events(signed(accepted));
       await gateway.flush();
@@ -1577,7 +1550,7 @@ describe.skipIf(!redisUrl)(
       expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(2);
       expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
         `slack:CTEST1:${accepted.event.ts}`,
-        BUSY_REPLY,
+        expect.stringContaining('Use Status'),
       );
       expect(gateway.dispatch).toHaveBeenCalledTimes(1);
     });
@@ -1585,8 +1558,6 @@ describe.skipIf(!redisUrl)(
     it('publishes a refusal without creating an acknowledgement status or reaction', async () => {
       const gateway = harness(
         createMockState(),
-        false,
-        undefined,
         { publicUrlInput: true },
         undefined,
         true,
@@ -1612,14 +1583,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('imports one permitted page of earlier messages after acknowledgement and deduplication', async () => {
-      const gateway = harness(
-        createMockState(),
-        true,
-        undefined,
-        {},
-        undefined,
-        true,
-      );
+      const gateway = harness(createMockState(), {}, undefined, true);
       const root = '1799999999.000001';
       const earlier = '1799999999.000002';
       const fixture = envelope();
@@ -1734,7 +1698,7 @@ describe.skipIf(!redisUrl)(
       await gateway.flush();
       expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
         `slack:CTEST1:${root}`,
-        BUSY_REPLY,
+        expect.stringContaining('Use Status'),
       );
 
       const published = envelope().event.ts;
@@ -2023,8 +1987,6 @@ describe.skipIf(!redisUrl)(
       });
       const gateway = harness(
         createMockState(),
-        false,
-        undefined,
         { fileExchange: true },
         collectArtifact,
         false,
@@ -2123,8 +2085,6 @@ describe.skipIf(!redisUrl)(
       );
       const gateway = harness(
         createMockState(),
-        false,
-        undefined,
         { fileExchange: true },
         collectArtifact,
       );
@@ -2196,14 +2156,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('shows finishing while the final answer is still publishing, then completes', async () => {
-      const gateway = harness(
-        createMockState(),
-        false,
-        undefined,
-        {},
-        undefined,
-        true,
-      );
+      const gateway = harness(createMockState(), {}, undefined, true);
       const body = envelope();
       await gateway.events(signed(body));
       await gateway.flush();
@@ -2233,7 +2186,7 @@ describe.skipIf(!redisUrl)(
         expect(edit).toHaveBeenLastCalledWith(
           `slack:CTEST1:${body.event.ts}`,
           '1800000001.000001',
-          'Finishing: publishing the result…',
+          statusCard('Finishing: publishing the result…'),
         );
       });
 
@@ -2247,19 +2200,12 @@ describe.skipIf(!redisUrl)(
       expect(edit).toHaveBeenLastCalledWith(
         `slack:CTEST1:${body.event.ts}`,
         '1800000001.000001',
-        'Completed. The result is in this thread.',
+        statusCard('Completed. The result is in this thread.'),
       );
     });
 
     it('accepts authenticated content-free progress once and rejects malformed or terminal-late progress', async () => {
-      const gateway = harness(
-        createMockState(),
-        false,
-        undefined,
-        {},
-        undefined,
-        true,
-      );
+      const gateway = harness(createMockState(), {}, undefined, true);
       const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
       gateway.dispatch.mockImplementation(async (job) => {
         expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
@@ -2298,7 +2244,7 @@ describe.skipIf(!redisUrl)(
       expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
         expect.stringMatching(/^slack:CTEST1:/),
         '1800000001.000001',
-        'Working…',
+        statusCard('Working…'),
       );
 
       expect(
@@ -2324,19 +2270,12 @@ describe.skipIf(!redisUrl)(
       expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
         expect.stringMatching(/^slack:CTEST1:/),
         '1800000001.000001',
-        'Completed. The result is in this thread.',
+        statusCard('Completed. The result is in this thread.'),
       );
     });
 
     it('repairs a working edit when completion lands during the Slack call', async () => {
-      const gateway = harness(
-        createMockState(),
-        false,
-        undefined,
-        {},
-        undefined,
-        true,
-      );
+      const gateway = harness(createMockState(), {}, undefined, true);
       const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
       gateway.dispatch.mockImplementation(async (job) => {
         await recordReadyDispatch(gateway.store, job, target);
@@ -2370,26 +2309,23 @@ describe.skipIf(!redisUrl)(
       await renderWorking;
 
       const edits = vi.mocked(SlackAdapter.prototype.editMessage).mock.calls;
-      expect(edits.some(([, , text]) => text === 'Working…')).toBe(true);
+      expect(
+        edits.some(([, , text]) =>
+          statusCard('Working…').asymmetricMatch(text),
+        ),
+      ).toBe(true);
       expect(
         edits.every(([, messageId]) => messageId === '1800000001.000001'),
       ).toBe(true);
       expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
         expect.stringMatching(/^slack:CTEST1:/),
         '1800000001.000001',
-        'Completed. The result is in this thread.',
+        statusCard('Completed. The result is in this thread.'),
       );
     });
 
     it('retries a transient status edit against the same persisted message', async () => {
-      const gateway = harness(
-        createMockState(),
-        false,
-        undefined,
-        {},
-        undefined,
-        true,
-      );
+      const gateway = harness(createMockState(), {}, undefined, true);
       const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
       gateway.dispatch.mockImplementation(async (job) => {
         await recordReadyDispatch(gateway.store, job, target);
@@ -2412,26 +2348,19 @@ describe.skipIf(!redisUrl)(
         1,
         expect.stringMatching(/^slack:CTEST1:/),
         '1800000001.000001',
-        'Working…',
+        statusCard('Working…'),
       );
       expect(edit).toHaveBeenNthCalledWith(
         2,
         expect.stringMatching(/^slack:CTEST1:/),
         '1800000001.000001',
-        'Working…',
+        statusCard('Working…'),
       );
       expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(1);
     });
 
     it('creates a fresh single status when an ordinary reply resumes the saved session', async () => {
-      const gateway = harness(
-        createMockState(),
-        true,
-        undefined,
-        {},
-        undefined,
-        true,
-      );
+      const gateway = harness(createMockState(), {}, undefined, true);
       const mention = envelope();
       vi.mocked(SlackAdapter.prototype.postMessage).mockImplementation(
         async (threadId) => ({
@@ -2485,14 +2414,7 @@ describe.skipIf(!redisUrl)(
     ] as const)(
       'keeps the status truthful after a %s failure',
       async (outcome, status) => {
-        const gateway = harness(
-          createMockState(),
-          false,
-          undefined,
-          {},
-          undefined,
-          true,
-        );
+        const gateway = harness(createMockState(), {}, undefined, true);
         if (outcome === 'startup')
           gateway.dispatch.mockRejectedValueOnce(
             new Error('Synthetic dispatch response loss'),
@@ -2503,7 +2425,11 @@ describe.skipIf(!redisUrl)(
         const job = gateway.dispatch.mock.calls[0]![0];
 
         if (outcome === 'worker') {
-          const failure = { ...result(job), type: 'failed' as const };
+          const failure = {
+            ...result(job),
+            type: 'failed' as const,
+            session: undefined,
+          };
           expect(
             (await gateway.callback(callback(failure, job.callbackToken)))
               .status,
@@ -2524,7 +2450,7 @@ describe.skipIf(!redisUrl)(
         expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
           `slack:CTEST1:${body.event.ts}`,
           '1800000001.000001',
-          status,
+          statusCard(status),
         );
       },
     );
@@ -2534,8 +2460,6 @@ describe.skipIf(!redisUrl)(
       const collectArtifact = vi.fn().mockResolvedValue(csv);
       const gateway = harness(
         createMockState(),
-        false,
-        undefined,
         { fileExchange: true },
         collectArtifact,
         true,
@@ -2582,7 +2506,9 @@ describe.skipIf(!redisUrl)(
           expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
             `slack:CTEST1:${body.event.ts}`,
             '1800000001.000001',
-            'Completed. The text result is in this thread. Attachment delivery is unconfirmed.',
+            statusCard(
+              'Completed. The text result is in this thread. Attachment delivery is unconfirmed.',
+            ),
           );
         });
         expect(await gateway.owner(body.event.ts)).toBeNull();
@@ -2604,7 +2530,9 @@ describe.skipIf(!redisUrl)(
       expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
         `slack:CTEST1:${body.event.ts}`,
         '1800000001.000001',
-        'Completed. The text result is in this thread. Attachment delivery is unconfirmed.',
+        statusCard(
+          'Completed. The text result is in this thread. Attachment delivery is unconfirmed.',
+        ),
       );
     });
 
@@ -2625,8 +2553,6 @@ describe.skipIf(!redisUrl)(
         collectArtifact.mockResolvedValue(Buffer.from('different bytes'));
       const gateway = harness(
         createMockState(),
-        false,
-        undefined,
         { fileExchange: true },
         collectArtifact,
       );
@@ -2768,8 +2694,6 @@ describe.skipIf(!redisUrl)(
         const collect = vi.fn().mockResolvedValue(bytes);
         const gateway = harness(
           createMockState(),
-          false,
-          undefined,
           { fileExchange: true },
           collect,
         );
@@ -2875,6 +2799,7 @@ describe.skipIf(!redisUrl)(
         const failure = {
           ...result(job),
           type: 'failed',
+          session: undefined,
           inputError,
           failureCategory,
           text: 'private provider error',
@@ -2900,7 +2825,7 @@ describe.skipIf(!redisUrl)(
     );
 
     it('activates only after a real session result and resumes that exact session after a gateway restart', async () => {
-      let gateway = harness(createMockState(), true, undefined, {
+      let gateway = harness(createMockState(), {
         publicUrlInput: true,
       });
       const mention = envelope();
@@ -2919,8 +2844,14 @@ describe.skipIf(!redisUrl)(
       await gateway.flush();
       const seed = gateway.dispatch.mock.calls[0]![0];
       expect(
-        (await gateway.callback(callback(result(seed), seed.callbackToken)))
-          .status,
+        (
+          await gateway.callback(
+            callback(
+              { ...result(seed), session: undefined },
+              seed.callbackToken,
+            ),
+          )
+        ).status,
       ).toBe(409);
       const session = {
         seedRunId: seed.runId,
@@ -2944,8 +2875,6 @@ describe.skipIf(!redisUrl)(
 
       gateway = harness(
         createMockState(),
-        true,
-        undefined,
         { publicUrlInput: true },
         undefined,
         false,
@@ -2978,7 +2907,10 @@ describe.skipIf(!redisUrl)(
       expect(
         (
           await gateway.callback(
-            callback(result(followup), followup.callbackToken),
+            callback(
+              { ...result(followup), session: undefined },
+              followup.callbackToken,
+            ),
           )
         ).status,
       ).toBe(409);
@@ -3047,7 +2979,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('rejects ineligible ordinary events and reports a busy thread while its first run is active', async () => {
-      const gateway = harness(createMockState(), true, undefined, {
+      const gateway = harness(createMockState(), {
         fileExchange: true,
       });
       const mention = envelope();
@@ -3087,7 +3019,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('admits a file-only ordinary reply only in its activated conversation', async () => {
-      const gateway = harness(createMockState(), true, undefined, {
+      const gateway = harness(createMockState(), {
         fileExchange: true,
       });
       const root = envelope();
@@ -3169,7 +3101,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('refuses an explicit private URL on an ordinary reply after activation', async () => {
-      const gateway = harness(createMockState(), true, undefined, {
+      const gateway = harness(createMockState(), {
         publicUrlInput: true,
       });
       const root = envelope();
@@ -3211,7 +3143,7 @@ describe.skipIf(!redisUrl)(
       ['png', 'image/png'],
       ['jpg', 'image/jpeg'],
     ])('requires a vision opt-in for %s input', async (extension, mimetype) => {
-      const gateway = harness(createMockState(), false, undefined, {
+      const gateway = harness(createMockState(), {
         fileExchange: true,
       });
       const root = envelope();
@@ -3246,7 +3178,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('refuses a batch over the attachment limit before any download or dispatch', async () => {
-      const gateway = harness(createMockState(), false, undefined, {
+      const gateway = harness(createMockState(), {
         fileExchange: true,
       });
       const root = envelope();
@@ -3330,7 +3262,7 @@ describe.skipIf(!redisUrl)(
           .fn<typeof fetch>()
           .mockResolvedValue(new Response('denied', { status: 403 }));
         vi.stubGlobal('fetch', request);
-        const gateway = harness(createMockState(), false, undefined, {
+        const gateway = harness(createMockState(), {
           fileExchange: true,
           pngInput: true,
           publicUrlInput: true,
@@ -3381,7 +3313,7 @@ describe.skipIf(!redisUrl)(
       'HTTPS://[::1]/source.txt.',
       'https://[::1]',
     ])('rejects a bare private IPv6 URL before dispatch: %s', async (url) => {
-      const gateway = harness(createMockState(), false, undefined, {
+      const gateway = harness(createMockState(), {
         publicUrlInput: true,
       });
       const mention = envelope();
@@ -3408,7 +3340,7 @@ describe.skipIf(!redisUrl)(
     ])(
       'rejects an uppercase explicit private IPv6 URL before dispatch: %s',
       async (url) => {
-        const gateway = harness(createMockState(), false, undefined, {
+        const gateway = harness(createMockState(), {
           publicUrlInput: true,
         });
         const mention = envelope();
@@ -3431,7 +3363,7 @@ describe.skipIf(!redisUrl)(
     );
 
     it('rejects credentials in a bare bracketed IPv6 URL before dispatch', async () => {
-      const gateway = harness(createMockState(), false, undefined, {
+      const gateway = harness(createMockState(), {
         publicUrlInput: true,
       });
       const mention = envelope();
@@ -3474,7 +3406,7 @@ describe.skipIf(!redisUrl)(
         '<@UBOT1> Explain this code:\n```\nconst source = "<HTTPS://[::1]/source.txt>";\n```',
       ],
     ])('leaves a %s as ordinary task text', async (_case, text) => {
-      const gateway = harness(createMockState(), false, undefined, {
+      const gateway = harness(createMockState(), {
         publicUrlInput: true,
       });
       const mention = envelope();
@@ -3495,7 +3427,7 @@ describe.skipIf(!redisUrl)(
     it('rejects a linked URL combined with a bare IPv6 URL before download or dispatch', async () => {
       const request = vi.fn<typeof fetch>();
       vi.stubGlobal('fetch', request);
-      const gateway = harness(createMockState(), false, undefined, {
+      const gateway = harness(createMockState(), {
         publicUrlInput: true,
       });
       const mention = envelope();
@@ -3565,14 +3497,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('reconciles an exhausted terminal status edit on duplicate Slack delivery without republishing', async () => {
-      const gateway = harness(
-        createMockState(),
-        false,
-        undefined,
-        {},
-        undefined,
-        true,
-      );
+      const gateway = harness(createMockState(), {}, undefined, true);
       const body = envelope();
       await gateway.events(signed(body));
       await gateway.flush();
@@ -3581,7 +3506,9 @@ describe.skipIf(!redisUrl)(
       let terminalFailures = 0;
       edit.mockImplementation(async (threadId, messageId, message) => {
         if (
-          message === 'Completed. The result is in this thread.' &&
+          statusCard(
+            'Completed. The result is in this thread.',
+          ).asymmetricMatch(message) &&
           terminalFailures < 2
         ) {
           terminalFailures += 1;
@@ -3612,7 +3539,7 @@ describe.skipIf(!redisUrl)(
       expect(edit).toHaveBeenLastCalledWith(
         `slack:CTEST1:${body.event.ts}`,
         '1800000001.000001',
-        'Completed. The result is in this thread.',
+        statusCard('Completed. The result is in this thread.'),
       );
       expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(posts);
       expect(SlackAdapter.prototype.addReaction).toHaveBeenCalledTimes(
@@ -3647,9 +3574,11 @@ describe.skipIf(!redisUrl)(
       );
     });
 
-    it('recovers an interrupted save in an activated thread when controls are off', async () => {
-      const stopped = vi.fn().mockResolvedValue(true);
-      const gateway = harness(createMockState(), true, stopped);
+    it('recovers an interrupted save in an activated thread', async () => {
+      const inspect = vi.fn().mockResolvedValue({ state: 'exited' });
+      const gateway = harness(createMockState(), {}, undefined, false, {
+        inspectWorker: inspect,
+      });
       const original = envelope();
       await gateway.events(signed(original));
       await gateway.flush();
@@ -3689,7 +3618,10 @@ describe.skipIf(!redisUrl)(
       recover.event.ts = '1800000002.000002';
       await gateway.events(signed(recover, gateway.clock.now));
       await gateway.flush();
-      expect(stopped).toHaveBeenCalledExactlyOnceWith(target);
+      expect(inspect).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ runId: job.runId, execution: target }),
+        false,
+      );
       expect(gateway.dispatch).toHaveBeenCalledTimes(2);
       expect(await gateway.owner(original.event.ts)).toBeNull();
       expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
@@ -3704,21 +3636,38 @@ describe.skipIf(!redisUrl)(
       expect(gateway.dispatch.mock.calls[2]?.[0].session).toEqual(session);
     });
 
+    it('releases an expired unbound run on busy input', async () => {
+      const gateway = harness();
+      const original = envelope();
+      await gateway.events(signed(original));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      gateway.clock.now = job.deadline;
+      await gateway.events(
+        signed(threadReply(original.event.ts), gateway.clock.now),
+      );
+      await gateway.flush();
+      expect(gateway.dispatch).toHaveBeenCalledTimes(1);
+      expect(await gateway.store.getRun(job.runId)).toMatchObject({
+        state: 'interrupted',
+      });
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(
+        `slack:CTEST1:${original.event.ts}`,
+        RECOVERED_REPLY,
+      );
+    });
+
     it('releases an expired first turn only after stop proof, without replaying either event', async () => {
       const target = {
         sandboxName: 'synthetic-worker',
         sessionId: 'synthetic-session',
       };
-      const stopped = vi.fn().mockResolvedValue(true);
-      const gateway = harness(createMockState(), true, stopped);
-      const interruptRun = gateway.store.interruptRun.bind(gateway.store);
-      const interrupted = vi
-        .spyOn(gateway.store, 'interruptRun')
-        .mockImplementationOnce(async (run, now) => {
-          if (!(await interruptRun(run, now)))
-            throw new Error('Expected interruption to commit');
-          throw new Error('Synthetic Redis acknowledgement loss');
-        });
+      const inspect = vi.fn().mockResolvedValue({ state: 'exited' });
+      const gateway = harness(createMockState(), {}, undefined, false, {
+        inspectWorker: inspect,
+      });
       gateway.dispatch.mockImplementationOnce(async (job) => {
         expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
           'recorded',
@@ -3738,11 +3687,13 @@ describe.skipIf(!redisUrl)(
         signed(threadReply(original.event.ts), gateway.clock.now),
       );
       const delayedBusyReply = gateway.tasks.pop()!;
-      expect(stopped).not.toHaveBeenCalled();
+      expect(inspect).not.toHaveBeenCalled();
       await gateway.flush();
 
-      expect(stopped).toHaveBeenCalledExactlyOnceWith(target);
-      expect(interrupted).toHaveBeenCalledTimes(2);
+      expect(inspect).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ runId: oldJob.runId, execution: target }),
+        false,
+      );
       expect(gateway.dispatch).toHaveBeenCalledTimes(1);
       expect(await gateway.store.getRun(oldJob.runId)).toMatchObject({
         state: 'interrupted',
@@ -3794,28 +3745,31 @@ describe.skipIf(!redisUrl)(
         `slack:CTEST1:${original.event.ts}`,
         BUSY_REPLY,
       );
-      expect(stopped).toHaveBeenCalledTimes(1);
+      expect(inspect).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ runId: oldJob.runId, execution: target }),
+        false,
+      );
       expect(gateway.dispatch).toHaveBeenCalledTimes(2);
     });
 
-    it.each(['unbound', 'unexpired', 'running', 'lookup error'])(
+    it.each(['unexpired', 'running', 'lookup error'])(
       'keeps ownership when the previous worker is %s',
       async (reason) => {
         const target = {
           sandboxName: 'synthetic-worker',
           sessionId: 'synthetic-session',
         };
-        const stopped = vi.fn().mockResolvedValue(false);
+        const inspect = vi.fn().mockResolvedValue({ state: 'unknown' });
         if (reason === 'lookup error')
-          stopped.mockRejectedValue(new Error('Synthetic provider outage'));
-        const gateway = harness(createMockState(), true, stopped);
-        if (reason !== 'unbound') {
-          gateway.dispatch.mockImplementationOnce(async (job) => {
-            expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
-              'recorded',
-            );
-          });
-        }
+          inspect.mockRejectedValue(new Error('Synthetic provider outage'));
+        const gateway = harness(createMockState(), {}, undefined, false, {
+          inspectWorker: inspect,
+        });
+        gateway.dispatch.mockImplementationOnce(async (job) => {
+          expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
+            'recorded',
+          );
+        });
         const original = envelope();
         await gateway.events(signed(original));
         await gateway.flush();
@@ -3826,9 +3780,7 @@ describe.skipIf(!redisUrl)(
         );
         await gateway.flush();
 
-        expect(stopped).toHaveBeenCalledTimes(
-          reason === 'running' || reason === 'lookup error' ? 1 : 0,
-        );
+        expect(inspect).toHaveBeenCalledTimes(reason === 'unexpired' ? 0 : 1);
         expect(gateway.dispatch).toHaveBeenCalledTimes(1);
         expect(await gateway.store.getRun(job.runId)).toMatchObject({
           state: 'accepted',

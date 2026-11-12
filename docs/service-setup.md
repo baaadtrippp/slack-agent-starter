@@ -215,25 +215,23 @@ turn resumes automatically in a fresh session from the same snapshot and Drive.
 Add these Production environment variables to the new Vercel project. Values
 printed by setup must be copied exactly.
 
-| Name                          | Value or source                                                              |
-| ----------------------------- | ---------------------------------------------------------------------------- |
-| `SLACK_BOT_TOKEN`             | Slack app `xoxb-` token                                                      |
-| `SLACK_SIGNING_SECRET`        | Slack app signing secret                                                     |
-| `REDIS_URL`                   | dedicated password-bearing `rediss://` URL                                   |
-| `SLACK_WORKSPACE_ID`          | intended workspace ID                                                        |
-| `SLACK_ENABLED_CHANNEL_IDS`   | the one intended public channel ID                                           |
-| `GATEWAY_ORIGIN`              | reserved bare production origin                                              |
-| `SANDBOX_WORKER_NAME`         | setup output                                                                 |
-| `SANDBOX_MANAGED_DRIVE`       | setup output                                                                 |
-| `SANDBOX_MANAGED_SEED`        | setup output                                                                 |
-| `OPENROUTER_MODEL`            | exact model slug used by setup                                               |
-| `SLACK_THREAD_RESUME`         | `1`                                                                          |
-| `SLACK_FILE_EXCHANGE`         | `1`                                                                          |
-| `SLACK_JPEG_INPUT`            | `1` after an exact-model vision check                                        |
-| `SLACK_PNG_INPUT`             | `1` after an exact-model vision check                                        |
-| `SLACK_PUBLIC_URL_INPUT`      | `1`                                                                          |
-| `SLACK_CONTROLS_AND_FEEDBACK` | `1`                                                                          |
-| `SLACK_STOP_OPERATOR_IDS`     | optional comma-separated internal user IDs allowed to stop other users' runs |
+| Name                        | Value or source                                                              |
+| --------------------------- | ---------------------------------------------------------------------------- |
+| `SLACK_BOT_TOKEN`           | Slack app `xoxb-` token                                                      |
+| `SLACK_SIGNING_SECRET`      | Slack app signing secret                                                     |
+| `REDIS_URL`                 | dedicated password-bearing `rediss://` URL                                   |
+| `SLACK_WORKSPACE_ID`        | intended workspace ID                                                        |
+| `SLACK_ENABLED_CHANNEL_IDS` | the one intended public channel ID                                           |
+| `GATEWAY_ORIGIN`            | reserved bare production origin                                              |
+| `SANDBOX_WORKER_NAME`       | setup output                                                                 |
+| `SANDBOX_MANAGED_DRIVE`     | setup output                                                                 |
+| `SANDBOX_MANAGED_SEED`      | setup output                                                                 |
+| `OPENROUTER_MODEL`          | exact model slug used by setup                                               |
+| `SLACK_FILE_EXCHANGE`       | `1`                                                                          |
+| `SLACK_JPEG_INPUT`          | `1` after an exact-model vision check                                        |
+| `SLACK_PNG_INPUT`           | `1` after an exact-model vision check                                        |
+| `SLACK_PUBLIC_URL_INPUT`    | `1`                                                                          |
+| `SLACK_STOP_OPERATOR_IDS`   | optional comma-separated internal user IDs allowed to stop other users' runs |
 
 Do not set `OPENROUTER_API_KEY`, `VERCEL_OIDC_TOKEN`, or `VERCEL_PROJECT_ID` in
 the gateway. Vercel supplies runtime project authentication to the Sandbox SDK.
