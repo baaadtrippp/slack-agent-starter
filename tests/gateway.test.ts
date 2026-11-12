@@ -21,6 +21,7 @@ import {
   WORKER_UNAVAILABLE_REPLY,
 } from '../apps/gateway/src/gateway.js';
 import type { WorkerInspection } from '../apps/gateway/src/gateway.js';
+import { fetchPublicText } from '../apps/gateway/src/public-url.js';
 import {
   encodeControlValue,
   STATUS_ACTION_ID,
@@ -37,6 +38,10 @@ import type {
   WorkerJob,
   WorkerResult,
 } from '../packages/contracts/src/index.js';
+import { recordReadyDispatch } from './store-fixture.js';
+
+// Spy only: the real fetch runs unless a test supplies the response.
+vi.mock('../apps/gateway/src/public-url.js', { spy: true });
 
 const redisUrl = process.env.TEST_REDIS_URL;
 const namespace = `gateway-test:${randomUUID()}`;
@@ -102,23 +107,28 @@ function signed(body: unknown, sentAt = initialTime, secret = signingSecret) {
   });
 }
 
-function harness(
-  sdkState: StateAdapter = createMockState(),
-  inputConfig: {
-    fileExchange?: boolean;
-    jpegInput?: boolean;
-    pngInput?: boolean;
-    publicUrlInput?: boolean;
-  } = {},
-  collectArtifact?: (runId: string, target: SandboxTarget) => Promise<Buffer>,
+function harness({
+  sdkState = createMockState(),
+  collectArtifact,
   progressUi = false,
-  controls?: {
-    inspectWorker: (run: RunRecord, stop: boolean) => Promise<WorkerInspection>;
-    releaseRecoveredWorker?: (run: RunRecord) => Promise<void>;
-    operatorIds?: string[];
-  },
+  inspectWorker = async () => ({ state: 'unknown' }),
+  releaseRecoveredWorker = async () => {},
+  operatorIds = [],
   storeNamespace = `${namespace}:${randomUUID()}`,
-) {
+  ...inputConfig
+}: {
+  sdkState?: StateAdapter;
+  fileExchange?: boolean;
+  jpegInput?: boolean;
+  pngInput?: boolean;
+  publicUrlInput?: boolean;
+  collectArtifact?: (runId: string, target: SandboxTarget) => Promise<Buffer>;
+  progressUi?: boolean;
+  inspectWorker?: (run: RunRecord, stop: boolean) => Promise<WorkerInspection>;
+  releaseRecoveredWorker?: (run: RunRecord) => Promise<void>;
+  operatorIds?: string[];
+  storeNamespace?: string;
+} = {}) {
   const clock = { now: initialTime };
   const tasks: Array<() => Promise<void>> = [];
   const dispatch = vi
@@ -141,16 +151,14 @@ function harness(
       channelIds: ['CTEST1'],
       origin: 'https://gateway.example',
       ...inputConfig,
-      operatorIds: controls?.operatorIds ?? [],
+      operatorIds,
     },
     state: sdkState,
     store,
     dispatch,
     ...(collectArtifact ? { collectArtifact } : {}),
-    inspectWorker:
-      controls?.inspectWorker ?? (async () => ({ state: 'unknown' })),
-    releaseRecoveredWorker:
-      controls?.releaseRecoveredWorker ?? (async () => {}),
+    inspectWorker,
+    releaseRecoveredWorker,
     schedule: (task) => tasks.push(task),
     now: () => clock.now,
   });
@@ -565,7 +573,7 @@ describe.skipIf(!redisUrl)(
     it.each([false, true])(
       'saves only current text from an ordinary file-share reply (file exchange: %s)',
       async (fileExchange) => {
-        const gateway = harness(createMockState(), {
+        const gateway = harness({
           fileExchange,
           publicUrlInput: true,
         });
@@ -734,14 +742,10 @@ describe.skipIf(!redisUrl)(
     });
 
     async function startControlled(
-      inspectWorker: (
-        run: RunRecord,
-        stop: boolean,
-      ) => Promise<WorkerInspection>,
-      operatorIds: string[] = [],
-      releaseRecoveredWorker?: (run: RunRecord) => Promise<void>,
-      inputConfig: Parameters<typeof harness>[1] = {},
-      collectArtifact?: Parameters<typeof harness>[2],
+      options: Parameters<typeof harness>[0] &
+        Required<
+          Pick<NonNullable<Parameters<typeof harness>[0]>, 'inspectWorker'>
+        >,
     ) {
       mockControlAccess();
       vi.mocked(SlackAdapter.prototype.postMessage)
@@ -755,17 +759,7 @@ describe.skipIf(!redisUrl)(
           threadId: 'slack:CTEST1:1800000000.000001',
           raw: {},
         });
-      const gateway = harness(
-        createMockState(),
-        inputConfig,
-        collectArtifact,
-        true,
-        {
-          inspectWorker,
-          operatorIds,
-          ...(releaseRecoveredWorker ? { releaseRecoveredWorker } : {}),
-        },
-      );
+      const gateway = harness({ ...options, progressUi: true });
       const target = { sandboxName: 'test-sandbox', sessionId: 'test-session' };
       gateway.dispatch.mockImplementationOnce(async (job) => {
         expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
@@ -788,10 +782,10 @@ describe.skipIf(!redisUrl)(
 
     it('acknowledges signed controls before lookup and rejects forged, stale, and unauthorized Stop', async () => {
       const inspect = vi.fn().mockResolvedValue({ state: 'stopped' });
-      const { gateway, run } = await startControlled(inspect, [
-        'UOP1',
-        'UEXTERNAL',
-      ]);
+      const { gateway, run } = await startControlled({
+        inspectWorker: inspect,
+        operatorIds: ['UOP1', 'UEXTERNAL'],
+      });
       expect(
         (
           await gateway.interactions(
@@ -854,7 +848,9 @@ describe.skipIf(!redisUrl)(
         entered.resolve();
         return proof.promise;
       });
-      const { gateway, run, job } = await startControlled(inspect);
+      const { gateway, run, job } = await startControlled({
+        inspectWorker: inspect,
+      });
       expect(
         (await gateway.interactions(interaction(run, STOP_ACTION_ID))).status,
       ).toBe(200);
@@ -918,7 +914,9 @@ describe.skipIf(!redisUrl)(
 
     it('lets terminal publication finish if its claim beats Stop', async () => {
       const inspect = vi.fn().mockResolvedValue({ state: 'stopped' });
-      const { gateway, run, job } = await startControlled(inspect);
+      const { gateway, run, job } = await startControlled({
+        inspectWorker: inspect,
+      });
       expect(
         (await gateway.callback(callback(result(job), job.callbackToken)))
           .status,
@@ -937,7 +935,9 @@ describe.skipIf(!redisUrl)(
 
     it('recovers an exited run’s saved answer with Status and does not submit a new run', async () => {
       const inspect = vi.fn();
-      const { gateway, run, job } = await startControlled(inspect);
+      const { gateway, run, job } = await startControlled({
+        inspectWorker: inspect,
+      });
       inspect.mockResolvedValue({ state: 'exited', result: result(job) });
       gateway.clock.now = run.deadline + 1_000;
       expect(
@@ -979,13 +979,11 @@ describe.skipIf(!redisUrl)(
     it('keeps a saved artifact retryable when its collection target turns stale', async () => {
       const csv = Buffer.from('label,value\nsynthetic,1\n');
       const inspect = vi.fn();
-      const { gateway, run, job } = await startControlled(
-        inspect,
-        [],
-        undefined,
-        { fileExchange: true },
-        vi.fn(),
-      );
+      const { gateway, run, job } = await startControlled({
+        inspectWorker: inspect,
+        fileExchange: true,
+        collectArtifact: vi.fn(),
+      });
       const output = {
         ...result(job),
         artifact: { sha256: createHash('sha256').update(csv).digest('hex') },
@@ -1031,11 +1029,10 @@ describe.skipIf(!redisUrl)(
     it('records exact exit proof and releases an expired run with no saved result', async () => {
       const inspect = vi.fn().mockResolvedValue({ state: 'exited' as const });
       const releaseRecoveredWorker = vi.fn(async () => {});
-      const { gateway, run } = await startControlled(
-        inspect,
-        [],
+      const { gateway, run } = await startControlled({
+        inspectWorker: inspect,
         releaseRecoveredWorker,
-      );
+      });
       gateway.clock.now = run.deadline + 1_000;
       expect(
         (
@@ -1064,11 +1061,10 @@ describe.skipIf(!redisUrl)(
         return proof.promise;
       });
       const releaseRecoveredWorker = vi.fn(async () => {});
-      const { gateway, run, job } = await startControlled(
-        inspect,
-        [],
+      const { gateway, run, job } = await startControlled({
+        inspectWorker: inspect,
         releaseRecoveredWorker,
-      );
+      });
       expect(
         (await gateway.interactions(interaction(run, STATUS_ACTION_ID))).status,
       ).toBe(200);
@@ -1107,11 +1103,10 @@ describe.skipIf(!redisUrl)(
 
     it('reports an ended run when the worker release fails during busy recovery', async () => {
       const releaseRecoveredWorker = vi.fn(async () => {});
-      const { gateway, run, job } = await startControlled(
-        vi.fn(),
-        [],
+      const { gateway, run, job } = await startControlled({
+        inspectWorker: vi.fn(),
         releaseRecoveredWorker,
-      );
+      });
       const mention = envelope();
       const reply = {
         ...mention,
@@ -1138,7 +1133,9 @@ describe.skipIf(!redisUrl)(
 
     it('records timestamp-ordered thumbs only on a final answer, without a worker dispatch', async () => {
       const inspect = vi.fn();
-      const { gateway, run, job } = await startControlled(inspect);
+      const { gateway, run, job } = await startControlled({
+        inspectWorker: inspect,
+      });
       const react = (
         reaction: string,
         type: string,
@@ -1215,7 +1212,9 @@ describe.skipIf(!redisUrl)(
     });
 
     it('reconciles early feedback only when its exact message is indexed as the answer', async () => {
-      const { gateway, run, job } = await startControlled(vi.fn());
+      const { gateway, run, job } = await startControlled({
+        inspectWorker: vi.fn(),
+      });
       vi.spyOn(SlackAdapter.prototype, 'botUserId', 'get').mockReturnValue(
         'UBOT1',
       );
@@ -1363,7 +1362,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('acknowledges an accepted mention after the HTTP response with one eyes reaction and one status', async () => {
-      const gateway = harness(createMockState(), {}, undefined, true);
+      const gateway = harness({ progressUi: true });
       const body = envelope();
       const response = await gateway.events(signed(body));
 
@@ -1403,7 +1402,7 @@ describe.skipIf(!redisUrl)(
       initialize.mockRejectedValueOnce(
         new Error('Synthetic initialization timeout'),
       );
-      const gateway = harness(createMockState(), {}, undefined, true);
+      const gateway = harness({ progressUi: true });
       const body = envelope();
 
       expect((await gateway.events(signed(body))).status).toBe(200);
@@ -1441,7 +1440,7 @@ describe.skipIf(!redisUrl)(
           await reaction.promise;
         },
       );
-      const gateway = harness(createMockState(), {}, undefined, true);
+      const gateway = harness({ progressUi: true });
       const body = envelope();
       expect((await gateway.events(signed(body))).status).toBe(200);
       let backgroundFinished = false;
@@ -1470,7 +1469,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('dispatches while Slack is slow and reconciles completion after the status ID is saved', async () => {
-      const gateway = harness(createMockState(), {}, undefined, true);
+      const gateway = harness({ progressUi: true });
       const statusStarted = Promise.withResolvers<void>();
       const statusPost = Promise.withResolvers<{
         id: string;
@@ -1534,7 +1533,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('does not acknowledge refused, bot, or busy input as another accepted run', async () => {
-      const gateway = harness(createMockState(), {}, undefined, true);
+      const gateway = harness({ progressUi: true });
       const accepted = envelope();
       await gateway.events(signed(accepted));
       await gateway.flush();
@@ -1556,12 +1555,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('publishes a refusal without creating an acknowledgement status or reaction', async () => {
-      const gateway = harness(
-        createMockState(),
-        { publicUrlInput: true },
-        undefined,
-        true,
-      );
+      const gateway = harness({ publicUrlInput: true, progressUi: true });
       const body = envelope();
       body.event.text = '<@UBOT1> Read <https://127.0.0.1/private.txt>.';
 
@@ -1583,7 +1577,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('imports one permitted page of earlier messages after acknowledgement and deduplication', async () => {
-      const gateway = harness(createMockState(), {}, undefined, true);
+      const gateway = harness({ progressUi: true });
       const root = '1799999999.000001';
       const earlier = '1799999999.000002';
       const fixture = envelope();
@@ -1985,16 +1979,11 @@ describe.skipIf(!redisUrl)(
         }
         await gateway.store.releaseRecoveryTarget(run);
       });
-      const gateway = harness(
-        createMockState(),
-        { fileExchange: true },
+      const gateway = harness({
+        fileExchange: true,
         collectArtifact,
-        false,
-        {
-          inspectWorker: async () => ({ state: 'unknown' }),
-          releaseRecoveredWorker,
-        },
-      );
+        releaseRecoveredWorker,
+      });
       const body = envelope();
       await gateway.events(signed(body));
       await gateway.flush();
@@ -2083,11 +2072,7 @@ describe.skipIf(!redisUrl)(
           return csv;
         },
       );
-      const gateway = harness(
-        createMockState(),
-        { fileExchange: true },
-        collectArtifact,
-      );
+      const gateway = harness({ fileExchange: true, collectArtifact });
       const body = envelope();
       await gateway.events(signed(body));
       await gateway.flush();
@@ -2156,7 +2141,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('shows finishing while the final answer is still publishing, then completes', async () => {
-      const gateway = harness(createMockState(), {}, undefined, true);
+      const gateway = harness({ progressUi: true });
       const body = envelope();
       await gateway.events(signed(body));
       await gateway.flush();
@@ -2205,7 +2190,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('accepts authenticated content-free progress once and rejects malformed or terminal-late progress', async () => {
-      const gateway = harness(createMockState(), {}, undefined, true);
+      const gateway = harness({ progressUi: true });
       const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
       gateway.dispatch.mockImplementation(async (job) => {
         expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
@@ -2275,7 +2260,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('repairs a working edit when completion lands during the Slack call', async () => {
-      const gateway = harness(createMockState(), {}, undefined, true);
+      const gateway = harness({ progressUi: true });
       const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
       gateway.dispatch.mockImplementation(async (job) => {
         await recordReadyDispatch(gateway.store, job, target);
@@ -2325,7 +2310,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('retries a transient status edit against the same persisted message', async () => {
-      const gateway = harness(createMockState(), {}, undefined, true);
+      const gateway = harness({ progressUi: true });
       const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
       gateway.dispatch.mockImplementation(async (job) => {
         await recordReadyDispatch(gateway.store, job, target);
@@ -2360,7 +2345,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('creates a fresh single status when an ordinary reply resumes the saved session', async () => {
-      const gateway = harness(createMockState(), {}, undefined, true);
+      const gateway = harness({ progressUi: true });
       const mention = envelope();
       vi.mocked(SlackAdapter.prototype.postMessage).mockImplementation(
         async (threadId) => ({
@@ -2414,7 +2399,7 @@ describe.skipIf(!redisUrl)(
     ] as const)(
       'keeps the status truthful after a %s failure',
       async (outcome, status) => {
-        const gateway = harness(createMockState(), {}, undefined, true);
+        const gateway = harness({ progressUi: true });
         if (outcome === 'startup')
           gateway.dispatch.mockRejectedValueOnce(
             new Error('Synthetic dispatch response loss'),
@@ -2458,12 +2443,11 @@ describe.skipIf(!redisUrl)(
     it('reports an attachment failure without discarding the completed text result', async () => {
       const csv = Buffer.from('label,value\nsynthetic,1\n');
       const collectArtifact = vi.fn().mockResolvedValue(csv);
-      const gateway = harness(
-        createMockState(),
-        { fileExchange: true },
+      const gateway = harness({
+        fileExchange: true,
         collectArtifact,
-        true,
-      );
+        progressUi: true,
+      });
       const body = envelope();
       await gateway.events(signed(body));
       await gateway.flush();
@@ -2551,11 +2535,7 @@ describe.skipIf(!redisUrl)(
         collectArtifact.mockRejectedValue(new Error('Artifact is unavailable'));
       if (outcome === 'digest mismatched')
         collectArtifact.mockResolvedValue(Buffer.from('different bytes'));
-      const gateway = harness(
-        createMockState(),
-        { fileExchange: true },
-        collectArtifact,
-      );
+      const gateway = harness({ fileExchange: true, collectArtifact });
       const body = envelope();
       await gateway.events(signed(body));
       await gateway.flush();
@@ -2692,11 +2672,10 @@ describe.skipIf(!redisUrl)(
       async (format, mimeType) => {
         const bytes = Buffer.from('Synthetic output\n');
         const collect = vi.fn().mockResolvedValue(bytes);
-        const gateway = harness(
-          createMockState(),
-          { fileExchange: true },
-          collect,
-        );
+        const gateway = harness({
+          fileExchange: true,
+          collectArtifact: collect,
+        });
         const body = envelope();
         await gateway.events(signed(body));
         await gateway.flush();
@@ -2825,7 +2804,7 @@ describe.skipIf(!redisUrl)(
     );
 
     it('activates only after a real session result and resumes that exact session after a gateway restart', async () => {
-      let gateway = harness(createMockState(), {
+      let gateway = harness({
         publicUrlInput: true,
       });
       const mention = envelope();
@@ -2873,14 +2852,10 @@ describe.skipIf(!redisUrl)(
       await gateway.flush();
       expect(gateway.dispatch).toHaveBeenCalledTimes(1);
 
-      gateway = harness(
-        createMockState(),
-        { publicUrlInput: true },
-        undefined,
-        false,
-        undefined,
-        gateway.storeNamespace,
-      );
+      gateway = harness({
+        publicUrlInput: true,
+        storeNamespace: gateway.storeNamespace,
+      });
       const next = threadReply(mention.event.ts);
       next.event.text = 'Continue using the earlier answer.';
       const duplicate = {
@@ -2979,7 +2954,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('rejects ineligible ordinary events and reports a busy thread while its first run is active', async () => {
-      const gateway = harness(createMockState(), {
+      const gateway = harness({
         fileExchange: true,
       });
       const mention = envelope();
@@ -3019,7 +2994,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('admits a file-only ordinary reply only in its activated conversation', async () => {
-      const gateway = harness(createMockState(), {
+      const gateway = harness({
         fileExchange: true,
       });
       const root = envelope();
@@ -3101,7 +3076,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('refuses an explicit private URL on an ordinary reply after activation', async () => {
-      const gateway = harness(createMockState(), {
+      const gateway = harness({
         publicUrlInput: true,
       });
       const root = envelope();
@@ -3143,7 +3118,7 @@ describe.skipIf(!redisUrl)(
       ['png', 'image/png'],
       ['jpg', 'image/jpeg'],
     ])('requires a vision opt-in for %s input', async (extension, mimetype) => {
-      const gateway = harness(createMockState(), {
+      const gateway = harness({
         fileExchange: true,
       });
       const root = envelope();
@@ -3178,7 +3153,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('refuses a batch over the attachment limit before any download or dispatch', async () => {
-      const gateway = harness(createMockState(), {
+      const gateway = harness({
         fileExchange: true,
       });
       const root = envelope();
@@ -3262,7 +3237,7 @@ describe.skipIf(!redisUrl)(
           .fn<typeof fetch>()
           .mockResolvedValue(new Response('denied', { status: 403 }));
         vi.stubGlobal('fetch', request);
-        const gateway = harness(createMockState(), {
+        const gateway = harness({
           fileExchange: true,
           pngInput: true,
           publicUrlInput: true,
@@ -3313,7 +3288,7 @@ describe.skipIf(!redisUrl)(
       'HTTPS://[::1]/source.txt.',
       'https://[::1]',
     ])('rejects a bare private IPv6 URL before dispatch: %s', async (url) => {
-      const gateway = harness(createMockState(), {
+      const gateway = harness({
         publicUrlInput: true,
       });
       const mention = envelope();
@@ -3340,7 +3315,7 @@ describe.skipIf(!redisUrl)(
     ])(
       'rejects an uppercase explicit private IPv6 URL before dispatch: %s',
       async (url) => {
-        const gateway = harness(createMockState(), {
+        const gateway = harness({
           publicUrlInput: true,
         });
         const mention = envelope();
@@ -3363,7 +3338,7 @@ describe.skipIf(!redisUrl)(
     );
 
     it('rejects credentials in a bare bracketed IPv6 URL before dispatch', async () => {
-      const gateway = harness(createMockState(), {
+      const gateway = harness({
         publicUrlInput: true,
       });
       const mention = envelope();
@@ -3406,7 +3381,7 @@ describe.skipIf(!redisUrl)(
         '<@UBOT1> Explain this code:\n```\nconst source = "<HTTPS://[::1]/source.txt>";\n```',
       ],
     ])('leaves a %s as ordinary task text', async (_case, text) => {
-      const gateway = harness(createMockState(), {
+      const gateway = harness({
         publicUrlInput: true,
       });
       const mention = envelope();
@@ -3424,10 +3399,58 @@ describe.skipIf(!redisUrl)(
       expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
     });
 
+    it.each([
+      [
+        'bare IPv6 URL',
+        'https://[2001:4860:4860::8888]/source.txt.',
+        'https://[2001:4860:4860::8888]/source.txt',
+      ],
+      [
+        'explicit IPv6 URL with period',
+        '<https://[2001:4860:4860::8888]/source.txt.>.',
+        'https://[2001:4860:4860::8888]/source.txt.',
+      ],
+      [
+        'uppercase explicit IPv6 URL with period',
+        '<HTTPS://[2001:4860:4860::8888]/source.txt.>.',
+        'HTTPS://[2001:4860:4860::8888]/source.txt.',
+      ],
+      [
+        'bare IPv6 URL with comma-shaped query data',
+        'https://[2001:4860:4860::8888]/source.txt?next=alpha,https://[2606:4700:4700::1111]/other.txt',
+        'https://[2001:4860:4860::8888]/source.txt?next=alpha,https://[2606:4700:4700::1111]/other.txt',
+      ],
+      [
+        'bare URL with balanced parentheses',
+        '(https://example.com/methodology_(v1)).',
+        'https://example.com/methodology_(v1)',
+      ],
+    ])('stages the exact %s from Slack text', async (_shape, link, url) => {
+      const bytes = Buffer.from('Synthetic text source.\n');
+      vi.mocked(fetchPublicText).mockResolvedValueOnce(bytes);
+      const gateway = harness({ publicUrlInput: true });
+      const mention = envelope();
+      mention.event.text = `<@UBOT1> Read ${link}`;
+
+      expect((await gateway.events(signed(mention))).status).toBe(200);
+      await gateway.flush();
+
+      expect(fetchPublicText).toHaveBeenCalledExactlyOnceWith(url);
+      const [job, staged] = gateway.dispatch.mock.calls[0]!;
+      expect(job.input.sources).toEqual([
+        {
+          kind: 'publicUrl',
+          name: 'Public URL text',
+          sha256: createHash('sha256').update(bytes).digest('hex'),
+        },
+      ]);
+      expect(staged).toEqual([bytes]);
+    });
+
     it('rejects a linked URL combined with a bare IPv6 URL before download or dispatch', async () => {
       const request = vi.fn<typeof fetch>();
       vi.stubGlobal('fetch', request);
-      const gateway = harness(createMockState(), {
+      const gateway = harness({
         publicUrlInput: true,
       });
       const mention = envelope();
@@ -3497,7 +3520,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it('reconciles an exhausted terminal status edit on duplicate Slack delivery without republishing', async () => {
-      const gateway = harness(createMockState(), {}, undefined, true);
+      const gateway = harness({ progressUi: true });
       const body = envelope();
       await gateway.events(signed(body));
       await gateway.flush();
@@ -3576,9 +3599,7 @@ describe.skipIf(!redisUrl)(
 
     it('recovers an interrupted save in an activated thread', async () => {
       const inspect = vi.fn().mockResolvedValue({ state: 'exited' });
-      const gateway = harness(createMockState(), {}, undefined, false, {
-        inspectWorker: inspect,
-      });
+      const gateway = harness({ inspectWorker: inspect });
       const original = envelope();
       await gateway.events(signed(original));
       await gateway.flush();
@@ -3665,9 +3686,7 @@ describe.skipIf(!redisUrl)(
         sessionId: 'synthetic-session',
       };
       const inspect = vi.fn().mockResolvedValue({ state: 'exited' });
-      const gateway = harness(createMockState(), {}, undefined, false, {
-        inspectWorker: inspect,
-      });
+      const gateway = harness({ inspectWorker: inspect });
       gateway.dispatch.mockImplementationOnce(async (job) => {
         expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
           'recorded',
@@ -3762,9 +3781,7 @@ describe.skipIf(!redisUrl)(
         const inspect = vi.fn().mockResolvedValue({ state: 'unknown' });
         if (reason === 'lookup error')
           inspect.mockRejectedValue(new Error('Synthetic provider outage'));
-        const gateway = harness(createMockState(), {}, undefined, false, {
-          inspectWorker: inspect,
-        });
+        const gateway = harness({ inspectWorker: inspect });
         gateway.dispatch.mockImplementationOnce(async (job) => {
           expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
             'recorded',
@@ -3874,7 +3891,7 @@ describe.skipIf(!redisUrl)(
 
     it('dispatches an admitted mention independently of unrelated SDK subscription state', async () => {
       const sdkState = createMockState();
-      const gateway = harness(sdkState);
+      const gateway = harness({ sdkState });
       const body = envelope();
       await sdkState.subscribe(`slack:CTEST1:${body.event.ts}`);
       await gateway.events(signed(body));
@@ -3891,7 +3908,7 @@ describe.skipIf(!redisUrl)(
       vi.spyOn(sdkState, 'connect').mockImplementation(
         () => new Promise<void>(() => {}),
       );
-      const gateway = harness(sdkState);
+      const gateway = harness({ sdkState });
       await gateway.events(signed(envelope()));
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       const dispatching = gateway.flush();
@@ -3914,19 +3931,3 @@ describe.skipIf(!redisUrl)(
     });
   },
 );
-
-// Production records a dispatch only for an enrolled session that the managed
-// runtime marks ready.
-async function recordReadyDispatch(
-  store: RedisRunStore,
-  job: WorkerJob,
-  target: SandboxTarget,
-) {
-  await store.enrollIdleSession(target);
-  await store.compareManagedRuntime(
-    target.sandboxName,
-    await store.getManagedRuntime(target.sandboxName),
-    { phase: 'ready', sessionId: target.sessionId, driveId: 'synthetic-drive' },
-  );
-  return store.recordDispatchTarget(job, target);
-}

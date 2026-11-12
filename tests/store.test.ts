@@ -1,38 +1,23 @@
-import { createRedisState } from '@chat-adapter/state-redis';
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import type { WorkerResult } from '../packages/contracts/src/index.js';
 import type {
-  WorkerJob,
-  WorkerResult,
-} from '../packages/contracts/src/index.js';
-import {
-  RedisRunStore,
-  type ManagedRuntime,
-  type RunRecord,
-  type SandboxTarget,
+  ManagedRuntime,
+  SandboxTarget,
 } from '../apps/gateway/src/store.js';
-
-const redisUrl = process.env.TEST_REDIS_URL;
+import {
+  makeJob,
+  makeResult,
+  makeRun,
+  makeTarget,
+  nextTimestamp,
+  recordReadyDispatch,
+  redisUrl,
+  useRedisStore,
+} from './store-fixture.js';
 
 describe.skipIf(!redisUrl)('RedisRunStore', () => {
-  const namespace = `slack-agent:m1:test:${randomUUID()}`;
-  const state = createRedisState({
-    url: redisUrl ?? 'redis://127.0.0.1:1',
-    keyPrefix: namespace,
-  });
-  const store = new RedisRunStore(state.getClient(), namespace);
-
-  beforeAll(async () => {
-    await state.connect();
-  });
-
-  afterAll(async () => {
-    const client = state.getClient();
-    for await (const key of client.scanIterator({ MATCH: `${namespace}:*` })) {
-      if (key.length > 0) await client.del(key);
-    }
-    await state.disconnect();
-  });
+  const { namespace, state, store } = useRedisStore();
 
   it('admits an event once and deduplicates redelivery and logical messages', async () => {
     const first = makeRun();
@@ -1050,70 +1035,6 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
   });
 });
 
-let timestampCounter = 0;
-
-function nextTimestamp(): string {
-  timestampCounter += 1;
-  return `${1700000000 + timestampCounter}.000001`;
-}
-
-function makeRun(overrides: Partial<RunRecord> = {}): RunRecord {
-  const threadTs = nextTimestamp();
-  return {
-    runId: randomUUID(),
-    conversationId: 'a'.repeat(64),
-    generation: 1,
-    eventId: randomUUID(),
-    workspaceId: 'T_SYNTHETIC',
-    channelId: 'C_SYNTHETIC',
-    threadTs,
-    messageTs: nextTimestamp(),
-    senderId: 'U_SYNTHETIC',
-    deadline: Date.now() + 60_000,
-    callbackHash: 'b'.repeat(64),
-    kind: 'work',
-    state: 'accepted',
-    ...overrides,
-  };
-}
-
-function makeResult(run: RunRecord): WorkerResult {
-  return {
-    version: 1,
-    runId: run.runId,
-    generation: run.generation,
-    eventId: randomUUID(),
-    sequence: 1,
-    type: 'completed',
-    text: 'Synthetic canned reply.',
-  };
-}
-
-function makeJob(run: RunRecord): WorkerJob {
-  return {
-    version: 1,
-    runId: run.runId,
-    conversationId: run.conversationId,
-    generation: run.generation,
-    input: {
-      text: 'Synthetic store test.',
-      senderId: run.senderId,
-      workspaceId: run.workspaceId,
-      channelId: run.channelId,
-      threadTs: run.threadTs,
-      messageTs: run.messageTs,
-    },
-    session: run.session,
-    deadline: run.deadline,
-    callbackUrl: 'https://gateway.example/api/worker/callback',
-    callbackToken: 'c'.repeat(64),
-  };
-}
-
-function makeTarget(label: string): SandboxTarget {
-  return { sandboxName: `synthetic-${label}`, sessionId: randomUUID() };
-}
-
 function idleGateKey(namespace: string, target: SandboxTarget): string {
   return `${namespace}:idle:${target.sandboxName}:${target.sessionId}:gate`;
 }
@@ -1124,20 +1045,4 @@ function activeDispatchKey(namespace: string, target: SandboxTarget): string {
 
 function managedRuntimeKey(namespace: string, sandboxName: string): string {
   return `${namespace}:runtime:${sandboxName}:managed`;
-}
-
-// Production records a dispatch only for an enrolled session that the managed
-// runtime marks ready.
-async function recordReadyDispatch(
-  store: RedisRunStore,
-  job: WorkerJob,
-  target: SandboxTarget,
-) {
-  await store.enrollIdleSession(target);
-  await store.compareManagedRuntime(
-    target.sandboxName,
-    await store.getManagedRuntime(target.sandboxName),
-    { phase: 'ready', sessionId: target.sessionId, driveId: 'synthetic-drive' },
-  );
-  return store.recordDispatchTarget(job, target);
 }

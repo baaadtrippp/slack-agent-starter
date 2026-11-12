@@ -1,39 +1,23 @@
-import { createRedisState } from '@chat-adapter/state-redis';
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type {
-  WorkerJob,
   WorkerResult,
   WorkerSession,
 } from '../packages/contracts/src/index.js';
+import type { AnswerRef, RunRecord } from '../apps/gateway/src/store.js';
 import {
-  RedisRunStore,
-  type AnswerRef,
-  type RunRecord,
-  type SandboxTarget,
-} from '../apps/gateway/src/store.js';
-
-const redisUrl = process.env.TEST_REDIS_URL;
+  makeJob,
+  makeResult,
+  makeRun,
+  makeTarget,
+  nextTimestamp,
+  recordReadyDispatch,
+  redisUrl,
+  useRedisStore,
+} from './store-fixture.js';
 
 describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
-  const namespace = `slack-agent:controls:test:${randomUUID()}`;
-  const state = createRedisState({
-    url: redisUrl ?? 'redis://127.0.0.1:1',
-    keyPrefix: namespace,
-  });
-  const store = new RedisRunStore(state.getClient(), namespace);
-
-  beforeAll(async () => {
-    await state.connect();
-  });
-
-  afterAll(async () => {
-    const client = state.getClient();
-    for await (const key of client.scanIterator({ MATCH: `${namespace}:*` })) {
-      if (key.length > 0) await client.del(key);
-    }
-    await state.disconnect();
-  });
+  const { store } = useRedisStore();
 
   it('atomically lets either Stop or terminal publication win', async () => {
     const run = await admitControlledRun();
@@ -405,72 +389,6 @@ describe.skipIf(!redisUrl)('F09/F11 Redis controls and feedback state', () => {
   }
 });
 
-let timestampCounter = 0;
-
-function nextTimestamp(): string {
-  timestampCounter += 1;
-  return `${1_900_000_000 + timestampCounter}.000001`;
-}
-
-function makeRun(overrides: Partial<RunRecord> = {}): RunRecord {
-  const threadTs = nextTimestamp();
-  return {
-    runId: randomUUID(),
-    conversationId: 'c'.repeat(64),
-    generation: 1,
-    eventId: randomUUID(),
-    workspaceId: 'T_SYNTHETIC',
-    channelId: 'C_SYNTHETIC',
-    threadTs,
-    messageTs: nextTimestamp(),
-    senderId: 'U_SYNTHETIC',
-    deadline: Date.now() + 60_000,
-    callbackHash: 'd'.repeat(64),
-    kind: 'work',
-    state: 'accepted',
-    ...overrides,
-  };
-}
-
-function makeTarget(): SandboxTarget {
-  return {
-    sandboxName: `synthetic-${randomUUID()}`,
-    sessionId: randomUUID(),
-  };
-}
-
-function makeJob(run: RunRecord): WorkerJob {
-  return {
-    version: 1,
-    runId: run.runId,
-    conversationId: run.conversationId,
-    generation: run.generation,
-    input: {
-      text: 'Synthetic task.',
-      senderId: run.senderId,
-      workspaceId: run.workspaceId,
-      channelId: run.channelId,
-      threadTs: run.threadTs,
-      messageTs: run.messageTs,
-    },
-    deadline: run.deadline,
-    callbackUrl: 'https://gateway.example/api/worker/callback',
-    callbackToken: 'e'.repeat(64),
-  };
-}
-
-function makeResult(run: RunRecord): WorkerResult {
-  return {
-    version: 1,
-    runId: run.runId,
-    generation: run.generation,
-    eventId: randomUUID(),
-    sequence: 2,
-    type: 'completed',
-    text: 'Synthetic final answer.',
-  };
-}
-
 function controlRef(run: RunRecord) {
   return {
     runId: run.runId,
@@ -485,20 +403,4 @@ function answerRef(run: RunRecord, messageId: string): AnswerRef {
     channelId: run.channelId,
     messageId,
   };
-}
-
-// Production records a dispatch only for an enrolled session that the managed
-// runtime marks ready.
-async function recordReadyDispatch(
-  store: RedisRunStore,
-  job: WorkerJob,
-  target: SandboxTarget,
-) {
-  await store.enrollIdleSession(target);
-  await store.compareManagedRuntime(
-    target.sandboxName,
-    await store.getManagedRuntime(target.sandboxName),
-    { phase: 'ready', sessionId: target.sessionId, driveId: 'synthetic-drive' },
-  );
-  return store.recordDispatchTarget(job, target);
 }
