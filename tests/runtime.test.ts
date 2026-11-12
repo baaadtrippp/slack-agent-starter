@@ -593,7 +593,6 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
     'staged bare URL with balanced parentheses',
     'staged PDF',
     'staged PNG with all file types enabled',
-    'staged PDF with CSV enabled',
     'write failed',
     'Drive full with a filesystem code',
     'Drive full with a storage response',
@@ -651,15 +650,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
               )
             : 'region,amount\nNorth,12\nSouth,18\n';
       vi.stubEnv('SLACK_PUBLIC_URL_INPUT', isUrl || isMixed ? '1' : '0');
-      vi.stubEnv('SLACK_FILE_EXCHANGE', isMixed ? '1' : '0');
-      vi.stubEnv('SLACK_PDF_INPUT', isPdf || isPng ? '1' : '0');
+      vi.stubEnv('SLACK_FILE_EXCHANGE', isUrl ? '0' : '1');
       vi.stubEnv('SLACK_PNG_INPUT', isPng ? '1' : '0');
-      vi.stubEnv(
-        'SLACK_CSV_INPUT',
-        kind === 'csv' || isPng || outcome === 'staged PDF with CSV enabled'
-          ? '1'
-          : '0',
-      );
       const urlBytes = Buffer.from(
         isMixed ? 'Use the sum of amounts.\n' : content,
       );
@@ -788,7 +780,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
                 ]
               : []),
           ]);
-          if (isMixed) expect(job?.artifactOutput).toBe(true);
+          expect(job?.artifactOutput).toBe(isUrl ? undefined : true);
           expect(postMessage).toHaveBeenCalledExactlyOnceWith(
             `slack:CTEST1:${event.ts}`,
             'Starting…',

@@ -54,10 +54,7 @@ export type GatewayConfig = {
   threadResume?: boolean;
   fileExchange?: boolean;
   jpegInput?: boolean;
-  csvInput?: boolean;
-  pdfInput?: boolean;
   pngInput?: boolean;
-  csvOutput?: boolean;
   publicUrlInput?: boolean;
   controlsEnabled?: boolean;
   operatorIds?: string[];
@@ -669,11 +666,7 @@ export function createGateway({
   }
 
   function supportsArtifact(result: WorkerResult) {
-    return (
-      result.artifact &&
-      (config.fileExchange ||
-        (config.csvOutput && (result.artifact.format ?? 'csv') === 'csv'))
-    );
+    return result.artifact && config.fileExchange;
   }
 
   async function reconcileStatus(run: RunRecord, rendering?: Promise<void>) {
@@ -1042,8 +1035,8 @@ export function createGateway({
     const attachedFiles = rawEvent?.files;
     const hasFiles = Array.isArray(attachedFiles) && attachedFiles.length > 0;
     const enabledFiles = {
-      csv: config.fileExchange || config.csvInput,
-      pdf: config.fileExchange || config.pdfInput,
+      csv: config.fileExchange,
+      pdf: config.fileExchange,
       png: config.pngInput,
       jpeg: config.jpegInput,
       text: config.fileExchange,
@@ -1327,11 +1320,7 @@ export function createGateway({
           },
           ...(run.session ? { session: run.session } : {}),
           ...(memory ? { memory } : {}),
-          ...(!saving && config.fileExchange
-            ? { artifactOutput: true }
-            : !saving && config.csvOutput
-              ? { csvOutput: true }
-              : {}),
+          ...(!saving && config.fileExchange ? { artifactOutput: true } : {}),
           deadline: run.deadline,
           callbackUrl: `${config.origin}/api/worker/callback`,
           callbackToken,

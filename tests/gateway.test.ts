@@ -109,11 +109,8 @@ function harness(
   inputConfig: {
     fileExchange?: boolean;
     jpegInput?: boolean;
-    csvInput?: boolean;
-    pdfInput?: boolean;
     pngInput?: boolean;
     publicUrlInput?: boolean;
-    csvOutput?: boolean;
   } = {},
   collectArtifact?: (runId: string, target: SandboxTarget) => Promise<Buffer>,
   progressUi = false,
@@ -978,7 +975,7 @@ describe.skipIf(!redisUrl)(
         inspect,
         [],
         undefined,
-        { csvOutput: true },
+        { fileExchange: true },
         vi.fn(),
       );
       const output = {
@@ -2028,7 +2025,7 @@ describe.skipIf(!redisUrl)(
         createMockState(),
         false,
         undefined,
-        { csvOutput: true },
+        { fileExchange: true },
         collectArtifact,
         false,
         {
@@ -2128,7 +2125,7 @@ describe.skipIf(!redisUrl)(
         createMockState(),
         false,
         undefined,
-        { csvOutput: true },
+        { fileExchange: true },
         collectArtifact,
       );
       const body = envelope();
@@ -2539,7 +2536,7 @@ describe.skipIf(!redisUrl)(
         createMockState(),
         false,
         undefined,
-        { csvOutput: true },
+        { fileExchange: true },
         collectArtifact,
         true,
       );
@@ -2630,7 +2627,7 @@ describe.skipIf(!redisUrl)(
         createMockState(),
         false,
         undefined,
-        { csvOutput: true },
+        { fileExchange: true },
         collectArtifact,
       );
       const body = envelope();
@@ -2642,7 +2639,7 @@ describe.skipIf(!redisUrl)(
           gateway.clock.now = job.deadline;
           throw new Error('Artifact collection timed out');
         });
-      expect(job.csvOutput).toBe(true);
+      expect(job.artifactOutput).toBe(true);
       const target = { sandboxName: 'test-worker', sessionId: 'test-session' };
       if (outcome !== 'execution target missing')
         expect(await recordReadyDispatch(gateway.store, job, target)).toBe(
@@ -2761,6 +2758,7 @@ describe.skipIf(!redisUrl)(
     });
 
     it.each([
+      ['csv', 'text/csv'],
       ['md', 'text/markdown'],
       ['diff', 'text/plain'],
     ] as const)(
@@ -3050,7 +3048,7 @@ describe.skipIf(!redisUrl)(
 
     it('rejects ineligible ordinary events and reports a busy thread while its first run is active', async () => {
       const gateway = harness(createMockState(), true, undefined, {
-        csvInput: true,
+        fileExchange: true,
       });
       const mention = envelope();
       await gateway.events(signed(mention));
@@ -3161,6 +3159,7 @@ describe.skipIf(!redisUrl)(
         },
       });
       expect(workerJobSchema.safeParse(job).success).toBe(true);
+      // The schema is strict, so the removed csvOutput field is rejected.
       expect(
         workerJobSchema.safeParse({ ...job, csvOutput: true }).success,
       ).toBe(false);
@@ -3332,8 +3331,7 @@ describe.skipIf(!redisUrl)(
           .mockResolvedValue(new Response('denied', { status: 403 }));
         vi.stubGlobal('fetch', request);
         const gateway = harness(createMockState(), false, undefined, {
-          csvInput: true,
-          pdfInput: true,
+          fileExchange: true,
           pngInput: true,
           publicUrlInput: true,
         });
