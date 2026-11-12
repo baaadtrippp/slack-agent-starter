@@ -90,10 +90,7 @@ function initialize() {
     threadResume: process.env.SLACK_THREAD_RESUME === '1',
     fileExchange: process.env.SLACK_FILE_EXCHANGE === '1',
     jpegInput: process.env.SLACK_JPEG_INPUT === '1',
-    csvInput: process.env.SLACK_CSV_INPUT === '1',
-    pdfInput: process.env.SLACK_PDF_INPUT === '1',
     pngInput: process.env.SLACK_PNG_INPUT === '1',
-    csvOutput: process.env.SLACK_CSV_OUTPUT === '1',
     publicUrlInput: process.env.SLACK_PUBLIC_URL_INPUT === '1',
   };
   const redisUrl = new URL(required('REDIS_URL'));
@@ -183,21 +180,16 @@ function initialize() {
             try {
               const inspection = await inspectSandboxRun(run, stop, session);
               if (
+                config.fileExchange &&
                 inspection.state === 'exited' &&
                 inspection.result?.artifact
               ) {
-                const format = inspection.result.artifact.format;
-                if (
-                  config.fileExchange ||
-                  (config.csvOutput && (format ?? 'csv') === 'csv')
-                ) {
-                  const bytes = await collectRunArtifact(
-                    run.runId,
-                    target,
-                    format,
-                  ).catch(() => undefined);
-                  if (bytes) return { ...inspection, artifactBytes: bytes };
-                }
+                const bytes = await collectRunArtifact(
+                  run.runId,
+                  target,
+                  inspection.result.artifact.format,
+                ).catch(() => undefined);
+                if (bytes) return { ...inspection, artifactBytes: bytes };
               }
               return inspection;
             } finally {
@@ -237,9 +229,7 @@ function initialize() {
           },
         }
       : {}),
-    ...(config.csvOutput || config.fileExchange
-      ? { collectArtifact: collectRunArtifact }
-      : {}),
+    ...(config.fileExchange ? { collectArtifact: collectRunArtifact } : {}),
     dispatch: async (job, stagedInputs) => {
       const session = await managed
         .getSession(job.deadline)

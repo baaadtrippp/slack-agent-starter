@@ -149,14 +149,12 @@ export const workerJobSchema = z
       .strict(),
     session: workerSessionSchema.optional(),
     memory: z.enum(['save', 'read']).optional(),
-    csvOutput: z.literal(true).optional(),
     artifactOutput: z.literal(true).optional(),
     deadline: z.number().int().positive(),
     callbackUrl: z.url().startsWith('https://'),
     callbackToken: z.string().regex(/^[0-9a-f]{64}$/),
   })
   .strict()
-  .refine(({ csvOutput, artifactOutput }) => !(csvOutput && artifactOutput))
   .refine(
     ({ input, memory }) =>
       !memory ||
@@ -164,12 +162,11 @@ export const workerJobSchema = z
         slackChannelId.test(input.channelId)),
   )
   .refine(
-    ({ input, memory, csvOutput, artifactOutput }) =>
+    ({ input, memory, artifactOutput }) =>
       memory !== 'save' ||
       (!input.threadContext &&
         !input.attachments &&
         !input.sources &&
-        !csvOutput &&
         !artifactOutput &&
         input.text === input.text.trim() &&
         Buffer.byteLength(input.text) <= SHARED_NOTE_BYTE_LIMIT &&
