@@ -643,7 +643,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
 
   it('returns an original target after exact Stop proof', async () => {
     const target = makeTarget('confirmed-stop');
-    const run = makeRun({ controls: true, statusMessageId: nextTimestamp() });
+    const run = makeRun({ statusMessageId: nextTimestamp() });
     await store.admit(run);
     expect(await store.enrollIdleSession(target)).toBe(true);
     expect(await recordReadyDispatch(store, makeJob(run), target)).toBe(
@@ -668,7 +668,6 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
   it('unsubmits a proven prelaunch failure racing Stop without a failure result', async () => {
     const target = makeTarget('prelaunch-stop');
     const run = makeRun({
-      controls: true,
       statusMessageId: nextTimestamp(),
     });
     await store.admit(run);
@@ -975,11 +974,7 @@ describe.skipIf(!redisUrl)('RedisRunStore', () => {
     ).toBe(next.run.runId);
   });
 
-  it('does not interrupt an unbound, changed, native, or no-longer-owned run', async () => {
-    const unbound = makeRun();
-    await store.admit(unbound);
-    expect(await store.interruptRun(unbound, unbound.deadline)).toBe(false);
-
+  it('does not interrupt a changed, native, or no-longer-owned run', async () => {
     const changed = makeRun();
     await store.admit(changed);
     const target = {

@@ -51,12 +51,10 @@ export type GatewayConfig = {
   workspaceId: string;
   channelIds: string[];
   origin: string;
-  threadResume?: boolean;
   fileExchange?: boolean;
   jpegInput?: boolean;
   pngInput?: boolean;
   publicUrlInput?: boolean;
-  controlsEnabled?: boolean;
   operatorIds?: string[];
 };
 
@@ -91,8 +89,8 @@ type GatewayOptions = {
     format?: ArtifactFormat,
   ) => Promise<Buffer>;
   isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>;
-  inspectWorker?: (run: RunRecord, stop: boolean) => Promise<WorkerInspection>;
-  releaseRecoveredWorker?: (
+  inspectWorker: (run: RunRecord, stop: boolean) => Promise<WorkerInspection>;
+  releaseRecoveredWorker: (
     run: RunRecord,
     reconcileExit?: boolean,
   ) => Promise<void>;
@@ -127,9 +125,7 @@ function statusText(run: RunRecord) {
         : 'Starting: worker startup is unconfirmed. The outcome is uncertain; ask the operator to inspect this run.';
     case 'interrupted':
       if (run.memory === 'save') return SHARED_NOTE_UNCONFIRMED_REPLY;
-      return run.controls
-        ? 'Failed: work ended without a confirmed result. Mention me again to try a fresh run.'
-        : 'Failed: the worker environment stopped without a confirmed result. Mention me again to try a fresh run.';
+      return 'Failed: work ended without a confirmed result. Mention me again to try a fresh run.';
     default:
       return run.progress ? 'Working…' : STARTING_STATUS;
   }
@@ -362,12 +358,11 @@ export function createGateway({
     const active = run.state === 'accepted' || run.state === 'dispatch_failed';
     const expired = run.deadline <= now();
     const text =
-      run.controls && expired && active
+      expired && active
         ? 'The run deadline passed. Its outcome is unconfirmed. Use Status to check again.'
-        : run.controls && expired && run.state === 'publishing'
+        : expired && run.state === 'publishing'
           ? 'Finishing: result delivery is unconfirmed.'
           : statusText(run);
-    if (!run.controls) return text;
     const value = encodeControlValue({
       version: 1,
       runId: run.runId,
@@ -375,8 +370,7 @@ export function createGateway({
     });
     const children = [
       CardText(text),
-      ...(config.controlsEnabled &&
-      (active || run.state === 'stopping' || run.state === 'publishing')
+      ...(active || run.state === 'stopping' || run.state === 'publishing'
         ? [
             Actions([
               ...(active && run.memory !== 'save'
@@ -461,7 +455,6 @@ export function createGateway({
       publishingStatus = renderStatus(run.runId);
       threadId = threadIdFor(run);
       if (
-        config.controlsEnabled &&
         run.kind === 'work' &&
         run.memory !== 'save' &&
         result.type === 'completed'
@@ -496,7 +489,7 @@ export function createGateway({
       );
       await publishingStatus;
       await renderStatus(run.runId);
-      await releaseRecoveredWorker?.(run).catch(() => {});
+      await releaseRecoveredWorker(run).catch(() => {});
       return;
     }
 
@@ -563,7 +556,7 @@ export function createGateway({
     }
     await publishingStatus;
     await renderStatus(run.runId);
-    await releaseRecoveredWorker?.(run).catch(() => {});
+    await releaseRecoveredWorker(run).catch(() => {});
   }
 
   async function publishNotice(
@@ -592,7 +585,7 @@ export function createGateway({
 
   async function confirmStop(run: RunRecord, rendering?: Promise<void>) {
     const inspection = run.execution
-      ? await inspectWorker?.(run, true).catch(() => undefined)
+      ? await inspectWorker(run, true).catch(() => undefined)
       : undefined;
     const stopped =
       !run.execution ||
@@ -605,7 +598,7 @@ export function createGateway({
       inspection?.state === 'stopped' ? inspection.completed : undefined;
     if (completed && validateResult(run, completed)) return;
     const confirmed = await store.confirmStopped(run, completed?.session);
-    if (confirmed !== 'conflict') await releaseRecoveredWorker?.(run);
+    if (confirmed !== 'conflict') await releaseRecoveredWorker(run);
   }
 
   function validateResult(run: RunRecord, result: WorkerResult) {
@@ -623,10 +616,9 @@ export function createGateway({
     const expected = run.session;
     const received = result.session;
     if (
-      (!received && (expected || config.threadResume)) ||
-      (received && received.seedRunId !== (expected?.seedRunId ?? run.runId)) ||
-      (received &&
-        expected &&
+      !received ||
+      received.seedRunId !== (expected?.seedRunId ?? run.runId) ||
+      (expected &&
         (received.nativeId !== expected.nativeId ||
           received.adapterId !== expected.adapterId ||
           received.revision <= expected.revision ||
@@ -684,13 +676,13 @@ export function createGateway({
           'stopped',
         ].includes(run.state)
       ) {
-        await releaseRecoveredWorker?.(run, true).catch(() => {});
+        await releaseRecoveredWorker(run, true).catch(() => {});
         return;
       }
       if (run.state !== 'accepted' && run.state !== 'dispatch_failed') return;
       let exited = !run.execution;
       let sessionRestored = false;
-      if (run.execution && inspectWorker) {
+      if (run.execution) {
         const inspection = await inspectWorker(run, false).catch(
           () => undefined,
         );
@@ -729,9 +721,9 @@ export function createGateway({
             try {
               await publish(run, result, artifact);
             } finally {
-              await releaseRecoveredWorker?.(run);
+              await releaseRecoveredWorker(run);
             }
-          } else if (saved === 'duplicate') await releaseRecoveredWorker?.(run);
+          } else if (saved === 'duplicate') await releaseRecoveredWorker(run);
           return;
         }
       }
@@ -745,7 +737,7 @@ export function createGateway({
           true,
         ))
       )
-        await releaseRecoveredWorker?.(run);
+        await releaseRecoveredWorker(run);
     } finally {
       await renderStatus(run.runId);
     }
@@ -767,38 +759,20 @@ export function createGateway({
     const recoveryReply = saving
       ? SHARED_NOTE_UNCONFIRMED_REPLY + ' This message was not submitted.'
       : RECOVERED_REPLY;
-    if (previous.controls && config.controlsEnabled) {
-      if (previous.deadline <= now()) await reconcileStatus(previous);
-      const current = await store.getRun(previous.runId);
-      if (
-        current?.state === 'interrupted' &&
-        (await store.interruptRun(current, now()))
-      )
-        return recoveryReply;
-      if (
-        current &&
-        ['completed', 'worker_failed', 'stopped'].includes(current.state) &&
-        (await store.isThreadAvailable(current))
-      )
-        return 'The previous run ended. This message was not submitted. Please resend it.';
-      return false;
-    }
-    if (!isSandboxStopped || !previous.execution) return false;
-    if (previous.state !== 'interrupted') {
-      if (
-        (previous.session && !saving) ||
-        previous.deadline > now() ||
-        (previous.state !== 'accepted' && previous.state !== 'dispatch_failed')
-      )
-        return false;
-      if (!(await isSandboxStopped(previous.execution))) return false;
-    }
-    // The first write may have committed even if Redis did not acknowledge it.
-    const recovered = await store
-      .interruptRun(previous, now())
-      .catch(() => store.interruptRun(previous, now()));
-    if (recovered) await renderStatus(previous.runId);
-    return recovered && recoveryReply;
+    if (previous.deadline <= now()) await reconcileStatus(previous);
+    const current = await store.getRun(previous.runId);
+    if (
+      current?.state === 'interrupted' &&
+      (await store.interruptRun(current, now()))
+    )
+      return recoveryReply;
+    if (
+      current &&
+      ['completed', 'worker_failed', 'stopped'].includes(current.state) &&
+      (await store.isThreadAvailable(current))
+    )
+      return 'The previous run ended. This message was not submitted. Please resend it.';
+    return false;
   }
 
   function channelEnabled(workspaceId: string, channelId: string) {
@@ -867,7 +841,6 @@ export function createGateway({
       request.headers.get('content-type'),
     );
     if (
-      !config.controlsEnabled ||
       !action ||
       action.actionTs < action.messageTs ||
       Math.abs(now() - Number(action.actionTs) * 1_000) >
@@ -878,7 +851,7 @@ export function createGateway({
     schedule(async () => {
       const run = await store.getRun(action.runId);
       if (
-        !run?.controls ||
+        !run ||
         run.kind !== 'work' ||
         run.generation !== action.generation ||
         run.workspaceId !== action.workspaceId ||
@@ -917,11 +890,10 @@ export function createGateway({
   }
 
   async function busyMessage(run: RunRecord) {
-    if (!config.controlsEnabled || !run.blockedBy) return BUSY_REPLY;
+    if (!run.blockedBy) return BUSY_REPLY;
     const active = await store.getRun(run.blockedBy);
     if (
-      !active?.controls ||
-      !active.statusMessageId ||
+      !active?.statusMessageId ||
       !['accepted', 'dispatch_failed', 'stopping', 'publishing'].includes(
         active.state,
       )
@@ -953,7 +925,7 @@ export function createGateway({
     }
     if (payload.kind === 'url_verification')
       return Response.json({ challenge: payload.challenge });
-    if (config.controlsEnabled && payload.kind === 'unsupported') {
+    if (payload.kind === 'unsupported') {
       const reaction = parseSlackFeedbackReaction(payload.raw);
       if (reaction) {
         if (!channelEnabled(reaction.workspaceId, reaction.channelId))
@@ -981,7 +953,7 @@ export function createGateway({
     const input =
       payload.kind === 'app_mention'
         ? payload
-        : config.threadResume && payload.kind === 'unsupported'
+        : payload.kind === 'unsupported'
           ? parseThreadReply(payload.raw)
           : undefined;
     if (!input) return new Response(null, { status: 200 });
@@ -1105,7 +1077,6 @@ export function createGateway({
       kind: 'work',
       state: 'accepted',
       ...(memory ? { memory } : {}),
-      ...(config.controlsEnabled && inspectWorker ? { controls: true } : {}),
     };
     let admission;
     try {
@@ -1359,10 +1330,8 @@ export function createGateway({
         await renderStatus(run.runId);
       } finally {
         await acknowledgement;
-        if (run.controls) {
-          const current = await store.getRun(run.runId);
-          if (current?.state === 'stopping') await reconcileStatus(current);
-        }
+        const current = await store.getRun(run.runId);
+        if (current?.state === 'stopping') await reconcileStatus(current);
       }
     });
     return new Response(null, { status: 200 });
@@ -1511,7 +1480,7 @@ export function createGateway({
     }
     if (claim === 'duplicate') {
       schedule(async () => {
-        await releaseRecoveredWorker?.(run).catch(() => {});
+        await releaseRecoveredWorker(run).catch(() => {});
         await renderStatus(run.runId);
       });
       return new Response(null, { status: 204 });

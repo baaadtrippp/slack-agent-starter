@@ -450,7 +450,7 @@ async function setup(file, state, identity, key) {
     }
 
     const managed = createManagedWorker(
-      { sandboxName, driveName, seedId, controlsEnabled: true },
+      { sandboxName, driveName, seedId },
       store,
     );
     const ready = await managed.getSession(Date.now() + 25_000);

@@ -137,6 +137,7 @@ describe.skipIf(!redisUrl)('managed worker replacement', () => {
     expect(prepareDrive).toContain('test -w /workspace && test -x /workspace');
     expect(prepareDrive).toContain('--no-new-privs -- bash -c "$1"');
     expect(checkWorker).toContain('node --check run.mjs');
+    expect(checkWorker).toContain('node --check supervise.mjs');
 
     expect(await ready()).toBe(replacement);
     expect(await store.getManagedRuntime(sandboxName)).toEqual({
