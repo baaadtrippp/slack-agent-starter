@@ -1,26 +1,20 @@
-import { createRedisState } from '@chat-adapter/state-redis';
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type {
-  WorkerJob,
-  WorkerProgress,
-  WorkerResult,
-} from '../packages/contracts/src/index.js';
+import { describe, expect, it, vi } from 'vitest';
+import type { WorkerProgress } from '../packages/contracts/src/index.js';
+import type { RunRecord } from '../apps/gateway/src/store.js';
 import {
-  RedisRunStore,
-  type RunRecord,
-  type SandboxTarget,
-} from '../apps/gateway/src/store.js';
-
-const redisUrl = process.env.TEST_REDIS_URL;
+  makeJob,
+  makeResult,
+  makeRun,
+  makeTarget,
+  nextTimestamp,
+  recordReadyDispatch,
+  redisUrl,
+  useRedisStore,
+} from './store-fixture.js';
 
 describe.skipIf(!redisUrl)('F07 Redis progress and status state', () => {
-  const namespace = `slack-agent:f07:test:${randomUUID()}`;
-  const state = createRedisState({
-    url: redisUrl ?? 'redis://127.0.0.1:1',
-    keyPrefix: namespace,
-  });
-  const store = new RedisRunStore(state.getClient(), namespace);
+  const { namespace, state, store } = useRedisStore();
 
   function loseNextEvalResponse() {
     const client = state.getClient();
@@ -32,18 +26,6 @@ describe.skipIf(!redisUrl)('F07 Redis progress and status state', () => {
         throw new Error('Synthetic Redis response loss after commit');
       });
   }
-
-  beforeAll(async () => {
-    await state.connect();
-  });
-
-  afterAll(async () => {
-    const client = state.getClient();
-    for await (const key of client.scanIterator({ MATCH: `${namespace}:*` })) {
-      if (key.length > 0) await client.del(key);
-    }
-    await state.disconnect();
-  });
 
   it('claims and records one status only for the admitted work run', async () => {
     const owner = makeRun();
@@ -250,60 +232,6 @@ describe.skipIf(!redisUrl)('F07 Redis progress and status state', () => {
   });
 });
 
-let timestampCounter = 0;
-
-function nextTimestamp(): string {
-  timestampCounter += 1;
-  return `${1_900_000_000 + timestampCounter}.000001`;
-}
-
-function makeRun(overrides: Partial<RunRecord> = {}): RunRecord {
-  const threadTs = nextTimestamp();
-  return {
-    runId: randomUUID(),
-    conversationId: 'c'.repeat(64),
-    generation: 1,
-    eventId: randomUUID(),
-    workspaceId: 'T_SYNTHETIC',
-    channelId: 'C_SYNTHETIC',
-    threadTs,
-    messageTs: nextTimestamp(),
-    senderId: 'U_SYNTHETIC',
-    deadline: Date.now() + 60_000,
-    callbackHash: 'd'.repeat(64),
-    kind: 'work',
-    state: 'accepted',
-    ...overrides,
-  };
-}
-
-function makeTarget(): SandboxTarget {
-  return {
-    sandboxName: `synthetic-${randomUUID()}`,
-    sessionId: randomUUID(),
-  };
-}
-
-function makeJob(run: RunRecord): WorkerJob {
-  return {
-    version: 1,
-    runId: run.runId,
-    conversationId: run.conversationId,
-    generation: run.generation,
-    input: {
-      text: 'Synthetic task.',
-      senderId: run.senderId,
-      workspaceId: run.workspaceId,
-      channelId: run.channelId,
-      threadTs: run.threadTs,
-      messageTs: run.messageTs,
-    },
-    deadline: run.deadline,
-    callbackUrl: 'https://gateway.example/api/worker/callback',
-    callbackToken: 'e'.repeat(64),
-  };
-}
-
 function makeProgress(run: RunRecord): WorkerProgress {
   return {
     version: 1,
@@ -315,34 +243,6 @@ function makeProgress(run: RunRecord): WorkerProgress {
   };
 }
 
-function makeResult(run: RunRecord): WorkerResult {
-  return {
-    version: 1,
-    runId: run.runId,
-    generation: run.generation,
-    eventId: randomUUID(),
-    sequence: 2,
-    type: 'completed',
-    text: 'Synthetic final answer.',
-  };
-}
-
 function ownerKey(namespace: string, run: RunRecord): string {
   return `${namespace}:owner:${run.workspaceId}:${run.channelId}:${run.threadTs}`;
-}
-
-// Production records a dispatch only for an enrolled session that the managed
-// runtime marks ready.
-async function recordReadyDispatch(
-  store: RedisRunStore,
-  job: WorkerJob,
-  target: SandboxTarget,
-) {
-  await store.enrollIdleSession(target);
-  await store.compareManagedRuntime(
-    target.sandboxName,
-    await store.getManagedRuntime(target.sandboxName),
-    { phase: 'ready', sessionId: target.sessionId, driveId: 'synthetic-drive' },
-  );
-  return store.recordDispatchTarget(job, target);
 }
