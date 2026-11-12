@@ -88,7 +88,7 @@ type GatewayOptions = {
     target: SandboxTarget,
     format?: ArtifactFormat,
   ) => Promise<Buffer>;
-  isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>;
+  isSandboxStopped: (target: SandboxTarget) => Promise<boolean>;
   inspectWorker: (run: RunRecord, stop: boolean) => Promise<WorkerInspection>;
   releaseRecoveredWorker: (
     run: RunRecord,
@@ -591,7 +591,7 @@ export function createGateway({
       !run.execution ||
       inspection?.state === 'stopped' ||
       (!run.session &&
-        (await isSandboxStopped?.(run.execution).catch(() => false)));
+        (await isSandboxStopped(run.execution).catch(() => false)));
     await rendering;
     if (!stopped) return;
     const completed =
@@ -717,13 +717,9 @@ export function createGateway({
             result,
             artifactTarget,
           );
-          if (saved === 'claimed') {
-            try {
-              await publish(run, result, artifact);
-            } finally {
-              await releaseRecoveredWorker(run);
-            }
-          } else if (saved === 'duplicate') await releaseRecoveredWorker(run);
+          // publish releases the worker on every path.
+          if (saved === 'claimed') await publish(run, result, artifact);
+          else if (saved === 'duplicate') await releaseRecoveredWorker(run);
           return;
         }
       }
@@ -1095,19 +1091,7 @@ export function createGateway({
     if (admission.outcome === 'duplicate') {
       if (admission.run.statusMessageId)
         schedule(() => renderStatus(admission.run.runId));
-      if (
-        admission.run.deadline <= now() &&
-        admission.run.state !== 'completed' &&
-        admission.run.state !== 'worker_failed' &&
-        admission.run.state !== 'interrupted'
-      )
-        console.error(
-          JSON.stringify({
-            runId: admission.run.runId,
-            phase: 'abandoned_run',
-            state: admission.run.state,
-          }),
-        );
+      if (admission.run.deadline <= now()) logIfAbandoned(admission.run);
       return new Response(null, { status: 200 });
     }
 
@@ -1364,22 +1348,26 @@ export function createGateway({
     if (run.generation !== generation || run.kind !== 'work')
       return new Response(null, { status: 409 });
     if (run.deadline <= now()) {
-      if (
-        run.state !== 'completed' &&
-        run.state !== 'worker_failed' &&
-        run.state !== 'interrupted' &&
-        run.state !== 'stopped'
-      )
-        console.error(
-          JSON.stringify({
-            runId: run.runId,
-            phase: 'abandoned_run',
-            state: run.state,
-          }),
-        );
+      logIfAbandoned(run);
       return new Response(null, { status: 410 });
     }
     return run;
+  }
+
+  // For a run past its deadline. publication_uncertain stays logged.
+  function logIfAbandoned(run: RunRecord) {
+    if (
+      !['completed', 'worker_failed', 'interrupted', 'stopped'].includes(
+        run.state,
+      )
+    )
+      console.error(
+        JSON.stringify({
+          runId: run.runId,
+          phase: 'abandoned_run',
+          state: run.state,
+        }),
+      );
   }
 
   async function callback(request: Request): Promise<Response> {

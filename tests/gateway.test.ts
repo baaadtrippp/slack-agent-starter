@@ -112,6 +112,7 @@ function harness({
   collectArtifact,
   progressUi = false,
   inspectWorker = async () => ({ state: 'unknown' }),
+  isSandboxStopped = async () => false,
   releaseRecoveredWorker = async () => {},
   operatorIds = [],
   storeNamespace = `${namespace}:${randomUUID()}`,
@@ -125,6 +126,7 @@ function harness({
   collectArtifact?: (runId: string, target: SandboxTarget) => Promise<Buffer>;
   progressUi?: boolean;
   inspectWorker?: (run: RunRecord, stop: boolean) => Promise<WorkerInspection>;
+  isSandboxStopped?: (target: SandboxTarget) => Promise<boolean>;
   releaseRecoveredWorker?: (run: RunRecord) => Promise<void>;
   operatorIds?: string[];
   storeNamespace?: string;
@@ -158,6 +160,7 @@ function harness({
     dispatch,
     ...(collectArtifact ? { collectArtifact } : {}),
     inspectWorker,
+    isSandboxStopped,
     releaseRecoveredWorker,
     schedule: (task) => tasks.push(task),
     now: () => clock.now,
@@ -777,8 +780,49 @@ describe.skipIf(!redisUrl)(
         statusMessageId: statusTs,
         execution: target,
       });
-      return { gateway, run, job };
+      return { gateway, run, job, event };
     }
+
+    it('logs an expired duplicate as abandoned only while its run is unfinished', async () => {
+      const inspect = vi.fn().mockResolvedValue({ state: 'stopped' });
+      const { gateway, run, event } = await startControlled({
+        inspectWorker: inspect,
+      });
+      await gateway.interactions(interaction(run, STOP_ACTION_ID));
+      await gateway.flush();
+      expect(await gateway.store.getRun(run.runId)).toMatchObject({
+        state: 'stopped',
+      });
+      gateway.clock.now = run.deadline + 1_000;
+      expect(
+        (await gateway.events(signed(event, gateway.clock.now))).status,
+      ).toBe(200);
+      expect(console.error).not.toHaveBeenCalledWith(
+        expect.stringContaining('abandoned_run'),
+      );
+
+      const uncertain = harness();
+      const body = envelope();
+      await uncertain.events(signed(body));
+      await uncertain.flush();
+      const job = uncertain.dispatch.mock.calls[0]![0];
+      vi.mocked(SlackAdapter.prototype.postMessage).mockRejectedValueOnce(
+        new Error('Response lost after sending'),
+      );
+      await uncertain.callback(callback(result(job), job.callbackToken));
+      await uncertain.flush();
+      uncertain.clock.now = job.deadline + 1_000;
+      expect(
+        (await uncertain.events(signed(body, uncertain.clock.now))).status,
+      ).toBe(200);
+      expect(console.error).toHaveBeenCalledWith(
+        JSON.stringify({
+          runId: job.runId,
+          phase: 'abandoned_run',
+          state: 'publication_uncertain',
+        }),
+      );
+    });
 
     it('acknowledges signed controls before lookup and rejects forged, stale, and unauthorized Stop', async () => {
       const inspect = vi.fn().mockResolvedValue({ state: 'stopped' });
@@ -836,6 +880,20 @@ describe.skipIf(!redisUrl)(
         expect.objectContaining({ runId: run.runId, state: 'stopping' }),
         true,
       );
+      expect(await gateway.store.getRun(run.runId)).toMatchObject({
+        state: 'stopped',
+      });
+    });
+
+    it('confirms Stop from a stopped Sandbox session when the worker cannot be inspected', async () => {
+      const isSandboxStopped = vi.fn(async () => true);
+      const { gateway, run } = await startControlled({
+        inspectWorker: vi.fn().mockResolvedValue({ state: 'unknown' }),
+        isSandboxStopped,
+      });
+      await gateway.interactions(interaction(run, STOP_ACTION_ID));
+      await gateway.flush();
+      expect(isSandboxStopped).toHaveBeenCalledExactlyOnceWith(run.execution);
       expect(await gateway.store.getRun(run.runId)).toMatchObject({
         state: 'stopped',
       });
@@ -935,8 +993,10 @@ describe.skipIf(!redisUrl)(
 
     it('recovers an exited run’s saved answer with Status and does not submit a new run', async () => {
       const inspect = vi.fn();
+      const releaseRecoveredWorker = vi.fn(async () => {});
       const { gateway, run, job } = await startControlled({
         inspectWorker: inspect,
+        releaseRecoveredWorker,
       });
       inspect.mockResolvedValue({ state: 'exited', result: result(job) });
       gateway.clock.now = run.deadline + 1_000;
@@ -963,6 +1023,7 @@ describe.skipIf(!redisUrl)(
       });
       expect(gateway.dispatch).toHaveBeenCalledTimes(1);
       expect(SlackAdapter.prototype.postMessage).toHaveBeenCalledTimes(2);
+      expect(releaseRecoveredWorker).toHaveBeenCalledOnce();
       expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
         expect.any(String),
         statusTs,
