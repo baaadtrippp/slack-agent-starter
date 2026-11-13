@@ -106,6 +106,24 @@ describe.skipIf(!redisUrl)('F07 Redis progress and status state', () => {
     expect(await store.finishStatusEdit(run.runId, nextToken)).toBe('done');
   });
 
+  it('recovers when Redis records the attachment outcome but loses the response', async () => {
+    const run = makeRun();
+    await store.admit(run);
+    const result = { ...makeResult(run), artifact: { sha256: 'a'.repeat(64) } };
+    expect(await store.claimPublication(run.runId, result, Date.now())).toBe(
+      'claimed',
+    );
+    expect(await store.completePublication(run, nextTimestamp())).toBe(true);
+    const lost = loseNextEvalResponse();
+    expect(await store.recordArtifactPublication(run.runId, 'uploaded')).toBe(
+      true,
+    );
+    lost.mockRestore();
+    expect(await store.recordArtifactPublication(run.runId, 'failed')).toBe(
+      false,
+    );
+  });
+
   it('accepts one exact progress event for the bound owner', async () => {
     const run = makeRun();
     const target = makeTarget();
