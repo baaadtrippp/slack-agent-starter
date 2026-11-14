@@ -1,4 +1,5 @@
 import { isUtf8 } from 'node:buffer';
+import { downloadAttachment, NetworkError } from '@chat-adapter/shared';
 import { z } from 'zod';
 
 import { INPUT_BYTE_LIMIT } from '../../../packages/contracts/src/index.js';
@@ -143,7 +144,7 @@ export function selectSlackFileKind(raw: unknown): SlackFileKind | undefined {
  * Returns bytes on success or a refusal message suitable for the Slack thread.
  */
 export async function downloadSlackFile(
-  files: unknown,
+  attachment: unknown,
   token: string,
   kind: SlackFileKind,
 ) {
@@ -161,8 +162,7 @@ export async function downloadSlackFile(
             : 'Attach one Slack-hosted CSV file encoded as UTF-8.';
   const oversized = `The ${label} exceeds the 16 KiB limit for this test. Attach a smaller file.`;
 
-  if (!Array.isArray(files) || files.length !== 1) return unsupported;
-  const parsed = metadata.safeParse(files[0]);
+  const parsed = metadata.safeParse(attachment);
   if (!parsed.success) return unsupported;
   const file = parsed.data;
   if (selectSlackFileKind(file) !== kind) return unsupported;
@@ -176,50 +176,41 @@ export async function downloadSlackFile(
   )
     return unsupported;
 
+  let bytes;
   try {
-    const response = await fetch(url, {
-      headers: { authorization: 'Bearer ' + token },
-      redirect: 'error',
-      signal: AbortSignal.timeout(8_000),
+    bytes = await downloadAttachment(url.href, {
+      adapter: 'slack-file',
+      headers: () => ({ authorization: 'Bearer ' + token }),
+      hosts: ['files.slack.com'],
+      limit: INPUT_BYTE_LIMIT,
+      redirects: 0,
+      timeoutMs: 8_000,
+      onResponse(response) {
+        if (
+          response.headers['content-type']
+            ?.toLowerCase()
+            .includes('text/html') &&
+          !(kind === 'text' && /\.html?$/i.test(file.name))
+        )
+          throw new Error('Slack returned an HTML page');
+      },
     });
-    const reader = response.body?.getReader();
-    if (!reader) return inaccessible;
-    try {
-      if (
-        !response.ok ||
-        (response.headers
-          .get('content-type')
-          ?.toLowerCase()
-          .includes('text/html') &&
-          !(kind === 'text' && /\.html?$/i.test(file.name)))
-      )
-        return inaccessible;
-      const bytes = Buffer.alloc(file.size);
-      let offset = 0;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value.length > INPUT_BYTE_LIMIT - offset) return oversized;
-        if (value.length > bytes.length - offset) return inaccessible;
-        bytes.set(value, offset);
-        offset += value.length;
-      }
-      if (offset !== bytes.length) return inaccessible;
-      const valid =
-        kind === 'pdf'
-          ? bytes.subarray(0, 5).equals(Buffer.from('%PDF-'))
-          : kind === 'png'
-            ? isSmallPng(bytes)
-            : kind === 'jpeg'
-              ? isSmallJpeg(bytes)
-              : !bytes.includes(0) && isUtf8(bytes);
-      return valid ? bytes : unsupported;
-    } finally {
-      await reader.cancel().catch(() => {});
-    }
-  } catch {
-    return inaccessible;
+  } catch (error) {
+    return error instanceof NetworkError &&
+      error.message.includes('exceeds the download limit')
+      ? oversized
+      : inaccessible;
   }
+  if (bytes.length !== file.size) return inaccessible;
+  const valid =
+    kind === 'pdf'
+      ? bytes.subarray(0, 5).equals(Buffer.from('%PDF-'))
+      : kind === 'png'
+        ? isSmallPng(bytes)
+        : kind === 'jpeg'
+          ? isSmallJpeg(bytes)
+          : !bytes.includes(0) && isUtf8(bytes);
+  return valid ? bytes : unsupported;
 }
 
 function isSmallPng(bytes: Buffer) {

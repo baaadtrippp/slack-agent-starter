@@ -38,10 +38,22 @@ import type {
   WorkerJob,
   WorkerResult,
 } from '../packages/contracts/src/index.js';
+import type { FileServer } from './file-server-fixture.js';
 import { recordReadyDispatch } from './store-fixture.js';
 
 // Spy only: the real fetch runs unless a test supplies the response.
 vi.mock('../apps/gateway/src/public-url.js', { spy: true });
+// Slack file and public URL downloads reach this fake server instead of the
+// network.
+const { fileServer } = vi.hoisted(() => ({ fileServer: vi.fn<FileServer>() }));
+vi.mock(
+  '../apps/gateway/node_modules/@chat-adapter/shared/dist/index.js',
+  async (importOriginal) =>
+    (await import('./file-server-fixture.js')).withFileServer(
+      await importOriginal(),
+      fileServer,
+    ),
+);
 
 const redisUrl = process.env.TEST_REDIS_URL;
 const namespace = `gateway-test:${randomUUID()}`;
@@ -353,6 +365,7 @@ describe.skipIf(!redisUrl)(
       await redis.connect();
     });
     beforeEach(() => {
+      fileServer.mockReset();
       historyFetch.mockReset().mockImplementation(async (url, options) => {
         if (String(url) !== 'https://slack.com/api/conversations.replies')
           throw new Error('Unexpected network request');
@@ -3075,14 +3088,11 @@ describe.skipIf(!redisUrl)(
         ...reply,
         event: { ...reply.event, subtype: 'file_share', files: [file] },
       };
-      const download = vi
-        .fn<typeof fetch>()
-        .mockResolvedValue(new Response(bytes));
-      vi.stubGlobal('fetch', download);
+      fileServer.mockResolvedValue(new Response(bytes));
 
       expect((await gateway.events(signed(payload))).status).toBe(200);
       await gateway.flush();
-      expect(download).not.toHaveBeenCalled();
+      expect(fileServer).not.toHaveBeenCalled();
       expect(gateway.dispatch).not.toHaveBeenCalled();
 
       expect((await gateway.events(signed(root))).status).toBe(200);
@@ -3109,7 +3119,7 @@ describe.skipIf(!redisUrl)(
       await gateway.flush();
 
       expect((await gateway.events(signed(payload))).status).toBe(200);
-      expect(download).not.toHaveBeenCalled();
+      expect(fileServer).not.toHaveBeenCalled();
       await gateway.flush();
       const [job, staged] = gateway.dispatch.mock.calls[1]!;
       expect(job).toMatchObject({
@@ -3133,7 +3143,7 @@ describe.skipIf(!redisUrl)(
       ).toBe(false);
       expect(job.input.threadContext).toBeUndefined();
       expect(staged).toEqual([bytes]);
-      expect(download).toHaveBeenCalledOnce();
+      expect(fileServer).toHaveBeenCalledOnce();
     });
 
     it('refuses an explicit private URL on an ordinary reply after activation', async () => {
@@ -3192,8 +3202,6 @@ describe.skipIf(!redisUrl)(
           'https://files.slack.com/files-pri/TTEST1-FTEST1/fixture.' +
           extension,
       };
-      const download = vi.fn<typeof fetch>();
-      vi.stubGlobal('fetch', download);
       expect(
         (
           await gateway.events(
@@ -3205,7 +3213,7 @@ describe.skipIf(!redisUrl)(
         ).status,
       ).toBe(200);
       await gateway.flush();
-      expect(download).not.toHaveBeenCalled();
+      expect(fileServer).not.toHaveBeenCalled();
       expect(gateway.dispatch).not.toHaveBeenCalled();
       expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
         'slack:CTEST1:' + root.event.ts,
@@ -3218,8 +3226,6 @@ describe.skipIf(!redisUrl)(
         fileExchange: true,
       });
       const root = envelope();
-      const download = vi.fn<typeof fetch>();
-      vi.stubGlobal('fetch', download);
       expect(
         (
           await gateway.events(
@@ -3235,7 +3241,7 @@ describe.skipIf(!redisUrl)(
         ).status,
       ).toBe(200);
       await gateway.flush();
-      expect(download).not.toHaveBeenCalled();
+      expect(fileServer).not.toHaveBeenCalled();
       expect(gateway.dispatch).not.toHaveBeenCalled();
       expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
         'slack:CTEST1:' + root.event.ts,
@@ -3294,10 +3300,7 @@ describe.skipIf(!redisUrl)(
     ])(
       'posts one same-thread notice for $outcome without dispatch',
       async ({ file, notice, requests }) => {
-        const request = vi
-          .fn<typeof fetch>()
-          .mockResolvedValue(new Response('denied', { status: 403 }));
-        vi.stubGlobal('fetch', request);
+        fileServer.mockResolvedValue(new Response('denied', { status: 403 }));
         const gateway = harness({
           fileExchange: true,
           pngInput: true,
@@ -3325,13 +3328,13 @@ describe.skipIf(!redisUrl)(
             };
 
         expect((await gateway.events(signed(mention))).status).toBe(200);
-        expect(request).not.toHaveBeenCalled();
+        expect(fileServer).not.toHaveBeenCalled();
         expect(gateway.dispatch).not.toHaveBeenCalled();
         expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
 
         await gateway.flush();
 
-        expect(request).toHaveBeenCalledTimes(requests);
+        expect(fileServer).toHaveBeenCalledTimes(requests);
         expect(gateway.dispatch).not.toHaveBeenCalled();
         expect(
           SlackAdapter.prototype.postMessage,
@@ -3509,8 +3512,6 @@ describe.skipIf(!redisUrl)(
     });
 
     it('rejects a linked URL combined with a bare IPv6 URL before download or dispatch', async () => {
-      const request = vi.fn<typeof fetch>();
-      vi.stubGlobal('fetch', request);
       const gateway = harness({
         publicUrlInput: true,
       });
@@ -3524,7 +3525,7 @@ describe.skipIf(!redisUrl)(
 
       await gateway.flush();
 
-      expect(request).not.toHaveBeenCalled();
+      expect(fileServer).not.toHaveBeenCalled();
       expect(gateway.dispatch).not.toHaveBeenCalled();
       expect(
         SlackAdapter.prototype.postMessage,

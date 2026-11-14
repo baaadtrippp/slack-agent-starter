@@ -442,4 +442,64 @@ describe.skipIf(!redisUrl)('managed worker replacement', () => {
       sandboxGet.mock.calls.filter(([input]) => input.resume),
     ).toHaveLength(2);
   });
+
+  it('refuses an expired deadline, another seed, or another Drive', async () => {
+    sandboxGet.mockReset();
+    driveGet.mockReset();
+    const store = new RedisRunStore(state.getClient(), namespace);
+    const sandboxName = 'synthetic-load-worker';
+    const driveName = 'synthetic-load-drive';
+    const seedId = 'synthetic-load-seed';
+    const driveId = 'synthetic-load-drive-id';
+    const session = {
+      sessionId: 'synthetic-load-session',
+      status: 'running',
+      sourceSnapshotId: seedId,
+      runCommand: vi.fn().mockResolvedValue({ exitCode: 0 }),
+    };
+    let snapshotId = seedId;
+    sandboxGet.mockImplementation(async () => ({
+      persistent: false,
+      currentSnapshotId: snapshotId,
+      mounts: { '/workspace': { mode: 'read-write', drive: driveName } },
+      currentSession: () => session,
+    }));
+    driveGet.mockResolvedValue({
+      driveId,
+      name: driveName,
+      currentSessionId: session.sessionId,
+      currentSandboxName: sandboxName,
+    });
+    const managed = createManagedWorker(
+      { sandboxName, driveName, seedId },
+      store,
+    );
+    const target = { sandboxName, sessionId: session.sessionId };
+    const deadline = () => Date.now() + 15_000;
+
+    // Recovery needs a runtime record and never activates without one.
+    expect(await managed.recoverSession(target, deadline())).toBeUndefined();
+    expect(session.runCommand).not.toHaveBeenCalled();
+
+    const other = {
+      phase: 'ready' as const,
+      sessionId: session.sessionId,
+      driveId: 'other-drive',
+    };
+    const ready = { ...other, driveId };
+    expect(await store.compareManagedRuntime(sandboxName, null, other)).toBe(
+      true,
+    );
+    expect(await managed.getSession(deadline())).toBeUndefined();
+    expect(await store.compareManagedRuntime(sandboxName, other, ready)).toBe(
+      true,
+    );
+    expect(await managed.getSession(deadline())).toBe(session);
+
+    snapshotId = 'other-seed';
+    expect(await managed.getSession(deadline())).toBeUndefined();
+    sandboxGet.mockClear();
+    expect(await managed.getSession(Date.now() - 1)).toBeUndefined();
+    expect(sandboxGet).not.toHaveBeenCalled();
+  });
 });

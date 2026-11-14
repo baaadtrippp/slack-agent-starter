@@ -1,4 +1,3 @@
-import { Sandbox } from '@vercel/sandbox';
 import { isUtf8 } from 'node:buffer';
 import {
   artifactFormats,
@@ -6,6 +5,7 @@ import {
 } from '../../../packages/contracts/src/index.js';
 import type { ArtifactFormat } from '../../../packages/contracts/src/index.js';
 import type { SandboxTarget } from './store.js';
+import { getRunningSession } from './worker-control.js';
 
 // Run in the reserved Linux Sandbox. Open each component relative to an
 // already-open directory so replacing a path cannot redirect the next open.
@@ -58,14 +58,8 @@ export async function collectRunArtifact(
   format: ArtifactFormat = 'csv',
 ) {
   const signal = AbortSignal.timeout(5_000);
-  const sandbox = await Sandbox.get({
-    name: target.sandboxName,
-    resume: false,
-    signal,
-  });
-  const session = sandbox.currentSession();
-  if (session.status !== 'running' || session.sessionId !== target.sessionId)
-    throw new Error('Artifact Sandbox session is unavailable');
+  const session = await getRunningSession(target, signal);
+  if (!session) throw new Error('Artifact Sandbox session is unavailable');
 
   const command = await session.runCommand({
     cmd: 'node',

@@ -121,7 +121,7 @@ export function createManagedWorker(
     return store.fenceLostTarget(replacement);
   }
 
-  async function getSession(deadline: number) {
+  async function load(deadline: number) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) return;
     const signal = AbortSignal.timeout(Math.min(25_000, remaining));
@@ -131,10 +131,34 @@ export function createManagedWorker(
       store.getManagedRuntime(sandboxName),
     ]);
     if (
-      !matchesSeedAndMount(sandbox, drive) ||
-      (current && current.driveId !== drive.driveId)
+      matchesSeedAndMount(sandbox, drive) &&
+      (!current || current.driveId === drive.driveId)
     )
-      return;
+      return { sandbox, drive, current, signal };
+  }
+
+  // The persisted intent prevents a second resume after an ambiguous reply.
+  async function resumeAndActivate(
+    starting: ManagedRuntime,
+    signal: AbortSignal,
+  ) {
+    const replacement = await Sandbox.get({
+      name: sandboxName,
+      resume: true,
+      signal,
+    });
+    return activate(
+      replacement,
+      await Drive.get({ name: driveName, signal }),
+      starting,
+      signal,
+    );
+  }
+
+  async function getSession(deadline: number) {
+    const loaded = await load(deadline);
+    if (!loaded) return;
+    const { sandbox, drive, current, signal } = loaded;
 
     const session = sandbox.currentSession();
     const detached =
@@ -179,37 +203,15 @@ export function createManagedWorker(
       await store.compareManagedRuntime(sandboxName, starting, current);
       return;
     }
-
-    // The persisted intent prevents a second resume after an ambiguous reply.
-    const replacement = await Sandbox.get({
-      name: sandboxName,
-      resume: true,
-      signal,
-    });
-    return activate(
-      replacement,
-      await Drive.get({ name: driveName, signal }),
-      starting,
-      signal,
-    );
+    return resumeAndActivate(starting, signal);
   }
 
   async function recoverSession(lost: SandboxTarget, deadline: number) {
     if (lost.sandboxName !== sandboxName) return;
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) return;
-    const signal = AbortSignal.timeout(Math.min(25_000, remaining));
-    const [sandbox, drive, current] = await Promise.all([
-      Sandbox.get({ name: sandboxName, resume: false, signal }),
-      Drive.get({ name: driveName, signal }),
-      store.getManagedRuntime(sandboxName),
-    ]);
-    if (
-      !matchesSeedAndMount(sandbox, drive) ||
-      !current ||
-      current.driveId !== drive.driveId
-    )
-      return;
+    const loaded = await load(deadline);
+    const current = loaded?.current;
+    if (!loaded || !current) return;
+    const { sandbox, drive, signal } = loaded;
     if (current.sessionId !== lost.sessionId) return getSession(deadline);
     if (current.phase === 'starting') return getSession(deadline);
 
@@ -251,17 +253,7 @@ export function createManagedWorker(
 
     if (replacementAlreadyRunning)
       return activate(sandbox, drive, starting, signal);
-    const replacement = await Sandbox.get({
-      name: sandboxName,
-      resume: true,
-      signal,
-    });
-    return activate(
-      replacement,
-      await Drive.get({ name: driveName, signal }),
-      starting,
-      signal,
-    );
+    return resumeAndActivate(starting, signal);
   }
 
   async function stopIfIdle(session: Session) {

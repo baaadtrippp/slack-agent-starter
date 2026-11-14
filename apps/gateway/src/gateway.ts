@@ -1198,7 +1198,7 @@ export function createGateway({
         for (const [index, kind] of selected.entries()) {
           if (kind)
             downloads.push(
-              downloadSlackFile([files[index]], config.botToken, kind),
+              downloadSlackFile(files[index], config.botToken, kind),
             );
         }
         if (publicUrl) downloads.push(fetchPublicText(publicUrl));

@@ -1,13 +1,25 @@
 import { readFileSync } from 'node:fs';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   downloadSlackFile,
   isSafeSlackFilename,
   selectSlackFileKind,
 } from '../apps/gateway/src/slack-file.js';
+import type { FileServer } from './file-server-fixture.js';
 
-const downloadSlackCsv = (files: unknown, token: string) =>
-  downloadSlackFile(files, token, 'csv');
+const { fileServer } = vi.hoisted(() => ({ fileServer: vi.fn<FileServer>() }));
+vi.mock(
+  '../apps/gateway/node_modules/@chat-adapter/shared/dist/index.js',
+  async (importOriginal) =>
+    (await import('./file-server-fixture.js')).withFileServer(
+      await importOriginal(),
+      fileServer,
+    ),
+);
+beforeEach(() => fileServer.mockReset());
+
+const downloadSlackCsv = (attachment: unknown, token: string) =>
+  downloadSlackFile(attachment, token, 'csv');
 
 const csv = Buffer.from('label,cents\nblue,123\n');
 const file = {
@@ -19,50 +31,42 @@ const file = {
 };
 
 describe('Slack CSV validation and download', () => {
-  afterEach(() => vi.unstubAllGlobals());
-
   it.each(['hosted', 'snippet'])(
     'downloads exact bytes for a Slack %s file',
     async (mode) => {
-      const request = vi.fn().mockResolvedValue(new Response(csv));
-      vi.stubGlobal('fetch', request);
+      fileServer.mockResolvedValue(new Response(csv));
       expect(
-        await downloadSlackCsv([{ ...file, mode }], 'synthetic-token'),
+        await downloadSlackCsv({ ...file, mode }, 'synthetic-token'),
       ).toEqual(csv);
-      expect(request).toHaveBeenCalledWith(
+      expect(fileServer).toHaveBeenCalledExactlyOnceWith(
         new URL(file.url_private),
-        expect.objectContaining({
-          headers: { authorization: 'Bearer synthetic-token' },
-          redirect: 'error',
-        }),
+        expect.objectContaining({ authorization: 'Bearer synthetic-token' }),
       );
     },
   );
 
-  it('rejects external, unsupported, multiple and oversized files before download', async () => {
-    const request = vi.fn();
-    vi.stubGlobal('fetch', request);
-    for (const files of [
-      [{ ...file, mode: 'external' }],
-      [{ ...file, url_private: 'https://files.slack.com.example/fixture.csv' }],
-      [{ ...file, mimetype: 'image/png' }],
-      [file, file],
+  it('rejects external, unsupported, non-private and oversized files before download', async () => {
+    for (const attachment of [
+      { ...file, mode: 'external' },
+      { ...file, url_private: 'https://files.slack.com.example/fixture.csv' },
+      { ...file, url_private: 'https://files.slack.com/files-pub/fixture.csv' },
+      { ...file, url_private: 'https://user@files.slack.com/files-pri/x.csv' },
+      { ...file, mimetype: 'image/png' },
     ])
-      expect(await downloadSlackCsv(files, 'synthetic-token')).toMatch(
+      expect(await downloadSlackCsv(attachment, 'synthetic-token')).toMatch(
         /one Slack-hosted CSV/,
       );
     expect(
       await downloadSlackCsv(
-        [{ ...file, size: 16 * 1024 + 1 }],
+        { ...file, size: 16 * 1024 + 1 },
         'synthetic-token',
       ),
     ).toMatch(/exceeds the 16 KiB limit/);
-    expect(request).not.toHaveBeenCalled();
+    expect(fileServer).not.toHaveBeenCalled();
   });
 
   it('rejects inaccessible, mismatched and non-UTF-8 bodies', async () => {
-    const request = vi
-      .fn()
+    fileServer
       .mockResolvedValueOnce(new Response('denied', { status: 403 }))
       .mockResolvedValueOnce(
         new Response(csv, { headers: { 'content-type': 'Text/HTML' } }),
@@ -70,12 +74,36 @@ describe('Slack CSV validation and download', () => {
       .mockResolvedValueOnce(new Response(Buffer.concat([csv, csv])))
       .mockResolvedValueOnce(new Response(csv.subarray(1)))
       .mockResolvedValueOnce(new Response(Buffer.alloc(csv.length, 0xff)));
-    vi.stubGlobal('fetch', request);
     for (let response = 0; response < 4; response += 1)
-      expect(await downloadSlackCsv([file], 'synthetic-token')).toMatch(
+      expect(await downloadSlackCsv(file, 'synthetic-token')).toMatch(
         /could not read/,
       );
-    expect(await downloadSlackCsv([file], 'synthetic-token')).toMatch(/UTF-8/);
+    expect(await downloadSlackCsv(file, 'synthetic-token')).toMatch(/UTF-8/);
+  });
+
+  it('refuses a redirect and reports a body over the byte limit as oversized', async () => {
+    fileServer
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 302,
+          headers: { location: file.url_private },
+        }),
+      )
+      .mockResolvedValueOnce(new Response(Buffer.alloc(16 * 1024 + 1, 0x61)))
+      .mockResolvedValueOnce(
+        new Response(csv, {
+          headers: { 'content-length': String(16 * 1024 + 1) },
+        }),
+      );
+    expect(await downloadSlackCsv(file, 'synthetic-token')).toMatch(
+      /could not read/,
+    );
+    expect(fileServer).toHaveBeenCalledOnce();
+    // Chunked body over the limit, then a declared Content-Length over it.
+    for (let response = 0; response < 2; response += 1)
+      expect(await downloadSlackCsv(file, 'synthetic-token')).toMatch(
+        /exceeds the 16 KiB limit/,
+      );
   });
 });
 
@@ -89,61 +117,50 @@ describe('Slack PDF validation and download', () => {
     url_private: 'https://files.slack.com/files-pri/TTEST1-FTEST1/fixture.pdf',
   };
 
-  afterEach(() => vi.unstubAllGlobals());
-
-  it('checks metadata and downloads the exact bytes without following redirects', async () => {
-    const request = vi.fn().mockResolvedValue(new Response(pdf));
-    vi.stubGlobal('fetch', request);
-    for (const files of [
-      [attachment, attachment],
-      [{ ...attachment, name: 'fixture.txt' }],
-      [{ ...attachment, mimetype: 'image/png' }],
-      [
-        {
-          ...attachment,
-          url_private: 'https://files.slack.com.example/files-pri/fixture.pdf',
-        },
-      ],
-      [{ ...attachment, is_external: true }],
+  it('checks metadata and downloads the exact bytes', async () => {
+    fileServer.mockResolvedValue(new Response(pdf));
+    for (const file of [
+      { ...attachment, name: 'fixture.txt' },
+      { ...attachment, mimetype: 'image/png' },
+      {
+        ...attachment,
+        url_private: 'https://files.slack.com.example/files-pri/fixture.pdf',
+      },
+      { ...attachment, is_external: true },
     ])
-      expect(await downloadSlackFile(files, 'synthetic-token', 'pdf')).toMatch(
+      expect(await downloadSlackFile(file, 'synthetic-token', 'pdf')).toMatch(
         /one Slack-hosted text-based PDF/,
       );
     expect(
       await downloadSlackFile(
-        [{ ...attachment, size: 16 * 1024 + 1 }],
+        { ...attachment, size: 16 * 1024 + 1 },
         'synthetic-token',
         'pdf',
       ),
     ).toMatch(/exceeds the 16 KiB limit/);
-    expect(request).not.toHaveBeenCalled();
+    expect(fileServer).not.toHaveBeenCalled();
     expect(
-      await downloadSlackFile([attachment], 'synthetic-token', 'pdf'),
+      await downloadSlackFile(attachment, 'synthetic-token', 'pdf'),
     ).toEqual(pdf);
-    expect(request).toHaveBeenCalledExactlyOnceWith(
+    expect(fileServer).toHaveBeenCalledExactlyOnceWith(
       new URL(attachment.url_private),
-      expect.objectContaining({
-        headers: { authorization: 'Bearer synthetic-token' },
-        redirect: 'error',
-      }),
+      expect.objectContaining({ authorization: 'Bearer synthetic-token' }),
     );
   });
 
   it('rejects inaccessible, truncated, and mislabelled documents', async () => {
-    const request = vi
-      .fn()
+    fileServer
       .mockResolvedValueOnce(new Response('denied', { status: 403 }))
       .mockResolvedValueOnce(new Response(pdf.subarray(1)))
       .mockResolvedValueOnce(new Response(Buffer.alloc(pdf.length, 0x2e)));
-    vi.stubGlobal('fetch', request);
     expect(
-      await downloadSlackFile([attachment], 'synthetic-token', 'pdf'),
+      await downloadSlackFile(attachment, 'synthetic-token', 'pdf'),
     ).toMatch(/could not read/);
     expect(
-      await downloadSlackFile([attachment], 'synthetic-token', 'pdf'),
+      await downloadSlackFile(attachment, 'synthetic-token', 'pdf'),
     ).toMatch(/could not read/);
     expect(
-      await downloadSlackFile([attachment], 'synthetic-token', 'pdf'),
+      await downloadSlackFile(attachment, 'synthetic-token', 'pdf'),
     ).toMatch(/text-based PDF/);
   });
 });
@@ -161,45 +178,36 @@ describe('Slack PNG validation and download', () => {
     url_private: 'https://files.slack.com/files-pri/TTEST1-FTEST1/fixture.png',
   };
 
-  afterEach(() => vi.unstubAllGlobals());
-
   it('requires one small Slack-hosted PNG and returns its exact bytes', async () => {
-    const request = vi.fn().mockResolvedValue(new Response(png));
-    vi.stubGlobal('fetch', request);
-    for (const files of [
-      [file, file],
-      [{ ...file, name: 'fixture.jpg' }],
-      [{ ...file, mode: 'external' }],
-      [{ ...file, mode: 'snippet' }],
-      [{ ...file, is_external: true }],
-      [{ ...file, mimetype: 'image/jpeg' }],
-      [
-        {
-          ...file,
-          url_private: 'https://files.slack.com.example/files-pri/fixture.png',
-        },
-      ],
+    fileServer.mockResolvedValue(new Response(png));
+    for (const attachment of [
+      { ...file, name: 'fixture.jpg' },
+      { ...file, mode: 'external' },
+      { ...file, mode: 'snippet' },
+      { ...file, is_external: true },
+      { ...file, mimetype: 'image/jpeg' },
+      {
+        ...file,
+        url_private: 'https://files.slack.com.example/files-pri/fixture.png',
+      },
     ])
-      expect(await downloadSlackFile(files, 'synthetic-token', 'png')).toMatch(
-        /one Slack-hosted PNG/,
-      );
+      expect(
+        await downloadSlackFile(attachment, 'synthetic-token', 'png'),
+      ).toMatch(/one Slack-hosted PNG/);
     expect(
       await downloadSlackFile(
-        [{ ...file, size: 16 * 1024 + 1 }],
+        { ...file, size: 16 * 1024 + 1 },
         'synthetic-token',
         'png',
       ),
     ).toMatch(/exceeds the 16 KiB limit/);
-    expect(request).not.toHaveBeenCalled();
-    expect(await downloadSlackFile([file], 'synthetic-token', 'png')).toEqual(
+    expect(fileServer).not.toHaveBeenCalled();
+    expect(await downloadSlackFile(file, 'synthetic-token', 'png')).toEqual(
       png,
     );
-    expect(request).toHaveBeenCalledExactlyOnceWith(
+    expect(fileServer).toHaveBeenCalledExactlyOnceWith(
       new URL(file.url_private),
-      expect.objectContaining({
-        headers: { authorization: 'Bearer synthetic-token' },
-        redirect: 'error',
-      }),
+      expect.objectContaining({ authorization: 'Bearer synthetic-token' }),
     );
   });
 
@@ -214,10 +222,10 @@ describe('Slack PNG validation and download', () => {
       wide,
       tall,
     ]) {
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(bytes)));
+      fileServer.mockResolvedValueOnce(new Response(bytes));
       expect(
         await downloadSlackFile(
-          [{ ...file, size: bytes.length }],
+          { ...file, size: bytes.length },
           'synthetic-token',
           'png',
         ),
@@ -236,8 +244,6 @@ describe('Slack text and source validation', () => {
     url_private: 'https://files.slack.com/files-pri/TTEST1-FTEST1/fixture.ts',
   };
 
-  afterEach(() => vi.unstubAllGlobals());
-
   it.each([
     ['notes.md', 'text/markdown'],
     ['review.diff', 'text/x-diff'],
@@ -250,14 +256,13 @@ describe('Slack text and source validation', () => {
   ])(
     'classifies and downloads supported UTF-8 %s input',
     async (name, mimetype) => {
-      const request = vi.fn().mockResolvedValue(new Response(text));
-      vi.stubGlobal('fetch', request);
+      fileServer.mockResolvedValue(new Response(text));
       const file = { ...source, name, mimetype };
 
       expect(selectSlackFileKind(file)).toBe('text');
-      expect(
-        await downloadSlackFile([file], 'synthetic-token', 'text'),
-      ).toEqual(text);
+      expect(await downloadSlackFile(file, 'synthetic-token', 'text')).toEqual(
+        text,
+      );
     },
   );
 
@@ -274,21 +279,19 @@ describe('Slack text and source validation', () => {
     ])
       expect(selectSlackFileKind(file)).toBeUndefined();
 
-    const request = vi
-      .fn()
+    fileServer
       .mockResolvedValueOnce(new Response(Buffer.from([0x61, 0x00, 0x62])))
       .mockResolvedValueOnce(new Response(Buffer.from([0xff, 0xfe, 0xfd])));
-    vi.stubGlobal('fetch', request);
     expect(
       await downloadSlackFile(
-        [{ ...source, size: 3 }],
+        { ...source, size: 3 },
         'synthetic-token',
         'text',
       ),
     ).toMatch(/supported Slack-hosted UTF-8/);
     expect(
       await downloadSlackFile(
-        [{ ...source, size: 3 }],
+        { ...source, size: 3 },
         'synthetic-token',
         'text',
       ),
@@ -305,16 +308,11 @@ describe('Slack text and source validation', () => {
       url_private:
         'https://files.slack.com/files-pri/TTEST1-FTEST1/fixture.html',
     };
-    vi.stubGlobal(
-      'fetch',
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response(html, { headers: { 'content-type': 'text/html' } }),
-        ),
+    fileServer.mockResolvedValue(
+      new Response(html, { headers: { 'content-type': 'text/html' } }),
     );
 
-    expect(await downloadSlackFile([file], 'synthetic-token', 'text')).toEqual(
+    expect(await downloadSlackFile(file, 'synthetic-token', 'text')).toEqual(
       html,
     );
   });
@@ -334,18 +332,15 @@ describe('Slack JPEG validation and download', () => {
     url_private: 'https://files.slack.com/files-pri/TTEST1-FTEST1/fixture.jpg',
   };
 
-  afterEach(() => vi.unstubAllGlobals());
-
   it.each(['fixture.jpg', 'fixture.jpeg'])(
     'classifies and downloads one bounded %s image',
     async (name) => {
-      const request = vi.fn().mockResolvedValue(new Response(jpeg));
-      vi.stubGlobal('fetch', request);
+      fileServer.mockResolvedValue(new Response(jpeg));
       const attachment = { ...file, name };
 
       expect(selectSlackFileKind(attachment)).toBe('jpeg');
       expect(
-        await downloadSlackFile([attachment], 'synthetic-token', 'jpeg'),
+        await downloadSlackFile(attachment, 'synthetic-token', 'jpeg'),
       ).toEqual(jpeg);
     },
   );
@@ -356,10 +351,10 @@ describe('Slack JPEG validation and download', () => {
       const bytes = readFileSync(
         new URL('./fixtures/file-exchange/' + name, import.meta.url),
       );
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(bytes)));
+      fileServer.mockResolvedValue(new Response(bytes));
       const attachment = { ...file, name, size: bytes.length };
       await expect(
-        downloadSlackFile([attachment], 'synthetic-token', 'jpeg'),
+        downloadSlackFile(attachment, 'synthetic-token', 'jpeg'),
       ).resolves.toEqual(bytes);
     },
   );
@@ -370,10 +365,10 @@ describe('Slack JPEG validation and download', () => {
     const malformed = Buffer.from(jpeg);
     malformed.writeUInt16BE(0xffff, 4);
     for (const bytes of [jpeg.subarray(0, -2), malformed, wide]) {
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(bytes)));
+      fileServer.mockResolvedValueOnce(new Response(bytes));
       expect(
         await downloadSlackFile(
-          [{ ...file, size: bytes.length }],
+          { ...file, size: bytes.length },
           'synthetic-token',
           'jpeg',
         ),
