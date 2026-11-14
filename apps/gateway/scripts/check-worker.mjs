@@ -110,12 +110,11 @@ async function prepare(session) {
     args: [
       '-c',
       [
-        'set -eu',
+        'set -eux',
         'cd ' + fixtureDir,
         // Keep the Sandbox firewall CA that Pi needs for the real provider.
         'cat ${NODE_EXTRA_CA_CERTS:+"$NODE_EXTRA_CA_CERTS"} cert.pem > bundle.pem',
-        'cp /etc/hosts hosts',
-        "echo '127.0.0.1 openrouter.ai' >> hosts",
+        '{ grep -v "openrouter[.]ai" /etc/hosts; echo "127.0.0.1 openrouter.ai"; } > hosts',
         'chmod 644 bundle.pem hosts',
         'mount --bind hosts /etc/hosts',
         "getent hosts openrouter.ai | grep -q '^127[.]0[.]0[.]1 '",
@@ -125,7 +124,8 @@ async function prepare(session) {
     sudo: true,
     signal: signal(),
   });
-  assert.equal(setup.exitCode, 0, 'The openrouter.ai stand-in setup failed.');
+  if (setup.exitCode !== 0)
+    assert.fail('The stand-in setup failed: ' + (await setup.stderr()));
   // Job deadlines use the local clock.
   const now = Number(await setup.stdout({ signal: signal() }));
   const synced = now > before - 2_000 && now < Date.now() + 2_000;
