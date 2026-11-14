@@ -25,6 +25,7 @@ accounts.
 ## Documentation
 
 - [V1 quickstart](docs/service-setup.md)
+- [Make it your agent](docs/make-it-your-agent.md)
 - [V1 requirements and architecture](docs/spec/v1.md)
 - [Requirements traceability](docs/spec/traceability.md)
 - [Worker implementation](apps/worker/README.md)

@@ -11,7 +11,13 @@ import { RedisRunStore } from '../src/store.ts';
 
 const root = resolve(import.meta.dirname, '../../..');
 const workerDir = '/tmp/hydra-worker';
-const files = ['run.mjs', 'supervise.mjs', 'control.mjs', 'shared-notes.mjs'];
+const files = [
+  'run.mjs',
+  'supervise.mjs',
+  'control.mjs',
+  'shared-notes.mjs',
+  'instructions.md',
+];
 const packages = [
   'acpx@0.21.1',
   'pi-acp@0.0.34',
@@ -19,7 +25,9 @@ const packages = [
 ];
 const driveSize = 1024 ** 3;
 const deny = [
+  '0.0.0.0/8',
   '10.0.0.0/8',
+  '100.64.0.0/10',
   '127.0.0.0/8',
   '169.254.0.0/16',
   '172.16.0.0/12',
@@ -240,7 +248,9 @@ async function verifyAssets(session, source) {
       'cd /tmp/hydra-worker',
       'test -x node_modules/.bin/pi && test -x node_modules/.bin/pi-acp && test -x node_modules/.bin/acpx',
       'test -x /usr/bin/pdftotext && test -x /usr/bin/prlimit && command -v flock && command -v setpriv && command -v sysctl',
-      ...files.map((name) => 'node --check ' + name),
+      ...files
+        .filter((name) => name.endsWith('.mjs'))
+        .map((name) => 'node --check ' + name),
     ].join('\n'),
   ]);
   const result = await command(

@@ -1,14 +1,14 @@
-import { mkdtemp, mkdir, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 // The Sandbox entry point is plain JavaScript because it is copied directly
 // into the worker image.
 // @ts-expect-error No declaration file is shipped for the Sandbox entry point.
 import * as sandboxWorker from '../apps/worker/sandbox/run.mjs';
 
-const { buildPromptText, verifySavedSession } = sandboxWorker;
+const { buildPromptText, verifySavedSession, writePiLauncher } = sandboxWorker;
 
 type Attachment = {
   id: string;
@@ -292,5 +292,48 @@ describe('Sandbox worker Slack context prompt', () => {
     expect(() => buildPromptText(input)).toThrow(
       'Invalid Slack prompt metadata',
     );
+  });
+});
+
+describe('Sandbox worker instructions', () => {
+  const runId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+  it('launches Pi with the committed instructions and discovery off', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hydra-launcher-'));
+    const launcher = join(root, 'launch-pi');
+    const instructions = join(
+      import.meta.dirname,
+      '../apps/worker/sandbox/instructions.md',
+    );
+    try {
+      await writePiLauncher(launcher, '--tools "read_input"', runId);
+      expect(await readFile(launcher, 'utf8')).toBe(
+        `#!/bin/bash\nexec pi --provider openrouter --model "$HYDRA_MODEL" --thinking off --no-extensions --tools "read_input" --no-mcp --no-skills --no-context-files --append-system-prompt "${instructions}" "$@"\n`,
+      );
+      expect((await stat(launcher)).mode & 0o777).toBe(0o700);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails before writing the launcher when the instructions are missing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hydra-launcher-'));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(
+        writePiLauncher(
+          join(root, 'launch-pi'),
+          '',
+          runId,
+          join(root, 'missing.md'),
+        ),
+      ).rejects.toThrow();
+      expect(await readdir(root)).toEqual([]);
+      expect(log).toHaveBeenCalledWith(
+        JSON.stringify({ runId, phase: 'instructions_unavailable' }),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
