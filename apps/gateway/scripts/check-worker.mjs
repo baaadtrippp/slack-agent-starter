@@ -117,7 +117,7 @@ async function prepare(session) {
         '{ grep -v "openrouter[.]ai" /etc/hosts; echo "127.0.0.1 openrouter.ai"; } > hosts',
         'chmod 644 bundle.pem hosts',
         'mount --bind hosts /etc/hosts',
-        "getent hosts openrouter.ai | grep -q '^127[.]0[.]0[.]1 '",
+        'test "$(getent ahosts openrouter.ai | cut -d" " -f1 | sort -u)" = 127.0.0.1',
         'date +%s%3N',
       ].join('; '),
     ],
