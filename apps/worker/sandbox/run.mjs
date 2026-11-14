@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import {
   constants,
   glob,
@@ -14,6 +15,7 @@ import {
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { writeSyncedAtomic } from './control.mjs';
 import {
   isDriveFullError,
   readSharedNotes,
@@ -182,20 +184,17 @@ import { join } from 'node:path';
 import { Type } from 'typebox';
 
 export default function (pi) {
-  const artifactOutput = process.env.HYDRA_ARTIFACT_OUTPUT === '1';
   const formats = ${JSON.stringify(artifactFormats)};
-  const contentType = Type.String({ minLength: 1, maxLength: ${sourceByteLimit} });
   let reserved = false;
   pi.registerTool({
-    name: artifactOutput ? 'write_artifact' : 'write_csv',
+    name: 'write_artifact',
     label: 'Write result file',
     description: 'Save one UTF-8 result file for delivery to the originating Slack thread.',
-    parameters: artifactOutput
-      ? Type.Object({ format: Type.Unsafe({ type: 'string', enum: formats }), content: contentType })
-      : Type.Object({ csv: contentType }),
-    async execute(_id, args) {
-      const { format, content } = artifactOutput
-        ? args : { format: 'csv', content: args.csv };
+    parameters: Type.Object({
+      format: Type.Unsafe({ type: 'string', enum: formats }),
+      content: Type.String({ minLength: 1, maxLength: ${sourceByteLimit} }),
+    }),
+    async execute(_id, { format, content }) {
       if (!formats.includes(format) || typeof content !== 'string' ||
           !content.isWellFormed() || !content.length || content.includes(String.fromCharCode(0)) ||
           Buffer.byteLength(content) > ${sourceByteLimit})
@@ -231,7 +230,7 @@ export default function (pi) {
         content: [{ type: 'text', text: 'Saved ' + filename + '.' }],
         details: {
           sha256: createHash('sha256').update(bytes).digest('hex'),
-          ...(artifactOutput ? { format } : {}),
+          format,
         },
       };
     },
@@ -268,29 +267,22 @@ if (
 
 async function waitForSupervisor(job, stopSignal) {
   if (typeof process.send !== 'function') return;
-  stopSignal.throwIfAborted();
-  let timer;
-  const abort = () => rejectReady(cancelledRun);
-  let rejectReady = () => {};
-  const stopped = new Promise((_, reject) => {
-    rejectReady = reject;
-    stopSignal.addEventListener('abort', abort, { once: true });
-  });
+  // AbortSignal.timeout is unref'd; this timer keeps the worker alive to fail
+  // cleanly when the supervisor closes the channel before ready.
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), 5_000);
   let message;
   try {
-    message = await Promise.race([
-      new Promise((resolve) => process.once('message', resolve)),
-      new Promise((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error('Worker supervisor did not become ready')),
-          5_000,
-        );
-      }),
-      stopped,
-    ]);
+    [message] = await once(process, 'message', {
+      signal: AbortSignal.any([stopSignal, timeout.signal]),
+    });
+  } catch (error) {
+    if (stopSignal.aborted) throw cancelledRun;
+    if (timeout.signal.aborted)
+      throw new Error('Worker supervisor did not become ready');
+    throw error;
   } finally {
     clearTimeout(timer);
-    stopSignal.removeEventListener('abort', abort);
     if (process.connected) process.disconnect();
   }
   if (
@@ -305,7 +297,7 @@ async function waitForSupervisor(job, stopSignal) {
 async function run(job, model, key, stopSignal = new AbortController().signal) {
   if (
     job?.version !== 1 ||
-    !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(job.runId) ||
+    !uuid.test(job.runId) ||
     !Number.isSafeInteger(job.generation) ||
     job.generation < 1 ||
     !Number.isSafeInteger(job.deadline) ||
@@ -317,17 +309,11 @@ async function run(job, model, key, stopSignal = new AbortController().signal) {
     !validSharedNoteJob(job) ||
     !isValidSources(job.input.sources) ||
     (job.artifactOutput !== undefined && job.artifactOutput !== true) ||
-    (job.csvOutput !== undefined && job.csvOutput !== true) ||
-    (job.artifactOutput && job.csvOutput) ||
     !/^[0-9a-f]{64}$/.test(job.callbackToken) ||
     (job.session !== undefined &&
-      (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(
-        job.session?.seedRunId ?? '',
-      ) ||
+      (!uuid.test(job.session?.seedRunId ?? '') ||
         job.session.seedRunId === job.runId ||
-        !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(
-          job.session?.nativeId ?? '',
-        ) ||
+        !uuid.test(job.session?.nativeId ?? '') ||
         typeof job.session?.adapterId !== 'string' ||
         !job.session.adapterId ||
         job.session.adapterId.length > 128 ||
@@ -543,11 +529,7 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
   const inputExtension = join(scratch, 'read-staged-input.ts');
   const outputExtension = join(scratch, 'write-artifact.ts');
   const results = join(root, 'results');
-  const outputTool = job.artifactOutput
-    ? 'write_artifact'
-    : job.csvOutput
-      ? 'write_csv'
-      : undefined;
+  const outputTool = job.artifactOutput ? 'write_artifact' : undefined;
   let before;
   let adapterId;
   const current = (job.input.sources ?? []).map((source, index) => ({
@@ -655,7 +637,6 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
         HYDRA_RUN_ID: job.runId,
         ...(sources.length ? { HYDRA_INPUT_DATA: inputData } : {}),
         ...(outputTool ? { HYDRA_RESULTS: results } : {}),
-        ...(job.artifactOutput ? { HYDRA_ARTIFACT_OUTPUT: '1' } : {}),
       },
       permissionMode: 'deny-all',
       fs: false,
@@ -1267,37 +1248,6 @@ export async function writeRollbackCheckpoint(scratch, job, before) {
   );
 }
 
-async function writeSyncedAtomic(path, value) {
-  const temporary = path + '.' + randomUUID() + '.tmp';
-  let published = false;
-  try {
-    const file = await open(
-      temporary,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
-      0o600,
-    );
-    try {
-      await file.writeFile(value);
-      await file.sync();
-    } finally {
-      await file.close();
-    }
-    await rename(temporary, path);
-    published = true;
-    const directory = await open(
-      dirname(path),
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-    );
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
-    }
-  } finally {
-    if (!published) await rm(temporary, { force: true }).catch(() => {});
-  }
-}
-
 export async function verifySavedSession(
   reference,
   sessions,
@@ -1351,7 +1301,6 @@ async function readNativeSession(sessions) {
     .split('\n')
     .map((line) => JSON.parse(line));
   const nativeId = records[0]?.type === 'session' ? records[0].id : undefined;
-  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(nativeId ?? ''))
-    throw new Error('Invalid native session ID');
+  if (!uuid.test(nativeId ?? '')) throw new Error('Invalid native session ID');
   return { file: files[0], nativeId, records, source, sourceBytes };
 }
