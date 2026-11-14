@@ -104,7 +104,6 @@ async function prepare(session) {
     })),
     { signal: signal() },
   );
-  const before = Date.now();
   const setup = await session.runCommand({
     cmd: 'bash',
     args: [
@@ -124,11 +123,12 @@ async function prepare(session) {
     sudo: true,
     signal: signal(),
   });
+  const after = Date.now();
   if (setup.exitCode !== 0)
     assert.fail('The stand-in setup failed: ' + (await setup.stderr()));
-  // Job deadlines use the local clock.
+  // Job deadlines use the local clock. The return delay counts toward 2 s.
   const now = Number(await setup.stdout({ signal: signal() }));
-  const synced = now > before - 2_000 && now < Date.now() + 2_000;
+  const synced = Math.abs(after - now) < 2_000;
   assert.ok(synced, 'The local and Sandbox clocks differ by 2 s or more.');
   await session.runCommand({
     cmd: 'node',
