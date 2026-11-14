@@ -14,6 +14,7 @@ import {
 import { RedisRunStore } from '../src/store.ts';
 
 const fixtureDir = '/tmp/check-worker';
+const statePath = fixtureDir + '/state.json';
 const signal = (ms = 20_000) => AbortSignal.timeout(ms);
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const [recordArg, ...extra] = process.argv.slice(2);
@@ -62,6 +63,7 @@ const job = () => ({
   generation: 1,
   callbackUrl: 'https://127.0.0.1:8443/api/worker/callback',
   callbackToken: randomBytes(32).toString('hex'),
+  artifactOutput: true,
 });
 const first = job();
 first.input = {
@@ -70,7 +72,6 @@ first.input = {
 };
 const reply = job();
 reply.input = { text: 'Check turn two ' + reply.runId };
-reply.artifactOutput = true;
 const config = {
   first: first.runId,
   reply: reply.runId,
@@ -81,10 +82,9 @@ const config = {
   ),
 };
 
-async function readState(session) {
-  const path = fixtureDir + '/state.json';
+async function read(session, path) {
   const bytes = await session.readFileToBuffer({ path }, { signal: signal() });
-  return bytes && JSON.parse(bytes.toString());
+  return bytes?.toString();
 }
 
 // Points openrouter.ai at the loopback stand-in and starts both servers.
@@ -104,6 +104,7 @@ async function prepare(session) {
     })),
     { signal: signal() },
   );
+  const before = Date.now();
   const setup = await session.runCommand({
     cmd: 'bash',
     args: [
@@ -117,12 +118,18 @@ async function prepare(session) {
         "echo '127.0.0.1 openrouter.ai' >> hosts",
         'chmod 644 bundle.pem hosts',
         'mount --bind hosts /etc/hosts',
+        "getent hosts openrouter.ai | grep -q '^127[.]0[.]0[.]1 '",
+        'date +%s%3N',
       ].join('; '),
     ],
     sudo: true,
     signal: signal(),
   });
-  assert.equal(setup.exitCode, 0, 'The stand-in setup failed.');
+  assert.equal(setup.exitCode, 0, 'The openrouter.ai stand-in setup failed.');
+  // Job deadlines use the local clock.
+  const now = Number(await setup.stdout({ signal: signal() }));
+  const synced = now > before - 2_000 && now < Date.now() + 2_000;
+  assert.ok(synced, 'The local and Sandbox clocks differ by 2 s or more.');
   await session.runCommand({
     cmd: 'node',
     args: ['fixture.mjs', 'config.json', 'state.json'],
@@ -131,7 +138,7 @@ async function prepare(session) {
     detached: true,
     signal: signal(),
   });
-  for (let attempt = 0; !(await readState(session)); attempt += 1) {
+  for (let attempt = 0; !(await read(session, statePath)); attempt += 1) {
     assert.ok(attempt < 40, 'The stand-in servers did not start.');
     await delay(250);
   }
@@ -162,14 +169,13 @@ async function run(session, job) {
   });
   const finished = await command.wait({ signal: signal(70_000) });
   const path = '/workspace/runs/' + job.runId + '/result.json';
-  const saved = await session.readFileToBuffer({ path }, { signal: signal() });
-  const result = saved && JSON.parse(saved.toString());
-  const { callbacks, errors } = await readState(session);
-  assert.ok(
-    finished.exitCode === 0 && result?.type === 'completed',
-    'Run failed: ' + (await finished.stderr()) + JSON.stringify(errors),
-  );
+  const result = JSON.parse((await read(session, path)) ?? 'null');
+  const state = JSON.parse(await read(session, statePath));
+  const { callbacks, models, errors } = state;
+  if (finished.exitCode !== 0 || result?.type !== 'completed')
+    assert.fail('Run failed: ' + (await finished.stderr()) + errors.join());
   assert.deepEqual(errors, []);
+  assert.ok(models.includes(job.runId), 'The stand-in model was not used.');
   const done = callbacks.filter(
     (callback) => callback.runId === job.runId && callback.type !== 'working',
   );
@@ -180,6 +186,7 @@ async function run(session, job) {
 try {
   const settings = parseEnv(bootstrap('setup'));
   const { revision } = JSON.parse(readFileSync(record, 'utf8'));
+  console.log('Tested commit: ' + revision);
   await client.connect();
   const managed = createManagedWorker(
     {
@@ -203,25 +210,24 @@ try {
   // Stop the session as the gateway does after a run; the next getSession
   // resumes the Sandbox from the startup snapshot on the same Drive.
   await managed.stopIfIdle(session);
-  let replacement;
-  for (let attempt = 0; !replacement; attempt += 1) {
+  let resumed;
+  for (let attempt = 0; !resumed; attempt += 1) {
     assert.ok(attempt < 60, 'The worker did not resume.');
     await delay(1_000);
-    replacement = await managed.getSession(Date.now() + 25_000);
+    resumed = await managed.getSession(Date.now() + 25_000).catch(() => {});
   }
-  assert.notEqual(replacement.sessionId, session.sessionId);
+  assert.notEqual(resumed.sessionId, session.sessionId);
 
-  await prepare(replacement);
+  await prepare(resumed);
   reply.session = firstResult.session;
-  const replyResult = await run(replacement, reply);
+  const replyResult = await run(resumed, reply);
   for (const key of ['seedRunId', 'nativeId', 'adapterId'])
     assert.equal(replyResult.session?.[key], firstResult.session[key]);
   assert.ok(replyResult.session.revision > firstResult.session.revision);
   assert.equal(replyResult.artifact?.sha256, sha256(artifact));
   const path = '/workspace/runs/' + reply.runId + '/results/result.csv';
-  const saved = await replacement.readFileToBuffer({ path });
-  assert.equal(saved?.toString(), artifact);
-  console.log(JSON.stringify({ passed: true, revision }));
+  assert.equal(await read(resumed, path), artifact);
+  console.log('Worker check passed.');
 } catch (error) {
   console.error('Worker check failed: ' + (error?.message ?? error));
   process.exitCode = 1;

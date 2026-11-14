@@ -7,7 +7,7 @@ import { createServer } from 'node:https';
 const [configPath, statePath] = process.argv.slice(2);
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
 const tls = { cert: readFileSync('cert.pem'), key: readFileSync('key.pem') };
-const state = { callbacks: [], errors: [] };
+const state = { callbacks: [], models: [], errors: [] };
 let listening = 0;
 
 function save() {
@@ -67,14 +67,15 @@ function toolCall(name, args) {
 // retained CSV, saves the artifact, then answers.
 function respond({ messages, tools = [] }) {
   const latest = JSON.stringify(messages.findLast((m) => m.role === 'user'));
+  const runId = [config.first, config.reply].find((id) => latest.includes(id));
+  assert.ok(runId, 'Unknown model request');
+  state.models.push(runId);
+  save();
   const names = tools.map((tool) => tool.function.name);
-  const results = messages.filter((m) => m.role === 'tool');
-  if (latest.includes(config.first)) {
-    assert.deepEqual(names, ['read_input']);
-    return chunk({ content: 'First turn done.' }, 'stop');
-  }
-  assert.ok(latest.includes(config.reply), 'Unknown model request');
   assert.deepEqual(names, ['read_input', 'write_artifact']);
+  const results = messages.filter((m) => m.role === 'tool');
+  if (runId === config.first)
+    return chunk({ content: 'First turn done.' }, 'stop');
   assert.ok(JSON.stringify(messages).includes(config.first), 'Lost turn one');
   if (!results.length) return toolCall('read_input', { source: 'input-1' });
   assert.ok(JSON.stringify(results[0]).includes(config.csvMarker));

@@ -63,14 +63,22 @@ CHECK_RECORD="$(mktemp -d)/check-record.json"
 )
 ```
 
-It runs bootstrap setup on that record, which builds a separate worker from the
-commit and reads back its egress policy. Loopback stand-ins inside the worker
-answer for OpenRouter and the gateway callback. Jobs use the gateway's launch
-command. A first run stages a CSV; after the gateway's idle stop, a new session
-resumes on the same Drive, and a reply continues the exact native session, reads
-the retained CSV, and saves a file with `write_artifact`.
+It bootstraps a separate worker from the commit, with loopback stand-ins for
+OpenRouter and the gateway callback. A first run stages a CSV; after the
+gateway's idle stop, a new session resumes on the same Drive, and a reply
+continues the exact native session, reads the retained CSV, and saves a file
+with `write_artifact`. It prints the tested commit, then runs bootstrap cleanup
+and removes the check worker's Redis records, also after a failure. This is
+provider integration evidence with a stand-in model, not proof of the paid model
+path or live Slack. A follow-up pull request adds Stop with a running peer and
+an optional paid OpenRouter turn.
 
-The check prints the tested commit, then always runs bootstrap cleanup and
-removes the check worker's Redis records. If cleanup fails, retry it with
-`bootstrap-worker.mjs cleanup "$CHECK_RECORD"`. This is provider integration
-evidence with a stand-in model, not proof of the paid model path or live Slack.
+An interrupt such as Ctrl-C skips cleanup. Then, or if cleanup failed, run:
+
+```sh
+(
+  unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$SETUP_ENV")
+  node --env-file="$SETUP_ENV" \
+    apps/gateway/scripts/bootstrap-worker.mjs cleanup "$CHECK_RECORD"
+)
+```
