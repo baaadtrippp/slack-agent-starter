@@ -50,9 +50,9 @@ Slack ingress is disabled and all accepted runs are terminal.
 ## Check the worker
 
 `apps/gateway/scripts/check-worker.mjs` checks the worker on a real Sandbox and
-Drive without Slack or model spend. Run it from a clean checkout of the commit
-under test, with the quickstart's `SETUP_ENV`, a new record path outside the
-clone, and `openssl` on `PATH`.
+Drive without Slack. Unless you add `--paid`, it spends nothing on a model. Run
+it from a clean checkout of the commit under test, with the quickstart's
+`SETUP_ENV`, a new record path outside the clone, and `openssl` on `PATH`.
 
 ```sh
 CHECK_RECORD="$(mktemp -d)/check-record.json"
@@ -67,11 +67,20 @@ It bootstraps a separate worker from the commit, with loopback stand-ins for
 OpenRouter and the gateway callback. A first run stages a CSV; after the
 gateway's idle stop, a new session resumes on the same Drive, and a reply
 continues the exact native session, reads the retained CSV, and saves a file
-with `write_artifact`. It prints the tested commit, then runs bootstrap cleanup
-and removes the check worker's Redis records, also after a failure. This is
-provider integration evidence with a stand-in model, not proof of the paid model
-path or live Slack. A follow-up pull request adds Stop with a running peer and
-an optional paid OpenRouter turn.
+with `write_artifact`. While the reply runs, a new run in another thread gets
+the gateway's Stop request; it ends stopped without an answer, and the reply
+still completes. It prints the tested commit, then runs bootstrap cleanup and
+removes the check worker's Redis records, also after a failure. This is provider
+integration evidence with a stand-in model, not proof of the paid model path or
+live Slack.
+
+With `--paid` (for example `check-worker.mjs --paid "$CHECK_RECORD"`), the check
+then removes the stand-in's `openrouter.ai` override and runs one real turn with
+`OPENROUTER_MODEL`. The Sandbox firewall adds the setup's `OPENROUTER_API_KEY`,
+as in production. The model is asked to repeat a random code, and the answer
+must contain it. This proves the paid model path from the worker, for the cost
+of one small model call. The callback is still a stand-in, so it does not prove
+live Slack.
 
 An interrupt such as Ctrl-C skips cleanup. Then, or if cleanup failed, run:
 
