@@ -9,6 +9,8 @@ const config = JSON.parse(readFileSync(configPath, 'utf8'));
 const tls = { cert: readFileSync('cert.pem'), key: readFileSync('key.pem') };
 const state = { callbacks: [], models: [], errors: [] };
 let listening = 0;
+let release;
+const stopClosed = new Promise((resolve) => (release = resolve));
 
 function save() {
   writeFileSync(statePath + '.tmp', JSON.stringify(state));
@@ -64,13 +66,19 @@ function toolCall(name, args) {
 }
 
 // Scripted turns: the first run answers at once; the resumed reply reads the
-// retained CSV, saves the artifact, then answers.
-function respond({ messages, tools = [] }) {
+// retained CSV, saves the artifact, then answers. The stopped run's request
+// stays open until Stop closes it, and the reply waits for that, so both runs
+// are active when the check stops one.
+async function respond({ messages, tools = [] }, response) {
   const latest = JSON.stringify(messages.findLast((m) => m.role === 'user'));
-  const runId = [config.first, config.reply].find((id) => latest.includes(id));
+  const runId = [config.first, config.reply, config.stopped].find((id) =>
+    latest.includes(id),
+  );
   assert.ok(runId, 'Unknown model request');
   state.models.push(runId);
   save();
+  if (runId === config.stopped) return void response.once('close', release);
+  if (runId === config.reply) await stopClosed;
   const names = tools.map((tool) => tool.function.name);
   assert.deepEqual(names, ['read_input', 'write_artifact']);
   const results = messages.filter((m) => m.role === 'tool');
@@ -90,7 +98,8 @@ function respond({ messages, tools = [] }) {
 serve(443, async (request, response) => {
   if (request.url !== '/api/v1/chat/completions')
     return void response.writeHead(404).end();
-  const body = respond(await json(request));
+  const body = await respond(await json(request), response);
+  if (!body) return;
   response.writeHead(200, { 'content-type': 'text/event-stream' });
   response.end(body + 'data: [DONE]\n\n');
 });

@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { parseEnv } from 'node:util';
+import { parseArgs, parseEnv } from 'node:util';
 import { createClient } from 'redis';
 import {
   createManagedWorker,
@@ -17,10 +17,14 @@ const fixtureDir = '/tmp/check-worker';
 const statePath = fixtureDir + '/state.json';
 const signal = (ms = 20_000) => AbortSignal.timeout(ms);
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
-const [recordArg, ...extra] = process.argv.slice(2);
+const { values, positionals } = parseArgs({
+  options: { paid: { type: 'boolean', default: false } },
+  allowPositionals: true,
+});
+const [recordArg, ...extra] = positionals;
 assert.ok(
   recordArg && !extra.length,
-  'Usage: node apps/gateway/scripts/check-worker.mjs CHECK_RECORD',
+  'Usage: node apps/gateway/scripts/check-worker.mjs [--paid] CHECK_RECORD',
 );
 const record = resolve(recordArg);
 assert.ok(!existsSync(record), 'Use a new CHECK_RECORD path.');
@@ -72,13 +76,22 @@ first.input = {
 };
 const reply = job();
 reply.input = { text: 'Check turn two ' + reply.runId };
+const stopped = job();
+stopped.input = { text: 'Check stop ' + stopped.runId };
+const paidMarker = randomBytes(8).toString('hex');
+const paid = job();
+paid.input = { text: 'Reply with this exact code only: ' + paidMarker };
 const config = {
   first: first.runId,
   reply: reply.runId,
+  stopped: stopped.runId,
   csvMarker,
   artifact,
   tokens: Object.fromEntries(
-    [first, reply].map(({ runId, callbackToken }) => [runId, callbackToken]),
+    [first, reply, stopped, paid].map(({ runId, callbackToken }) => [
+      runId,
+      callbackToken,
+    ]),
   ),
 };
 
@@ -144,10 +157,10 @@ async function prepare(session) {
   }
 }
 
-// Launches one job the way the gateway does and returns its saved result.
-async function run(session, job) {
+// Launches one job the way the gateway does.
+function launch(session, job) {
   job.deadline = Date.now() + 60_000;
-  const command = await session.runCommand({
+  return session.runCommand({
     cmd: 'bash',
     args: [
       '-c',
@@ -167,6 +180,11 @@ async function run(session, job) {
     timeoutMs: 60_000,
     signal: signal(),
   });
+}
+
+// Launches one job and returns its saved result.
+async function run(session, job) {
+  const command = await launch(session, job);
   const finished = await command.wait({ signal: signal(70_000) });
   const path = '/workspace/runs/' + job.runId + '/result.json';
   const result = JSON.parse((await read(session, path)) ?? 'null');
@@ -175,12 +193,61 @@ async function run(session, job) {
   if (finished.exitCode !== 0 || result?.type !== 'completed')
     assert.fail('Run failed: ' + (await finished.stderr()) + errors.join());
   assert.deepEqual(errors, []);
-  assert.ok(models.includes(job.runId), 'The stand-in model was not used.');
+  if (job !== paid)
+    assert.ok(models.includes(job.runId), 'The stand-in model was not used.');
   const done = callbacks.filter(
     (callback) => callback.runId === job.runId && callback.type !== 'working',
   );
   assert.deepEqual(done, [{ runId: job.runId, type: 'completed' }]);
   return result;
+}
+
+// Once the job and the reply both wait on the stand-in model, sends the
+// gateway's Stop request for the job. The stand-in holds the reply until the
+// stopped run's model request closes.
+async function stop(session, job) {
+  await launch(session, job);
+  for (let attempt = 0; ; attempt += 1) {
+    const { models } = JSON.parse(await read(session, statePath));
+    if (models.includes(job.runId) && models.includes(reply.runId)) break;
+    assert.ok(attempt < 120, 'The runs did not reach the stand-in model.');
+    await delay(250);
+  }
+  // The control request that inspectSandboxRun sends for Stop.
+  const control = await session.runCommand({
+    cmd: 'node',
+    args: ['/tmp/hydra-worker/control.mjs'],
+    cwd: '/tmp/hydra-worker',
+    env: {
+      HYDRA_CONTROL: JSON.stringify({
+        version: 1,
+        runId: job.runId,
+        generation: job.generation,
+        action: 'cancel',
+      }),
+    },
+    timeoutMs: 15_000,
+    signal: signal(),
+  });
+  assert.equal(control.exitCode, 0, 'The Stop request failed.');
+  // The gateway confirms this proof as stopped for a run without a session.
+  assert.partialDeepStrictEqual(
+    JSON.parse(await control.stdout({ signal: signal() })),
+    {
+      version: 1,
+      runId: job.runId,
+      generation: job.generation,
+      state: 'exited',
+      processesExited: true,
+      stopRequested: true,
+      sessionSafe: 'uncommitted',
+    },
+  );
+  const { callbacks } = JSON.parse(await read(session, statePath));
+  const done = callbacks.filter(
+    (callback) => callback.runId === job.runId && callback.type !== 'working',
+  );
+  assert.deepEqual(done, [], 'The stopped run answered.');
 }
 
 try {
@@ -220,13 +287,32 @@ try {
 
   await prepare(resumed);
   reply.session = firstResult.session;
-  const replyResult = await run(resumed, reply);
+  const [replyResult] = await Promise.all([
+    run(resumed, reply),
+    stop(resumed, stopped),
+  ]);
   for (const key of ['seedRunId', 'nativeId', 'adapterId'])
     assert.equal(replyResult.session?.[key], firstResult.session[key]);
   assert.ok(replyResult.session.revision > firstResult.session.revision);
   assert.equal(replyResult.artifact?.sha256, sha256(artifact));
   const path = '/workspace/runs/' + reply.runId + '/results/result.csv';
   assert.equal(await read(resumed, path), artifact);
+  if (values.paid) {
+    // Remove the stand-in override so the next run reaches the real host.
+    const restore = await resumed.runCommand({
+      cmd: 'bash',
+      args: [
+        '-c',
+        'umount /etc/hosts && getent ahosts openrouter.ai | grep -qv "^127[.]"',
+      ],
+      sudo: true,
+      signal: signal(),
+    });
+    assert.equal(restore.exitCode, 0, 'openrouter.ai is still overridden.');
+    const paidResult = await run(resumed, paid);
+    assert.ok(paidResult.text.includes(paidMarker), 'The paid answer differs.');
+    console.log('Paid OpenRouter turn passed.');
+  }
   console.log('Worker check passed.');
 } catch (error) {
   console.error('Worker check failed: ' + (error?.message ?? error));
