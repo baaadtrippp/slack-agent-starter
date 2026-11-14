@@ -32,7 +32,7 @@ if (
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
   try {
-    await supervise(JSON.parse(process.env.HYDRA_JOB ?? 'null'));
+    await supervise(JSON.parse(process.env.WORKER_JOB ?? 'null'));
   } catch {
     console.error('Sandbox worker supervision failed');
     process.exitCode = 1;
@@ -42,7 +42,7 @@ if (
 export async function supervise(
   job,
   {
-    controls = '/tmp/hydra-worker-control',
+    controls = '/tmp/worker-control',
     workspace = '/workspace',
     worker = join(import.meta.dirname, 'run.mjs'),
     ready = sendReady,
@@ -63,7 +63,7 @@ export async function supervise(
 
   const child = spawn(process.execPath, [worker], {
     detached: true,
-    env: { ...process.env, HYDRA_RUN_ID: job.runId },
+    env: { ...process.env, WORKER_RUN_ID: job.runId },
     stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
   });
   if (!child.pid) throw new Error('Worker process did not start');
@@ -434,7 +434,7 @@ async function verifyStoppedSessionState(job, result, workspace) {
 /** Returns this run's proven scratch directory, or undefined when absent. */
 async function ownedScratch(job) {
   const scratch = join(
-    '/tmp/hydra-worker-state',
+    '/tmp/worker-state',
     job.session?.seedRunId ?? job.runId,
   );
   const owner = await readRegularJson(join(scratch, 'rollback-owner.json'));
@@ -582,7 +582,7 @@ async function verifyAdapterEntry(session, workspace) {
   const entry = map?.sessions?.[session.adapterId];
   const { file } = await verifyCurrentSession(session, workspace);
   const expectedFile = join(
-    '/tmp/hydra-worker-state',
+    '/tmp/worker-state',
     session.seedRunId,
     'agent',
     'sessions',

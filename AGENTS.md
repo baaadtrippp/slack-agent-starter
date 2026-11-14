@@ -41,6 +41,11 @@ State assumptions and success criteria. Surface an ambiguity when it changes
 product behavior or architecture. Prefer the simplest approach that proves the
 required behavior.
 
+For a non-trivial change, state the user outcome, the F/AC IDs and open
+decisions it touches, the non-goals, the smallest end-to-end implementation, and
+the evidence and its kind (deterministic, provider integration, or live Slack)
+before writing code.
+
 ## Implementation rules
 
 - Write the minimum code the change requires. Do not add speculative

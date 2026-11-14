@@ -103,9 +103,9 @@ describe('Sandbox run inspection', () => {
     }
     expect(runCommand).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        args: ['/tmp/hydra-worker/control.mjs'],
+        args: ['/tmp/worker/control.mjs'],
         env: {
-          HYDRA_CONTROL: JSON.stringify({
+          WORKER_CONTROL: JSON.stringify({
             version: 1,
             runId: run.runId,
             generation: run.generation,
@@ -153,7 +153,7 @@ describe('Sandbox run inspection', () => {
     expect(runCommand).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         env: {
-          HYDRA_CONTROL: JSON.stringify({
+          WORKER_CONTROL: JSON.stringify({
             version: 1,
             runId: run.runId,
             generation: 1,
@@ -171,7 +171,7 @@ describe('Sandbox run inspection', () => {
     expect(runCommand).toHaveBeenLastCalledWith(
       expect.objectContaining({
         env: {
-          HYDRA_CONTROL: JSON.stringify({
+          WORKER_CONTROL: JSON.stringify({
             version: 1,
             runId: run.runId,
             generation: run.generation,
@@ -335,8 +335,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
     // The Sandbox worker delivers its result callback before it exits.
     mockManagedSandbox({
       sessionId,
-      runCommand: async (command: { env: { HYDRA_JOB: string } }) => {
-        job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
+      runCommand: async (command: { env: { WORKER_JOB: string } }) => {
+        job = JSON.parse(command.env.WORKER_JOB) as WorkerJob;
         const callback = new Request(
           'https://gateway.example/api/worker/callback',
           {
@@ -474,7 +474,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         };
       });
       const sessionRunCommand = vi.fn().mockImplementation(async (command) => {
-        job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
+        job = JSON.parse(command.env.WORKER_JOB) as WorkerJob;
         const encoded = await observer
           .getClient()
           .get(`slack-agent:m1:run:${job.runId}`);
@@ -555,8 +555,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
               args: [
                 '-c',
                 expect.any(String),
-                'hydra-worker',
-                '/tmp/hydra-worker/supervise.mjs',
+                'worker',
+                '/tmp/worker/supervise.mjs',
               ],
             }),
           );
@@ -670,7 +670,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       let stagedBeforeLaunch = false;
       const runCommand = vi.fn().mockImplementation(async (command) => {
         stagedBeforeLaunch = staged;
-        job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
+        job = JSON.parse(command.env.WORKER_JOB) as WorkerJob;
         return { wait: async () => ({ exitCode: 1 }) };
       });
       const { stop: sessionStop } = mockManagedSandbox({

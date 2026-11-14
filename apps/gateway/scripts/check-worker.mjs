@@ -167,17 +167,12 @@ function launch(session, job) {
   job.deadline = Date.now() + 60_000;
   return session.runCommand({
     cmd: 'bash',
-    args: [
-      '-c',
-      MANAGED_WORKER_LAUNCH,
-      'hydra-worker',
-      '/tmp/hydra-worker/supervise.mjs',
-    ],
+    args: ['-c', MANAGED_WORKER_LAUNCH, 'worker', '/tmp/worker/supervise.mjs'],
     sudo: true,
-    cwd: '/tmp/hydra-worker',
+    cwd: '/tmp/worker',
     env: {
-      HYDRA_JOB: JSON.stringify(job),
-      HYDRA_MODEL: process.env.OPENROUTER_MODEL,
+      WORKER_JOB: JSON.stringify(job),
+      WORKER_MODEL: process.env.OPENROUTER_MODEL,
       OPENROUTER_API_KEY: 'sandbox-firewall',
       NODE_EXTRA_CA_CERTS: fixtureDir + '/bundle.pem',
     },
@@ -221,10 +216,10 @@ async function stop(session, job) {
   // The control request that inspectSandboxRun sends for Stop.
   const control = await session.runCommand({
     cmd: 'node',
-    args: ['/tmp/hydra-worker/control.mjs'],
-    cwd: '/tmp/hydra-worker',
+    args: ['/tmp/worker/control.mjs'],
+    cwd: '/tmp/worker',
     env: {
-      HYDRA_CONTROL: JSON.stringify({
+      WORKER_CONTROL: JSON.stringify({
         version: 1,
         runId: job.runId,
         generation: job.generation,
@@ -329,7 +324,7 @@ try {
     if (prefix) process.stdout.write(bootstrap('cleanup'));
   } finally {
     // Remove only this check worker's managed-runtime and idle records.
-    if (/^slack-v1-[a-f0-9]{24}$/.test(prefix)) {
+    if (/^slack-agent-[a-f0-9]{24}$/.test(prefix)) {
       if (!client.isOpen) await client.connect();
       for (const kind of ['runtime', 'idle'])
         for await (const keys of client.scanIterator({

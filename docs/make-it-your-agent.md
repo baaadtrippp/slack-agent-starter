@@ -52,7 +52,7 @@ to copy:
    `tools`, which becomes Pi's `--tools` list. Pi offers the model only the
    tools that `--tools` names, so Pi's built-in tools stay off.
 3. Values the tool needs at run time go into `agentProcessEnv`, as
-   `HYDRA_RESULTS` does for `write_artifact`.
+   `WORKER_RESULTS` does for `write_artifact`.
 
 Add your extension the same way. The stand-in model in
 [`check-worker-fixture.mjs`](../apps/gateway/scripts/check-worker-fixture.mjs)

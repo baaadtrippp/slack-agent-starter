@@ -25,7 +25,7 @@ import * as workerSupervisor from '../apps/worker/sandbox/supervise.mjs';
 const { supervise, verifyGroupMembership } = workerSupervisor;
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), 'hydra-control-'));
+  const root = await mkdtemp(join(tmpdir(), 'test-control-'));
   const controls = join(root, 'controls');
   const workspace = join(root, 'workspace');
   await mkdir(controls);
@@ -52,7 +52,7 @@ async function runBeforeReady(reply: (child: ChildProcess) => void) {
     {
       env: {
         ...process.env,
-        HYDRA_JOB: JSON.stringify({ runId: randomUUID(), generation: 1 }),
+        WORKER_JOB: JSON.stringify({ runId: randomUUID(), generation: 1 }),
       },
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
     },
@@ -120,7 +120,7 @@ describe('Sandbox worker control', () => {
   test('accepts only exact marked process-group membership', () => {
     const runId = randomUUID();
     const record = { pid: 11, pgid: 11, sessionId: 11 };
-    const marker = `A=1\0HYDRA_RUN_ID=${runId}\0B=2\0`;
+    const marker = `A=1\0WORKER_RUN_ID=${runId}\0B=2\0`;
     const leader = {
       pid: 11,
       pgid: 11,
@@ -136,7 +136,7 @@ describe('Sandbox worker control', () => {
           pid: 21,
           pgid: 21,
           sessionId: 21,
-          environment: 'HYDRA_RUN_ID=peer\0',
+          environment: 'WORKER_RUN_ID=peer\0',
         },
       ]),
     ).not.toThrow();
@@ -145,7 +145,7 @@ describe('Sandbox worker control', () => {
       verifyGroupMembership(record, runId, [
         {
           ...leader,
-          environment: `HYDRA_RUN_ID=${runId}-prefix\0`,
+          environment: `WORKER_RUN_ID=${runId}-prefix\0`,
         },
       ]),
     ).toThrow('unmarked process');
@@ -448,10 +448,10 @@ import { join } from 'node:path';
 
 process.once('message', async (message) => {
   assert.equal(message.type, 'ready');
-  const path = join(process.env.HYDRA_TEST_CONTROLS, message.runId + '.json');
+  const path = join(process.env.WORKER_TEST_CONTROLS, message.runId + '.json');
   const record = JSON.parse(await readFile(path, 'utf8'));
   assert.equal(record.pid, process.pid);
-  assert.equal(record.runId, process.env.HYDRA_RUN_ID);
+  assert.equal(record.runId, process.env.WORKER_RUN_ID);
   assert.equal(record.runId, message.runId);
   assert.equal(record.generation, message.generation);
   process.disconnect();
@@ -459,12 +459,12 @@ process.once('message', async (message) => {
 `,
       );
       const runId = randomUUID();
-      process.env.HYDRA_TEST_CONTROLS = paths.controls;
+      process.env.WORKER_TEST_CONTROLS = paths.controls;
       const supervised = supervise(
         { version: 1, runId, generation: 1 },
         { ...paths, worker },
       );
-      delete process.env.HYDRA_TEST_CONTROLS;
+      delete process.env.WORKER_TEST_CONTROLS;
       await expect(supervised).resolves.toEqual(
         expect.objectContaining({ exitCode: 0, processesExited: true }),
       );
@@ -795,7 +795,7 @@ setInterval(() => {}, 1000);
       const adapter = join(seed, 'pi-acp');
       const transcript = join(sessions, 'session.jsonl');
       const mutated = join(paths.root, 'mutated');
-      const scratch = join('/tmp/hydra-worker-state', seedRunId);
+      const scratch = join('/tmp/worker-state', seedRunId);
       const source = Buffer.from(
         JSON.stringify({ type: 'session', id: nativeId }) + '\n',
       );
@@ -857,26 +857,26 @@ setInterval(() => {}, 1000);
 import { writeFile } from 'node:fs/promises';
 process.on('SIGTERM', () => {});
 process.on('message', async () => {
-  await writeFile(process.env.HYDRA_TEST_TRANSCRIPT, process.env.HYDRA_TEST_MUTATION);
-  await writeFile(process.env.HYDRA_TEST_MUTATED, '1');
+  await writeFile(process.env.WORKER_TEST_TRANSCRIPT, process.env.WORKER_TEST_MUTATION);
+  await writeFile(process.env.WORKER_TEST_MUTATED, '1');
   process.disconnect();
 });
 setInterval(() => {}, 1000);
 `,
       );
-      process.env.HYDRA_TEST_TRANSCRIPT = transcript;
-      process.env.HYDRA_TEST_MUTATION =
+      process.env.WORKER_TEST_TRANSCRIPT = transcript;
+      process.env.WORKER_TEST_MUTATION =
         JSON.stringify({ type: 'session', id: nativeId, changed: true }) + '\n';
-      process.env.HYDRA_TEST_MUTATED = mutated;
+      process.env.WORKER_TEST_MUTATED = mutated;
       const supervised = supervise(job, {
         ...paths,
         worker,
         cooperativeGraceMs: 100,
         proveGroup: () => {},
       });
-      delete process.env.HYDRA_TEST_TRANSCRIPT;
-      delete process.env.HYDRA_TEST_MUTATION;
-      delete process.env.HYDRA_TEST_MUTATED;
+      delete process.env.WORKER_TEST_TRANSCRIPT;
+      delete process.env.WORKER_TEST_MUTATION;
+      delete process.env.WORKER_TEST_MUTATED;
       for (let attempt = 0; attempt < 50; attempt += 1) {
         if (await readFile(mutated).catch(() => undefined)) break;
         await delay(20);

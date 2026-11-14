@@ -6,8 +6,8 @@ import {
 import { parseSlackWebhookBody } from '@chat-adapter/slack/webhook';
 import { z } from 'zod';
 
-export const STOP_ACTION_ID = 'hydra_stop';
-export const STATUS_ACTION_ID = 'hydra_status';
+export const STOP_ACTION_ID = 'run_stop';
+export const STATUS_ACTION_ID = 'run_status';
 
 const slackId = z.string().regex(/^[A-Z][A-Z0-9]+$/);
 const slackMessageTs = z.string().regex(/^\d{10}\.\d{6}$/);

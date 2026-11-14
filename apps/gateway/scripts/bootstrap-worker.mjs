@@ -10,7 +10,7 @@ import { createManagedWorker } from '../src/managed-worker.ts';
 import { RedisRunStore } from '../src/store.ts';
 
 const root = resolve(import.meta.dirname, '../../..');
-const workerDir = '/tmp/hydra-worker';
+const workerDir = '/tmp/worker';
 const files = [
   'run.mjs',
   'supervise.mjs',
@@ -125,7 +125,7 @@ async function loadRecord(file, binding, create) {
     if (error.code !== 'ENOENT' || !create) throw error;
     state = {
       ...binding,
-      prefix: 'slack-v1-' + randomBytes(12).toString('hex'),
+      prefix: 'slack-agent-' + randomBytes(12).toString('hex'),
     };
     await writeFile(file, JSON.stringify(state) + '\n', {
       flag: 'wx',
@@ -133,7 +133,7 @@ async function loadRecord(file, binding, create) {
     });
   }
   check(
-    /^slack-v1-[a-f0-9]{24}$/.test(state?.prefix) &&
+    /^slack-agent-[a-f0-9]{24}$/.test(state?.prefix) &&
       Object.entries(binding).every(([key, value]) => state[key] === value),
     'The worker record belongs to a different checkout, project, or configuration.',
   );
@@ -245,7 +245,7 @@ async function verifyAssets(session, source) {
   await command(session, 'bash', [
     '-ec',
     [
-      'cd /tmp/hydra-worker',
+      'cd /tmp/worker',
       'test -x node_modules/.bin/pi && test -x node_modules/.bin/pi-acp && test -x node_modules/.bin/acpx',
       'test -x /usr/bin/pdftotext && test -x /usr/bin/prlimit && command -v flock && command -v setpriv && command -v sysctl',
       ...files

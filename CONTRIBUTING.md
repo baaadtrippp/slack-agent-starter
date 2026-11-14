@@ -3,10 +3,10 @@
 Read [AGENTS.md](AGENTS.md) and the canonical
 [specification](docs/spec/specification.md) before making a change.
 
-Work in small tracer bullets. Each change should name the user outcome, affected
-F/AC IDs, non-goals, smallest end-to-end implementation, and observable
-evidence. Keep changes focused and update
-[traceability](docs/spec/traceability.md) only with evidence that actually ran.
+Keep each change small and focused. Before writing code, state its user outcome,
+affected F/AC IDs, non-goals, smallest end-to-end implementation, and observable
+evidence. Update [traceability](docs/spec/traceability.md) only with evidence
+that actually ran.
 
 Before opening a pull request:
 

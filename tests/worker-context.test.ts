@@ -97,7 +97,7 @@ function contextJob(): ContextTestJob {
 
 describe('Sandbox worker Slack context prompt', () => {
   it('fails a missing exact session without creating a fresh transcript', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'hydra-missing-session-'));
+    const root = await mkdtemp(join(tmpdir(), 'test-missing-session-'));
     const sessions = join(root, 'sessions');
     await mkdir(sessions);
     try {
@@ -299,7 +299,7 @@ describe('Sandbox worker instructions', () => {
   const runId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
   it('launches Pi with the committed instructions and discovery off', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'hydra-launcher-'));
+    const root = await mkdtemp(join(tmpdir(), 'test-launcher-'));
     const launcher = join(root, 'launch-pi');
     const instructions = join(
       import.meta.dirname,
@@ -308,7 +308,7 @@ describe('Sandbox worker instructions', () => {
     try {
       await writePiLauncher(launcher, '--tools "read_input"', runId);
       expect(await readFile(launcher, 'utf8')).toBe(
-        `#!/bin/bash\nexec pi --provider openrouter --model "$HYDRA_MODEL" --thinking off --no-extensions --tools "read_input" --no-mcp --no-skills --no-context-files --append-system-prompt "${instructions}" "$@"\n`,
+        `#!/bin/bash\nexec pi --provider openrouter --model "$WORKER_MODEL" --thinking off --no-extensions --tools "read_input" --no-mcp --no-skills --no-context-files --append-system-prompt "${instructions}" "$@"\n`,
       );
       expect((await stat(launcher)).mode & 0o777).toBe(0o700);
     } finally {
@@ -317,7 +317,7 @@ describe('Sandbox worker instructions', () => {
   });
 
   it('fails before writing the launcher when the instructions are missing', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'hydra-launcher-'));
+    const root = await mkdtemp(join(tmpdir(), 'test-launcher-'));
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       await expect(

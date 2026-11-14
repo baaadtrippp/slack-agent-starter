@@ -21,7 +21,7 @@ if (
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
   try {
-    const request = JSON.parse(process.env.HYDRA_CONTROL ?? 'null');
+    const request = JSON.parse(process.env.WORKER_CONTROL ?? 'null');
     writeResponse(await controlRun(request));
   } catch {
     console.error('Sandbox worker control failed');
@@ -31,7 +31,7 @@ if (
 
 export async function controlRun(
   request,
-  { controls = '/tmp/hydra-worker-control', workspace = '/workspace' } = {},
+  { controls = '/tmp/worker-control', workspace = '/workspace' } = {},
 ) {
   if (
     request?.version !== 1 ||
@@ -211,7 +211,7 @@ export function parseProcessIdentity(stat) {
 }
 
 export function hasRunMarker(environment, runId) {
-  return environment?.split('\0').includes('HYDRA_RUN_ID=' + runId) ?? false;
+  return environment?.split('\0').includes('WORKER_RUN_ID=' + runId) ?? false;
 }
 
 export async function markedProcess(pid, runId) {

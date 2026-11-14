@@ -49,10 +49,10 @@ export async function inspectSandboxRun(
   if (session?.status !== 'running') return { state: 'unknown' };
   const command = await session.runCommand({
     cmd: 'node',
-    args: ['/tmp/hydra-worker/control.mjs'],
-    cwd: '/tmp/hydra-worker',
+    args: ['/tmp/worker/control.mjs'],
+    cwd: '/tmp/worker',
     env: {
-      HYDRA_CONTROL: JSON.stringify({
+      WORKER_CONTROL: JSON.stringify({
         version: 1,
         runId: run.runId,
         generation: run.generation,
