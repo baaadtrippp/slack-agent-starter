@@ -70,7 +70,7 @@ arbitrary paths, would let one thread read or change another thread's data, and
 a working directory or prompt is not a security boundary. So the tools only read
 the inputs staged for the run and write one result file. Running commands is
 deferred until it has its own design (see
-[section 8 of the spec](spec/v1.md#8-deferred-from-v1)).
+[section 8 of the spec](spec/specification.md#8-deferred)).
 
 ## Apply worker changes
 

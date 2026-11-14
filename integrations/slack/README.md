@@ -1,10 +1,10 @@
 # Slack app configuration
 
-`v1.yaml` is the Slack app manifest for v1. It requests the bot scopes, event
+`manifest.yaml` is the Slack app manifest. It requests the bot scopes, event
 subscriptions, and interactivity that the gateway uses for public-channel
 threads, files, progress, Stop and Status, and thumbs feedback.
 
-To install it, follow the [v1 quickstart](../../docs/service-setup.md):
+To install it, follow the [quickstart](../../docs/service-setup.md):
 
 1. Create the app shell and copy its bot token and signing secret, as described
    in [Slack app shell](../../docs/service-setup.md#slack-app-shell).

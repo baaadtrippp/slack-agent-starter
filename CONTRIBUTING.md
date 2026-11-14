@@ -1,7 +1,7 @@
 # Contributing
 
 Read [AGENTS.md](AGENTS.md) and the canonical
-[v1 specification](docs/spec/v1.md) before making a change.
+[specification](docs/spec/specification.md) before making a change.
 
 Work in small tracer bullets. Each change should name the user outcome, affected
 F/AC IDs, non-goals, smallest end-to-end implementation, and observable

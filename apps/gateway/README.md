@@ -1,7 +1,7 @@
 # Gateway
 
-Follow the [v1 quickstart](../../docs/service-setup.md) for the managed Pi
-worker, Vercel project settings, Slack manifest, and gateway configuration.
+Follow the [quickstart](../../docs/service-setup.md) for the managed Pi worker,
+Vercel project settings, Slack manifest, and gateway configuration.
 
 ## Automatic idle stop
 

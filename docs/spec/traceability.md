@@ -1,11 +1,11 @@
-# V1 traceability
+# Traceability
 
 This index maps the feature and acceptance IDs in the canonical
-[v1 specification](v1.md) to evidence. A feature with no row for an evidence
-kind has no evidence of that kind. Test links point at the current tests.
-History links point at the milestone (M1–M13) and feature docs as they stood at
-commit `718808a`; those docs were removed after that commit. RC is the release
-candidate failure and restart checks.
+[specification](specification.md) to evidence. A feature with no row for an
+evidence kind has no evidence of that kind. Test links point at the current
+tests. History links point at the milestone (M1–M13) and feature docs as they
+stood at commit `718808a`; those docs were removed after that commit. RC is the
+release candidate failure and restart checks.
 
 **Date** is the run date when the source states one, otherwise the date the
 recording pull request merged. **Tested commit** is given only when the source
@@ -93,8 +93,8 @@ apply across all slices.
   evidence. Quota handling used synthetic 402 responses, not an exhausted paid
   quota. No check shows that a paid model follows the instructions file; the
   paid turn only repeats a code.
-- O04 automatic cleanup is deferred until after v1. The O05 limits are current
-  code limits, not tested targets.
+- O04 automatic cleanup is deferred. The O05 limits are current code limits, not
+  tested targets.
 
 ## Evidence rules
 
