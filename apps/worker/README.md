@@ -46,3 +46,39 @@ Cleanup permanently deletes the worker Sandbox, seed Sandbox, startup snapshot,
 and Drive recorded by the bootstrap. It does not delete the gateway deployment,
 Slack app, OpenRouter key, Redis database, or Redis records. Use it only after
 Slack ingress is disabled and all accepted runs are terminal.
+
+## Check the worker
+
+`apps/gateway/scripts/check-worker.mjs` checks the worker on a real Sandbox and
+Drive without Slack or model spend. Run it from a clean checkout of the commit
+under test, with the quickstart's `SETUP_ENV`, a new record path outside the
+clone, and `openssl` on `PATH`.
+
+```sh
+CHECK_RECORD="$(mktemp -d)/check-record.json"
+(
+  unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$SETUP_ENV")
+  node --env-file="$SETUP_ENV" \
+    apps/gateway/scripts/check-worker.mjs "$CHECK_RECORD"
+)
+```
+
+It bootstraps a separate worker from the commit, with loopback stand-ins for
+OpenRouter and the gateway callback. A first run stages a CSV; after the
+gateway's idle stop, a new session resumes on the same Drive, and a reply
+continues the exact native session, reads the retained CSV, and saves a file
+with `write_artifact`. It prints the tested commit, then runs bootstrap cleanup
+and removes the check worker's Redis records, also after a failure. This is
+provider integration evidence with a stand-in model, not proof of the paid model
+path or live Slack. A follow-up pull request adds Stop with a running peer and
+an optional paid OpenRouter turn.
+
+An interrupt such as Ctrl-C skips cleanup. Then, or if cleanup failed, run:
+
+```sh
+(
+  unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$SETUP_ENV")
+  node --env-file="$SETUP_ENV" \
+    apps/gateway/scripts/bootstrap-worker.mjs cleanup "$CHECK_RECORD"
+)
+```

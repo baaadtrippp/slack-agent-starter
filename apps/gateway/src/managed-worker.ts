@@ -13,6 +13,19 @@ export const MANAGED_DRIVE_WRITE_SETUP = [
   `${MANAGED_WORKER_PRIVILEGE_DROP} -- sh -c 'test -w /workspace && test -x /workspace'`,
 ].join(' && ');
 
+export const MANAGED_WORKER_PRELAUNCH_EXIT = 78;
+
+// The provider's domain allowlist remains the IPv4 egress boundary. Verify
+// IPv6 is disabled, then start the entire worker tree without privilege to
+// restore it. The managed image and staged files use uid/gid 1000.
+export const MANAGED_WORKER_LAUNCH = [
+  'set -u',
+  `sysctl -qw net.ipv6.conf.default.disable_ipv6=1 net.ipv6.conf.all.disable_ipv6=1 || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}`,
+  `for setting in /proc/sys/net/ipv6/conf/*/disable_ipv6; do read -r disabled < "$setting" || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}; test "$disabled" = 1 || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}; done`,
+  `${MANAGED_DRIVE_WRITE_SETUP} || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}`,
+  `exec ${MANAGED_WORKER_PRIVILEGE_DROP} -- sh -c 'node "$1"; code=$?; if [ "$code" -eq ${MANAGED_WORKER_PRELAUNCH_EXIT} ]; then exit 79; fi; exit "$code"' hydra-worker "$1"`,
+].join('; ');
+
 type ManagedWorkerConfig = {
   sandboxName: string;
   driveName: string;
