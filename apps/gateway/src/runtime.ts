@@ -8,25 +8,12 @@ import { collectRunArtifact } from './generated-artifact.js';
 import { createGateway, normalizeFailureResult } from './gateway.js';
 import {
   createManagedWorker,
-  MANAGED_DRIVE_WRITE_SETUP,
-  MANAGED_WORKER_PRIVILEGE_DROP,
+  MANAGED_WORKER_LAUNCH,
+  MANAGED_WORKER_PRELAUNCH_EXIT,
 } from './managed-worker.js';
 import { RedisRunStore } from './store.js';
 import type { SandboxTarget } from './store.js';
 import { getRunningSession, inspectSandboxRun } from './worker-control.js';
-
-const MANAGED_WORKER_PRELAUNCH_EXIT = 78;
-
-// The provider's domain allowlist remains the IPv4 egress boundary. Verify
-// IPv6 is disabled, then start the entire worker tree without privilege to
-// restore it. The managed image and staged files use uid/gid 1000.
-const MANAGED_WORKER_LAUNCH = [
-  'set -u',
-  `sysctl -qw net.ipv6.conf.default.disable_ipv6=1 net.ipv6.conf.all.disable_ipv6=1 || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}`,
-  `for setting in /proc/sys/net/ipv6/conf/*/disable_ipv6; do read -r disabled < "$setting" || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}; test "$disabled" = 1 || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}; done`,
-  `${MANAGED_DRIVE_WRITE_SETUP} || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}`,
-  `exec ${MANAGED_WORKER_PRIVILEGE_DROP} -- sh -c 'node "$1"; code=$?; if [ "$code" -eq ${MANAGED_WORKER_PRELAUNCH_EXIT} ]; then exit 79; fi; exit "$code"' hydra-worker "$1"`,
-].join('; ');
 
 let gateway: ReturnType<typeof createGateway> | undefined;
 
