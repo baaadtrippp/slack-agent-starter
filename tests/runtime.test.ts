@@ -6,15 +6,16 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { RunRecord } from '../apps/gateway/src/store.js';
 import type { Session } from '../apps/gateway/node_modules/@vercel/sandbox/dist/index.js';
 import type { WorkerJob } from '../packages/contracts/src/index.js';
+import type { FileServer } from './file-server-fixture.js';
 
-const { background, sandboxGet, driveGet, fetchPublicText } = vi.hoisted(
-  () => ({
+const { background, sandboxGet, driveGet, fetchPublicText, fileServer } =
+  vi.hoisted(() => ({
     background: [] as Promise<unknown>[],
     sandboxGet: vi.fn(),
     driveGet: vi.fn(),
     fetchPublicText: vi.fn(),
-  }),
-);
+    fileServer: vi.fn<FileServer>(),
+  }));
 vi.mock('@vercel/functions', () => ({
   waitUntil: (task: Promise<unknown>) => background.push(task),
 }));
@@ -24,6 +25,14 @@ vi.mock('../apps/gateway/node_modules/@vercel/sandbox/dist/index.js', () => ({
 }));
 
 vi.mock('../apps/gateway/src/public-url.js', () => ({ fetchPublicText }));
+vi.mock(
+  '../apps/gateway/node_modules/@chat-adapter/shared/dist/index.js',
+  async (importOriginal) =>
+    (await import('./file-server-fixture.js')).withFileServer(
+      await importOriginal(),
+      fileServer,
+    ),
+);
 
 const redisUrl = process.env.TEST_REDIS_URL;
 
@@ -172,6 +181,11 @@ describe('Sandbox run inspection', () => {
         },
       }),
     );
+    const stopped = { ...replacement, status: 'stopped' } as Session;
+    expect(await inspectSandboxRun(run, false, stopped)).toEqual({
+      state: 'unknown',
+    });
+    expect(runCommand).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -630,10 +644,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         isMixed ? 'Use the sum of amounts.\n' : content,
       );
       fetchPublicText.mockResolvedValue(urlBytes);
-      const download = vi
-        .fn<typeof fetch>()
-        .mockResolvedValue(new Response(content));
-      vi.stubGlobal('fetch', download);
+      fileServer.mockResolvedValue(new Response(content));
       const observer = createRedisState({ url: redisUrl! });
       await observer.connect();
       const sessionId = randomUUID();

@@ -3,7 +3,7 @@ import type { Session } from '@vercel/sandbox';
 import { z } from 'zod';
 import { workerResultSchema } from '../../../packages/contracts/src/index.js';
 import type { WorkerInspection } from './gateway.js';
-import type { RunRecord } from './store.js';
+import type { RunRecord, SandboxTarget } from './store.js';
 
 const proofSchema = z
   .object({
@@ -24,6 +24,18 @@ const proofSchema = z
       : targetPgid === undefined,
   );
 
+/** Returns the target's session only while it is the Sandbox's running session. */
+export async function getRunningSession(
+  target: SandboxTarget,
+  signal = AbortSignal.timeout(5_000),
+) {
+  const session = (
+    await Sandbox.get({ name: target.sandboxName, resume: false, signal })
+  ).currentSession();
+  if (session.status === 'running' && session.sessionId === target.sessionId)
+    return session;
+}
+
 /** Inspects or cancels one run in its recorded, still-running Sandbox session. */
 export async function inspectSandboxRun(
   run: Pick<RunRecord, 'runId' | 'generation' | 'execution' | 'session'>,
@@ -33,20 +45,8 @@ export async function inspectSandboxRun(
   const target = run.execution;
   if (!target) return { state: 'unknown' };
   const signal = AbortSignal.timeout(18_000);
-  const session =
-    recoverySession ??
-    (
-      await Sandbox.get({
-        name: target.sandboxName,
-        resume: false,
-        signal,
-      })
-    ).currentSession();
-  if (
-    session.status !== 'running' ||
-    (!recoverySession && session.sessionId !== target.sessionId)
-  )
-    return { state: 'unknown' };
+  const session = recoverySession ?? (await getRunningSession(target, signal));
+  if (session?.status !== 'running') return { state: 'unknown' };
   const command = await session.runCommand({
     cmd: 'node',
     args: ['/tmp/hydra-worker/control.mjs'],

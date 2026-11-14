@@ -13,7 +13,7 @@ import {
 } from './managed-worker.js';
 import { RedisRunStore } from './store.js';
 import type { SandboxTarget } from './store.js';
-import { inspectSandboxRun } from './worker-control.js';
+import { getRunningSession, inspectSandboxRun } from './worker-control.js';
 
 const MANAGED_WORKER_PRELAUNCH_EXIT = 78;
 
@@ -137,28 +137,19 @@ function initialize() {
         return { state: 'unknown' };
 
       const bound = run.recovery
-        ? (
-            await Sandbox.get({
-              name: currentTarget.sandboxName,
-              resume: false,
-              signal: AbortSignal.timeout(5_000),
-            }).catch(() => undefined)
-          )?.currentSession()
+        ? await getRunningSession(currentTarget).catch(() => undefined)
         : undefined;
-      const useBound =
-        bound?.status === 'running' &&
-        bound.sessionId === currentTarget.sessionId;
       // Only a verified stopped target can be rebound. An existing
       // binding already proves that its original environment stopped.
-      const session = useBound
-        ? bound
-        : await managed.recoverSession(currentTarget, Date.now() + 25_000);
+      const session =
+        bound ??
+        (await managed.recoverSession(currentTarget, Date.now() + 25_000));
       if (!session) return { state: 'unknown' };
       const target = {
         sandboxName: currentTarget.sandboxName,
         sessionId: session.sessionId,
       };
-      if (!useBound && !(await store.bindRecoveryTarget(currentTarget, target)))
+      if (!bound && !(await store.bindRecoveryTarget(currentTarget, target)))
         return { state: 'unknown' };
       const token = randomUUID();
       if (!(await store.reserveRecovery(target, token)))
@@ -201,17 +192,8 @@ function initialize() {
         }
       }
       if (!target || target.sandboxName !== sandboxName) return;
-      const sandbox = await Sandbox.get({
-        name: target.sandboxName,
-        resume: false,
-        signal: AbortSignal.timeout(5_000),
-      }).catch(() => undefined);
-      const session = sandbox?.currentSession();
-      if (
-        session?.status === 'running' &&
-        session.sessionId === target.sessionId
-      )
-        await managed.stopIfIdle(session).catch(() => {});
+      const session = await getRunningSession(target).catch(() => undefined);
+      if (session) await managed.stopIfIdle(session).catch(() => {});
     },
     ...(config.fileExchange ? { collectArtifact: collectRunArtifact } : {}),
     dispatch: async (job, stagedInputs) => {
