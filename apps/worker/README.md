@@ -22,11 +22,13 @@ The setup command installs these exact packages into the startup snapshot:
 - `pi-acp@0.0.34`
 - `@earendil-works/pi-coding-agent@1.5.0`
 
-It copies `sandbox/run.mjs`, `sandbox/supervise.mjs`, `sandbox/control.mjs`, and
-`sandbox/shared-notes.mjs` from the checked-out commit and verifies their hashes
-inside the Sandbox. It also installs the Poppler and util-linux programs
-required by the checked-in PDF, privilege, process-control, and shared-note
-paths.
+It copies `sandbox/run.mjs`, `sandbox/supervise.mjs`, `sandbox/control.mjs`,
+`sandbox/shared-notes.mjs`, and `sandbox/instructions.md` from the checked-out
+commit and verifies their hashes inside the Sandbox. Pi appends
+`instructions.md` to its system prompt; see
+[Make it your agent](../../docs/make-it-your-agent.md). It also installs the
+Poppler and util-linux programs required by the checked-in PDF, privilege,
+process-control, and shared-note paths.
 
 The startup snapshot contains dependencies and the checked-in worker files. It
 has no Drive, model key, Slack credential, Redis credential, session, or user
@@ -69,10 +71,11 @@ gateway's idle stop, a new session resumes on the same Drive, and a reply
 continues the exact native session, reads the retained CSV, and saves a file
 with `write_artifact`. While the reply runs, a new run in another thread gets
 the gateway's Stop request; it ends stopped without an answer, and the reply
-still completes. It prints the tested commit, then runs bootstrap cleanup and
-removes the check worker's Redis records, also after a failure. This is provider
-integration evidence with a stand-in model, not proof of the paid model path or
-live Slack.
+still completes. The stand-in model also checks that the system prompt of the
+new and the resumed session contains `instructions.md`. It prints the tested
+commit, then runs bootstrap cleanup and removes the check worker's Redis
+records, also after a failure. This is provider integration evidence with a
+stand-in model, not proof of the paid model path or live Slack.
 
 With `--paid` (for example `check-worker.mjs --paid "$CHECK_RECORD"`), the check
 then removes the stand-in's `openrouter.ai` override and runs one real turn with

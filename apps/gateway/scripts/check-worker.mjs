@@ -87,6 +87,11 @@ const config = {
   stopped: stopped.runId,
   csvMarker,
   artifact,
+  // Bootstrap refuses tracked changes, so this matches the copied file.
+  instructions: readFileSync(
+    join(import.meta.dirname, '../../worker/sandbox/instructions.md'),
+    'utf8',
+  ),
   tokens: Object.fromEntries(
     [first, reply, stopped, paid].map(({ runId, callbackToken }) => [
       runId,

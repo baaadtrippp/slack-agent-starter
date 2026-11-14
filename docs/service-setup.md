@@ -199,8 +199,9 @@ The bootstrap performs the following checks before printing settings.
   file-locking programs inside the Sandbox.
 - It creates one 1 GiB Drive and confirms it has one writable mount at
   `/workspace`.
-- It restricts egress to the gateway hostname and OpenRouter, denies private
-  IPv4 ranges, and configures OpenRouter credential injection at the provider
+- It restricts egress to the gateway hostname and OpenRouter, denies the
+  loopback, private, link-local, shared (`100.64.0.0/10`), and `0.0.0.0/8` IPv4
+  ranges, and configures OpenRouter credential injection at the provider
   boundary. The paid model smoke verifies that configured path.
 - It enrolls the exact initial worker session in the dedicated Redis database.
 

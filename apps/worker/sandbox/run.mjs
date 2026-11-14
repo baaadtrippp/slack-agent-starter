@@ -78,6 +78,7 @@ const providerQuotaFailure = Object.assign(
   { failureCategory: 'provider_quota' },
 );
 const bin = join(import.meta.dirname, 'node_modules', '.bin');
+const instructionsFile = join(import.meta.dirname, 'instructions.md');
 const slackTimestamp = /^\d{10}\.\d{6}$/;
 const slackSenderId = /^[UWB][A-Z0-9]{1,31}$/;
 const slackFileId = /^F[A-Z0-9]{1,31}$/;
@@ -607,11 +608,7 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
       await mkdir(results, { mode: 0o700 });
       await writeFile(outputExtension, writeArtifactExtension, { mode: 0o600 });
     }
-    await writeFile(
-      launcher,
-      `#!/bin/bash\nexec pi --provider openrouter --model "$HYDRA_MODEL" --thinking off --no-extensions ${toolOptions} --no-mcp --no-skills --no-context-files "$@"\n`,
-      { mode: 0o700 },
-    );
+    await writePiLauncher(launcher, toolOptions, job.runId);
 
     const timeoutMs =
       job.deadline - Date.now() - callbackReserve - (outputTool ? 6_000 : 0);
@@ -812,6 +809,27 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
         throw uncertainRun;
       });
   }
+}
+
+/**
+ * Writes the Pi launcher with the instructions file appended to the system
+ * prompt. Pi reads a missing path as literal prompt text, so check it first.
+ */
+export async function writePiLauncher(
+  launcher,
+  toolOptions,
+  runId,
+  instructions = instructionsFile,
+) {
+  await readFile(instructions).catch((error) => {
+    console.error(JSON.stringify({ runId, phase: 'instructions_unavailable' }));
+    throw error;
+  });
+  await writeFile(
+    launcher,
+    `#!/bin/bash\nexec pi --provider openrouter --model "$HYDRA_MODEL" --thinking off --no-extensions ${toolOptions} --no-mcp --no-skills --no-context-files --append-system-prompt "${instructions}" "$@"\n`,
+    { mode: 0o700 },
+  );
 }
 
 /** Removes only this turn's rejected staged inputs from its run directory. */
