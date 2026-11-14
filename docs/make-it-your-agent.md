@@ -90,9 +90,11 @@ needs a new worker, and the gateway must be deployed from the same commit.
    `SANDBOX_MANAGED_DRIVE`, and `SANDBOX_MANAGED_SEED` with the new setup
    output. Deploy the gateway from the same commit, as in
    [section 4](service-setup.md#4-configure-and-deploy-the-gateway).
-4. When Vercel's Sandbox view shows no running session for the old worker
-   Sandbox, which can keep running until its 25-minute session timeout, run only
-   the cleanup command from
+4. Wait until every status message posted before the switch shows a final state;
+   press Status on any that stay unfinished. A run accepted before the switch
+   still uses the old Drive. Also wait until Vercel's Sandbox view shows no
+   running session for the old worker Sandbox, which can keep running until its
+   25-minute session timeout. Then run only the cleanup command from
    [section 8](service-setup.md#8-rollback-and-teardown), with a fresh OIDC
    token and the old record. It deletes the old Drive.
 
