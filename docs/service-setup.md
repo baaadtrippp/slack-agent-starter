@@ -93,10 +93,10 @@ in `rediss://` form. The REST URL and token are not accepted by the gateway or
 bootstrap. Keep automatic paid upgrades disabled if your plan offers that
 control.
 
-The application uses `slack-agent:chat-sdk` for Chat SDK state and
-`slack-agent:m1` for its own records. Application run, session, message,
-feedback, and managed-runtime records have no automatic retention policy.
-Deleting a Slack message does not remove them.
+The application uses `slack-agent:chat-sdk` for Chat SDK state and the rest of
+the `slack-agent:` namespace for its own records. Application run, session,
+message, feedback, and managed-runtime records have no automatic retention
+policy. Deleting a Slack message does not remove them.
 
 ### OpenRouter
 

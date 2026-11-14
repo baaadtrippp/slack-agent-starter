@@ -328,7 +328,7 @@ try {
       if (!client.isOpen) await client.connect();
       for (const kind of ['runtime', 'idle'])
         for await (const keys of client.scanIterator({
-          MATCH: `slack-agent:m1:${kind}:${prefix}-worker:*`,
+          MATCH: `slack-agent:${kind}:${prefix}-worker:*`,
           COUNT: 1000,
         }))
           if (keys.length) await client.del(keys);
