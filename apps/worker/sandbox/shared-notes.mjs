@@ -60,8 +60,7 @@ export function validSharedNoteJob(job) {
       !input.threadContext &&
       !input.attachments &&
       !input.sources &&
-      !job.artifactOutput &&
-      !job.csvOutput)
+      !job.artifactOutput)
   );
 }
 

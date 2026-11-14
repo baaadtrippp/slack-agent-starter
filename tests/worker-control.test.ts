@@ -1,5 +1,8 @@
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import {
+  link,
   mkdtemp,
   mkdir,
   readFile,
@@ -34,6 +37,33 @@ function request(runId: string, action: 'status' | 'cancel', generation = 1) {
   return { version: 1, runId, generation, action };
 }
 
+// Reports when run.mjs listens for the ready message, after its SIGTERM handler.
+const listening =
+  "process.on('newListener', (name) => name === 'message' && setImmediate(() => process.send('listening')));";
+
+async function runBeforeReady(reply: (child: ChildProcess) => void) {
+  const child = spawn(
+    process.execPath,
+    [
+      '--import',
+      'data:text/javascript,' + encodeURIComponent(listening),
+      join(import.meta.dirname, '../apps/worker/sandbox/run.mjs'),
+    ],
+    {
+      env: {
+        ...process.env,
+        HYDRA_JOB: JSON.stringify({ runId: randomUUID(), generation: 1 }),
+      },
+      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    },
+  );
+  const stderr = child.stderr!.setEncoding('utf8').toArray();
+  child.once('message', () => reply(child));
+  // 'close' never fires after the parent disconnects the IPC channel.
+  const [code] = await once(child, 'exit');
+  return { code, stderr: (await stderr).join('') };
+}
+
 function paddedJson(value: object, size: number) {
   const empty = JSON.stringify({ ...value, padding: '' });
   return JSON.stringify({
@@ -51,6 +81,41 @@ describe('Sandbox worker control', () => {
     expect(source).toContain("process.on('SIGTERM', cancel)");
     expect(source).not.toContain("process.once('SIGTERM', cancel)");
   });
+
+  test.skipIf(process.platform !== 'linux')(
+    'exits quietly on Stop before ready and refuses another run',
+    async () => {
+      await expect(
+        runBeforeReady((child) => child.kill('SIGTERM')),
+      ).resolves.toEqual({ code: 0, stderr: '' });
+      await expect(
+        runBeforeReady((child) =>
+          child.send({
+            version: 1,
+            type: 'ready',
+            runId: randomUUID(),
+            generation: 1,
+          }),
+        ),
+      ).resolves.toEqual({
+        code: 1,
+        stderr: 'Sandbox worker could not complete its callback\n',
+      });
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
+    'fails after the ready timeout when the supervisor channel closes',
+    async () => {
+      await expect(
+        runBeforeReady((child) => child.disconnect()),
+      ).resolves.toEqual({
+        code: 1,
+        stderr: 'Sandbox worker could not complete its callback\n',
+      });
+    },
+    10_000,
+  );
 
   test('accepts only exact marked process-group membership', () => {
     const runId = randomUUID();
@@ -221,10 +286,36 @@ describe('Sandbox worker control', () => {
         controlId: randomUUID(),
         pid: 999_999,
         startTicks: '1',
+        pgid: 999_999,
+        sessionId: 999_999,
       }),
     );
     await expect(controlRun(request(runId, 'cancel'), paths)).resolves.toEqual(
       expect.objectContaining({ stopRequested: true, result }),
+    );
+    await rm(paths.root, { recursive: true, force: true });
+  });
+
+  test.each([
+    ['without its process group', {}],
+    ['in another process group', { pgid: 1_000, sessionId: 1_000 }],
+  ])('refuses a control record %s', async (_case, group) => {
+    const paths = await fixture();
+    const runId = randomUUID();
+    await writeFile(
+      join(paths.controls, runId + '.json'),
+      JSON.stringify({
+        version: 1,
+        runId,
+        generation: 1,
+        controlId: randomUUID(),
+        pid: 999_999,
+        startTicks: '1',
+        ...group,
+      }),
+    );
+    await expect(controlRun(request(runId, 'status'), paths)).rejects.toThrow(
+      'Invalid worker control record',
     );
     await rm(paths.root, { recursive: true, force: true });
   });
@@ -567,6 +658,30 @@ process.once('message', async (message) => {
       await expect(controlRun(request(runId, 'status'), paths)).rejects.toThrow(
         'Invalid worker record',
       );
+      await rm(paths.root, { recursive: true, force: true });
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
+    'rejects a hard-linked worker result',
+    async () => {
+      const paths = await fixture();
+      const runId = randomUUID();
+      const run = join(paths.workspace, 'runs', runId);
+      const worker = join(paths.root, 'immediate-worker.mjs');
+      await mkdir(run);
+      await writeFile(
+        join(run, 'result.json'),
+        JSON.stringify({ version: 1, runId, generation: 1, type: 'completed' }),
+      );
+      await link(join(run, 'result.json'), join(paths.root, 'result-link'));
+      await writeFile(worker, 'process.exit(0)');
+      await expect(
+        supervise(
+          { version: 1, runId, generation: 1 },
+          { ...paths, worker, readIdentity: () => new Promise(() => {}) },
+        ),
+      ).rejects.toThrow('Invalid worker record');
       await rm(paths.root, { recursive: true, force: true });
     },
   );

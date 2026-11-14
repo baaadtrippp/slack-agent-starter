@@ -3,23 +3,29 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import {
   constants,
-  link,
   mkdir,
   open,
-  readFile,
   realpath,
   readdir,
-  rename,
   rm,
 } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readControlRecord } from './control.mjs';
+import {
+  createExclusiveJson,
+  hasRunMarker,
+  markedProcess,
+  parseProcessIdentity,
+  processIdentity,
+  readControlRecord,
+  readRegularJson,
+  signalExact,
+  writeSyncedAtomic,
+} from './control.mjs';
 
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const checksum = /^[0-9a-f]{64}$/;
-const publishingRecord = new Error('Worker record is being published');
 
 if (
   process.argv[1] &&
@@ -199,7 +205,7 @@ async function finishSupervision(
   );
   const sessionSafe = stop
     ? await verifyStoppedSessionState(job, result, workspace)
-    : await verifySessionState(job, result, stop, workspace);
+    : await verifySessionState(job, result, workspace);
   if (stop) await removeOwnedScratch(job);
   const exit = {
     version: 1,
@@ -333,61 +339,8 @@ function* liveProcessSnapshot(record) {
   }
 }
 
-async function signalExact(record, runId, signal) {
-  const identity = await processIdentity(record.pid).catch(() => undefined);
-  if (
-    identity?.startTicks !== record.startTicks ||
-    identity.pgid !== record.pgid ||
-    identity.sessionId !== record.sessionId ||
-    !(await markedProcess(record.pid, runId))
-  )
-    return;
-  try {
-    process.kill(record.pid, signal);
-  } catch (error) {
-    if (error?.code !== 'ESRCH') throw error;
-  }
-}
-
-async function processIdentity(pid) {
-  const stat = await readFile('/proc/' + pid + '/stat', 'utf8');
-  return parseProcessIdentity(stat);
-}
-
 function processIdentitySync(pid) {
   return parseProcessIdentity(readFileSync('/proc/' + pid + '/stat', 'utf8'));
-}
-
-function parseProcessIdentity(stat) {
-  const fields = stat.slice(stat.lastIndexOf(') ') + 2).split(' ');
-  const [state, ppid, pgid, sessionId] = fields;
-  const startTicks = fields[19];
-  if (
-    !state ||
-    !/^\d+$/.test(ppid) ||
-    !/^\d+$/.test(pgid) ||
-    !/^\d+$/.test(sessionId) ||
-    !/^\d+$/.test(startTicks)
-  )
-    throw new Error('Invalid worker process identity');
-  return {
-    state,
-    ppid: Number(ppid),
-    pgid: Number(pgid),
-    sessionId: Number(sessionId),
-    startTicks,
-  };
-}
-
-function hasRunMarker(environment, runId) {
-  return environment?.split('\0').includes('HYDRA_RUN_ID=' + runId) ?? false;
-}
-
-async function markedProcess(pid, runId) {
-  const environment = await readFile('/proc/' + pid + '/environ', 'utf8').catch(
-    () => undefined,
-  );
-  return hasRunMarker(environment, runId);
 }
 
 function processEnvironmentSync(pid, startTicks, record) {
@@ -478,26 +431,33 @@ async function verifyStoppedSessionState(job, result, workspace) {
   return 'restored';
 }
 
-async function readRollbackCheckpoint(job) {
+/** Returns this run's proven scratch directory, or undefined when absent. */
+async function ownedScratch(job) {
   const scratch = join(
     '/tmp/hydra-worker-state',
     job.session?.seedRunId ?? job.runId,
   );
   const owner = await readRegularJson(join(scratch, 'rollback-owner.json'));
-  if (!owner) {
-    try {
-      const directory = await open(
-        scratch,
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-      );
-      await directory.close();
-    } catch (error) {
-      if (error?.code === 'ENOENT') return undefined;
-      throw error;
-    }
-    throw new Error('Missing rollback ownership');
+  if (owner) {
+    validateRollbackOwner(owner, job);
+    return scratch;
   }
-  validateRollbackOwner(owner, job);
+  try {
+    const directory = await open(
+      scratch,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    await directory.close();
+  } catch (error) {
+    if (error?.code === 'ENOENT') return undefined;
+    throw error;
+  }
+  throw new Error('Missing rollback ownership');
+}
+
+async function readRollbackCheckpoint(job) {
+  const scratch = await ownedScratch(job);
+  if (!scratch) return undefined;
   const checkpoint = await readRegularJson(join(scratch, 'rollback.json'));
   if (!checkpoint) return undefined;
   validateRollbackOwner(checkpoint, job);
@@ -563,20 +523,7 @@ async function restoreCheckpoint(job, rollback, workspace) {
   } finally {
     await current.close();
   }
-  const temporary = target + '.' + job.runId + '.rollback';
-  let file;
-  try {
-    file = await open(temporary, 'wx', 0o600);
-    await file.writeFile(rollback.source);
-    await file.sync();
-    await file.close();
-    file = undefined;
-    await rename(temporary, target);
-    await syncDirectory(dirname(target));
-  } finally {
-    await file?.close().catch(() => {});
-    await rm(temporary, { force: true });
-  }
+  await writeSyncedAtomic(target, rollback.source);
 }
 
 function validateRollbackOwner(value, job) {
@@ -647,36 +594,19 @@ async function verifyAdapterEntry(session, workspace) {
     entry.cwd !== expectedWork ||
     entry.sessionFile !== expectedFile
   )
-    throw new Error('Adapter session changed during forced Stop');
+    throw new Error('Adapter session changed');
 }
 
 async function removeOwnedScratch(job) {
-  const scratch = join(
-    '/tmp/hydra-worker-state',
-    job.session?.seedRunId ?? job.runId,
-  );
-  const owner = await readRegularJson(join(scratch, 'rollback-owner.json'));
-  if (!owner) {
-    try {
-      const directory = await open(
-        scratch,
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-      );
-      await directory.close();
-    } catch (error) {
-      if (error?.code === 'ENOENT') return;
-      throw error;
-    }
-    throw new Error('Missing rollback ownership');
-  }
-  validateRollbackOwner(owner, job);
+  const scratch = await ownedScratch(job);
+  if (!scratch) return;
   if ((await realpath(scratch)) !== scratch)
     throw new Error('Rollback scratch identity changed');
   await rm(scratch, { recursive: true });
 }
 
-async function verifySessionState(job, result, stop, workspace) {
-  if (!job.session) return stop ? 'uncommitted' : 'committed';
+async function verifySessionState(job, result, workspace) {
+  if (!job.session) return 'committed';
   if (job.memory === 'save') {
     await verifyAdapterEntry(job.session, workspace);
     return result?.type === 'completed' ? 'committed' : 'restored';
@@ -685,15 +615,7 @@ async function verifySessionState(job, result, stop, workspace) {
     await verifyCurrentSession(job.session, workspace);
     return 'restored';
   }
-  if (!stop) return 'committed';
-  try {
-    await verifyCurrentSession(job.session, workspace);
-    return 'restored';
-  } catch (error) {
-    if (result?.type !== 'completed') throw error;
-    await verifyCommittedSession(job, result, workspace);
-    return 'committed';
-  }
+  return 'committed';
 }
 
 async function verifyCommittedSession(job, result, workspace) {
@@ -712,30 +634,7 @@ async function verifyCommittedSession(job, result, workspace) {
       session.hasRetainedSources !== true)
   )
     throw new Error('Completed session identity changed');
-  const { file } = await verifyCurrentSession(session, workspace);
-  const adapter = join(
-    workspace,
-    'runs',
-    session.seedRunId,
-    'pi-acp',
-    'session-map.json',
-  );
-  const map = await readRegularJson(adapter);
-  const entry = map?.sessions?.[session.adapterId];
-  const expectedFile = join(
-    '/tmp/hydra-worker-state',
-    session.seedRunId,
-    'agent',
-    'sessions',
-    file,
-  );
-  const expectedWork = join(workspace, 'runs', session.seedRunId, 'work');
-  if (
-    entry?.sessionId !== session.adapterId ||
-    entry.cwd !== expectedWork ||
-    entry.sessionFile !== expectedFile
-  )
-    throw new Error('Completed adapter session changed');
+  await verifyAdapterEntry(session, workspace);
 }
 
 async function verifyCurrentSession(session, workspace) {
@@ -808,66 +707,6 @@ function validateMatchingRecord(value, record) {
     throw new Error('Worker control identity changed');
 }
 
-async function readRegularJson(path) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      return await readRegularJsonOnce(path);
-    } catch (error) {
-      if (error !== publishingRecord || attempt === 4) throw error;
-      await delay(10);
-    }
-  }
-}
-
-async function readRegularJsonOnce(path) {
-  let file;
-  try {
-    file = await open(
-      path,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
-  } catch (error) {
-    if (error?.code === 'ENOENT') return undefined;
-    throw error;
-  }
-  try {
-    const stat = await file.stat();
-    if (stat.isFile() && stat.nlink === 2) throw publishingRecord;
-    if (
-      !stat.isFile() ||
-      stat.nlink !== 1 ||
-      stat.size < 1 ||
-      stat.size > 32 * 1024
-    )
-      throw new Error('Invalid worker record');
-    const source = await file.readFile('utf8');
-    if (Buffer.byteLength(source) !== stat.size)
-      throw new Error('Worker record changed while reading');
-    return JSON.parse(source);
-  } finally {
-    await file.close();
-  }
-}
-
-async function createExclusiveJson(path, value) {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = path + '.' + randomUUID() + '.tmp';
-  let file;
-  try {
-    file = await open(temporary, 'wx', 0o600);
-    await file.writeFile(JSON.stringify(value));
-    await file.sync();
-    await file.close();
-    file = undefined;
-    await link(temporary, path);
-    await rm(temporary);
-    await syncDirectory(dirname(path));
-  } finally {
-    await file?.close().catch(() => {});
-    await rm(temporary, { force: true });
-  }
-}
-
 async function writeAtomicJson(path, value) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   if ((await readRegularJson(path)) !== undefined) {
@@ -875,30 +714,5 @@ async function writeAtomicJson(path, value) {
     error.code = 'EEXIST';
     throw error;
   }
-  const temporary = path + '.' + randomUUID() + '.tmp';
-  let file;
-  try {
-    file = await open(temporary, 'wx', 0o600);
-    await file.writeFile(JSON.stringify(value));
-    await file.sync();
-    await file.close();
-    file = undefined;
-    await rename(temporary, path);
-    await syncDirectory(dirname(path));
-  } finally {
-    await file?.close().catch(() => {});
-    await rm(temporary, { force: true });
-  }
-}
-
-async function syncDirectory(path) {
-  const directory = await open(
-    path,
-    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-  );
-  try {
-    await directory.sync();
-  } finally {
-    await directory.close();
-  }
+  await writeSyncedAtomic(path, JSON.stringify(value));
 }

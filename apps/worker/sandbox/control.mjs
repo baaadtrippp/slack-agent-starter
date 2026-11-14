@@ -7,6 +7,7 @@ import {
   open,
   readFile,
   readdir,
+  rename,
   rm,
 } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -85,11 +86,7 @@ async function inspect(request, paths) {
       }
     }
     const response = {
-      version: 1,
-      runId: request.runId,
-      generation: request.generation,
-      state: 'exited',
-      stopRequested,
+      ...baseStatus(request, 'exited', stopRequested),
       forced: exit.forced,
       ...(exit.forced ? { targetPgid: exit.targetPgid } : {}),
       sessionSafe: exit.sessionSafe,
@@ -99,13 +96,7 @@ async function inspect(request, paths) {
       exit.sessionSafe === 'committed' ||
       (exit.sessionSafe === 'restored' && !stopRequested)
     ) {
-      const result = await readRegularJson(paths.result);
-      if (
-        result &&
-        (result.runId !== request.runId ||
-          result.generation !== request.generation)
-      )
-        throw new Error('Invalid recovered worker result');
+      const result = await readRecoveredResult(paths.result, request);
       if (exit.resultType && (!result || result.type !== exit.resultType))
         throw new Error('Worker result does not match exit proof');
       if (result) response.result = result;
@@ -113,20 +104,9 @@ async function inspect(request, paths) {
     return response;
   }
   if (request.environmentStopped) {
-    const result = await readRegularJson(paths.result);
-    if (
-      result &&
-      (result.runId !== request.runId ||
-        result.generation !== request.generation)
-    )
-      throw new Error('Invalid recovered worker result');
+    const result = await readRecoveredResult(paths.result, request);
     return {
-      version: 1,
-      runId: request.runId,
-      generation: request.generation,
-      state: 'exited',
-      stopRequested: false,
-      forced: false,
+      ...baseStatus(request, 'exited', false),
       sessionSafe: 'committed',
       processesExited: true,
       ...(result ? { result } : {}),
@@ -138,13 +118,23 @@ async function inspect(request, paths) {
   const stop = await readControlRecord(paths.stop);
   if (stop) validateStop(stop, control);
   const running =
-    (await processStartTicks(control.pid).catch(() => undefined)) ===
+    (await processIdentity(control.pid).catch(() => undefined))?.startTicks ===
     control.startTicks;
   return baseStatus(
     request,
     running && !stop ? 'running' : 'stopping',
     Boolean(stop),
   );
+}
+
+async function readRecoveredResult(path, request) {
+  const result = await readRegularJson(path);
+  if (
+    result &&
+    (result.runId !== request.runId || result.generation !== request.generation)
+  )
+    throw new Error('Invalid recovered worker result');
+  return result;
 }
 
 function baseStatus(request, state, stopRequested) {
@@ -178,38 +168,57 @@ async function waitForRegistration(request, paths, timeoutMs) {
   return inspect(request, paths);
 }
 
-async function signalExact(control, runId, signal) {
+export async function signalExact(record, runId, signal) {
+  const identity = await processIdentity(record.pid).catch(() => undefined);
   if (
-    (await processStartTicks(control.pid).catch(() => undefined)) !==
-      control.startTicks ||
-    !(await markedProcess(control.pid, runId))
+    identity?.startTicks !== record.startTicks ||
+    identity.pgid !== record.pgid ||
+    identity.sessionId !== record.sessionId ||
+    !(await markedProcess(record.pid, runId))
   )
     return;
   try {
-    process.kill(control.pid, signal);
+    process.kill(record.pid, signal);
   } catch (error) {
     if (error?.code !== 'ESRCH') throw error;
   }
 }
 
-async function processStartTicks(pid) {
+export async function processIdentity(pid) {
   const stat = await readFile('/proc/' + pid + '/stat', 'utf8');
-  const fields = stat.slice(stat.lastIndexOf(') ') + 2).split(' ');
-  const ticks = fields[19];
-  if (!/^\d+$/.test(ticks)) throw new Error('Invalid worker process identity');
-  return ticks;
+  return parseProcessIdentity(stat);
 }
 
-async function markedProcess(pid, runId) {
-  const environment = await readFile('/proc/' + pid + '/environ').catch(
+export function parseProcessIdentity(stat) {
+  const fields = stat.slice(stat.lastIndexOf(') ') + 2).split(' ');
+  const [state, ppid, pgid, sessionId] = fields;
+  const startTicks = fields[19];
+  if (
+    !state ||
+    !/^\d+$/.test(ppid) ||
+    !/^\d+$/.test(pgid) ||
+    !/^\d+$/.test(sessionId) ||
+    !/^\d+$/.test(startTicks)
+  )
+    throw new Error('Invalid worker process identity');
+  return {
+    state,
+    ppid: Number(ppid),
+    pgid: Number(pgid),
+    sessionId: Number(sessionId),
+    startTicks,
+  };
+}
+
+export function hasRunMarker(environment, runId) {
+  return environment?.split('\0').includes('HYDRA_RUN_ID=' + runId) ?? false;
+}
+
+export async function markedProcess(pid, runId) {
+  const environment = await readFile('/proc/' + pid + '/environ', 'utf8').catch(
     () => undefined,
   );
-  return Boolean(
-    environment
-      ?.toString()
-      .split('\0')
-      .includes('HYDRA_RUN_ID=' + runId),
-  );
+  return hasRunMarker(environment, runId);
 }
 
 async function writeStop(path, control) {
@@ -241,8 +250,8 @@ function validateControl(control, request) {
     !Number.isSafeInteger(control.pid) ||
     control.pid < 2 ||
     !/^\d+$/.test(control.startTicks) ||
-    ((control.pgid !== undefined || control.sessionId !== undefined) &&
-      (control.pgid !== control.pid || control.sessionId !== control.pid))
+    control.pgid !== control.pid ||
+    control.sessionId !== control.pid
   )
     throw new Error('Invalid worker control record');
 }
@@ -284,7 +293,7 @@ export function readControlRecord(path) {
   return readRegularJson(path, true);
 }
 
-async function readRegularJson(path, controlRecord = false) {
+export async function readRegularJson(path, controlRecord = false) {
   let file;
   try {
     file = await open(
@@ -341,7 +350,7 @@ async function hasPublishingLink(path, file, stat) {
   return (await file.stat()).nlink === 1;
 }
 
-async function createExclusiveJson(path, value) {
+export async function createExclusiveJson(path, value) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = path + '.' + randomUUID() + '.tmp';
   let file;
@@ -357,6 +366,30 @@ async function createExclusiveJson(path, value) {
   } finally {
     await file?.close().catch(() => {});
     await rm(temporary, { force: true });
+  }
+}
+
+/** Publishes a synced private file by rename, then syncs its directory. */
+export async function writeSyncedAtomic(path, value) {
+  const temporary = path + '.' + randomUUID() + '.tmp';
+  let published = false;
+  try {
+    const file = await open(
+      temporary,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      0o600,
+    );
+    try {
+      await file.writeFile(value);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await rename(temporary, path);
+    published = true;
+    await syncDirectory(dirname(path));
+  } finally {
+    if (!published) await rm(temporary, { force: true }).catch(() => {});
   }
 }
 

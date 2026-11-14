@@ -222,11 +222,10 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
     );
     const results = join(workspace, 'results');
     const previousResults = process.env.HYDRA_RESULTS;
-    const previousArtifactOutput = process.env.HYDRA_ARTIFACT_OUTPUT;
     process.env.HYDRA_RESULTS = results;
-    process.env.HYDRA_ARTIFACT_OUTPUT = '1';
     let tool:
       | {
+          name: string;
           execute(
             id: string,
             args: { format: string; content: string },
@@ -240,6 +239,7 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
           tool = value;
         },
       });
+      expect(tool!.name).toBe('write_artifact');
       const args = { format: 'csv', content: 'period,total\nQ1,18\n' };
       await expect(tool!.execute('first', args)).rejects.toMatchObject({
         code: 'ENOENT',
@@ -255,9 +255,6 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
     } finally {
       if (previousResults === undefined) delete process.env.HYDRA_RESULTS;
       else process.env.HYDRA_RESULTS = previousResults;
-      if (previousArtifactOutput === undefined)
-        delete process.env.HYDRA_ARTIFACT_OUTPUT;
-      else process.env.HYDRA_ARTIFACT_OUTPUT = previousArtifactOutput;
     }
   });
 
