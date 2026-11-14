@@ -68,9 +68,9 @@ function toolCall(name, args) {
 // Scripted turns: the first run answers at once; the resumed reply reads the
 // retained CSV, saves the artifact, then answers. The stopped run's request
 // stays open until Stop closes it, and the reply waits for that, so both runs
-// are active when the check stops one. Pi sends its system prompt as system
-// or developer messages; they must hold the instructions file in both the new
-// and the resumed session.
+// are active when the check stops one. In both the new and the resumed session,
+// Pi must send one system or developer message holding the instructions file.
+// A replayed prompt followed by a section update would be a second message.
 async function respond({ messages, tools = [] }, response) {
   const latest = JSON.stringify(messages.findLast((m) => m.role === 'user'));
   const runId = [config.first, config.reply, config.stopped].find((id) =>
@@ -84,10 +84,11 @@ async function respond({ messages, tools = [] }, response) {
     ['system', 'developer'].includes(m.role),
   );
   assert.ok(
-    JSON.stringify(system).includes(
-      JSON.stringify(config.instructions).slice(1, -1),
-    ),
-    'The system prompt lacks the instructions file',
+    system.length === 1 &&
+      JSON.stringify(system).includes(
+        JSON.stringify(config.instructions).slice(1, -1),
+      ),
+    'Expected one system prompt with the instructions file',
   );
   if (runId === config.reply) await stopClosed;
   const names = tools.map((tool) => tool.function.name);

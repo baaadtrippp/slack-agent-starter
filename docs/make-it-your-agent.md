@@ -9,14 +9,15 @@ installation from the [quickstart](service-setup.md).
 Edit
 [`apps/worker/sandbox/instructions.md`](../apps/worker/sandbox/instructions.md).
 The worker starts Pi with `--append-system-prompt` and the absolute path of this
-file, for new and resumed sessions alike. Pi keeps its own short default system
-prompt and adds the file after it. Pi's discovery of `AGENTS.md`, skills,
+file, for new and resumed sessions alike. Pi's discovery of `AGENTS.md`, skills,
 extensions, and MCP servers stays off, so this file is the one place for agent
-instructions. If the file is missing, a run fails before Pi starts and the
-worker logs `instructions_unavailable`.
+instructions. The file is required: bootstrap stops while checking inputs if it
+is missing. An empty file adds nothing to the prompt.
 
-Describe what the agent is for and how it should answer. Keep the tool and limit
-statements true to the worker, or the model will promise things it cannot do.
+Pi's own default prompt stays in front of the file and describes a coding
+assistant that runs commands and edits code. Describe what the agent is for and
+how it should answer, and state what it can and cannot really do, as the default
+file does for the shell. Otherwise the model will promise things it cannot do.
 The file is part of the worker snapshot, so
 [apply the change](#apply-worker-changes) as described below.
 
@@ -27,9 +28,15 @@ OpenRouter model that supports tool calls, and image input if you set
 `SLACK_PNG_INPUT` or `SLACK_JPEG_INPUT`. Set the new slug in the gateway's
 Production environment and deploy the gateway again, as in
 [quickstart section 4](service-setup.md#4-configure-and-deploy-the-gateway). The
-worker does not need a rebuild for this. Also set the slug in `SETUP_ENV`, so
-the next bootstrap and the
-[worker check](../apps/worker/README.md#check-the-worker) use the same model.
+worker does not need a rebuild for this.
+
+Bootstrap does not give the model to the worker, but the worker record stores
+the slug from `SETUP_ENV`, and setup refuses that record once `SETUP_ENV` names
+another model. Keep the old slug in `SETUP_ENV` while you might still retry
+setup with the current record. Switch it when you next use a new record path:
+for the [worker check](../apps/worker/README.md#check-the-worker), or for the
+next [worker change](#apply-worker-changes). Cleanup accepts the record whatever
+the slug.
 
 ## Add a tool
 
@@ -84,7 +91,8 @@ needs a new worker, and the gateway must be deployed from the same commit.
    output. Deploy the gateway from the same commit, as in
    [section 4](service-setup.md#4-configure-and-deploy-the-gateway).
 4. When Vercel's Sandbox view shows no running session for the old worker
-   Sandbox, run only the cleanup command from
+   Sandbox, which can keep running until its 25-minute session timeout, run only
+   the cleanup command from
    [section 8](service-setup.md#8-rollback-and-teardown), with a fresh OIDC
    token and the old record. It deletes the old Drive.
 

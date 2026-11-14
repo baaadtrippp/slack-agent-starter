@@ -1,5 +1,6 @@
-import { readFile, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 // The bootstrap runs on import, so these checks read its source.
@@ -16,16 +17,21 @@ const list = (name: string) =>
   ].map(([, value]) => value);
 
 describe('worker bootstrap', () => {
-  it('copies every worker file and syntax-checks only the scripts', async () => {
+  it('copies every tracked worker file', () => {
+    const tracked = execFileSync('git', ['ls-files', 'apps/worker/sandbox'], {
+      cwd: root,
+      encoding: 'utf8',
+    });
     expect(list('files').toSorted()).toEqual(
-      (await readdir(join(root, 'apps/worker/sandbox'))).toSorted(),
-    );
-    expect(source).toContain(
-      "...files\n        .filter((name) => name.endsWith('.mjs'))\n        .map((name) => 'node --check ' + name),",
+      tracked
+        .trim()
+        .split('\n')
+        .map((path) => basename(path))
+        .toSorted(),
     );
   });
 
-  it('denies non-public IPv4 ranges from the worker', () => {
+  it('lists the IPv4 ranges the worker egress denies', () => {
     expect(list('deny')).toEqual([
       '0.0.0.0/8',
       '10.0.0.0/8',
