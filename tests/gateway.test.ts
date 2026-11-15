@@ -2834,7 +2834,7 @@ describe.skipIf(!redisUrl)(
       [
         'pdf_text_too_large',
         undefined,
-        'The PDF contains more than 16 KiB of text for this test. Mention me again with a shorter PDF.',
+        'The PDF contains more than 16 KiB of text. Mention me again with a shorter PDF.',
       ],
       [
         'retained_sources_unavailable',
@@ -3137,7 +3137,7 @@ describe.skipIf(!redisUrl)(
         },
       });
       expect(workerJobSchema.safeParse(job).success).toBe(true);
-      // The schema is strict, so the removed csvOutput field is rejected.
+      // The strict schema rejects a csvOutput field.
       expect(
         workerJobSchema.safeParse({ ...job, csvOutput: true }).success,
       ).toBe(false);
@@ -3260,8 +3260,7 @@ describe.skipIf(!redisUrl)(
           url_private:
             'https://files.slack.com/files-pri/TTEST1-FTEST1/oversized.png',
         },
-        notice:
-          'The PNG exceeds the 16 KiB limit for this test. Attach a smaller file.',
+        notice: 'The PNG exceeds the 16 KiB limit. Attach a smaller file.',
         requests: 0,
       },
       {

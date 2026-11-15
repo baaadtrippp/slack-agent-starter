@@ -141,7 +141,7 @@ gateway environment variables, off unless `1`; the quickstart sets
 These are the current limits in the code, not load-tested
 ([specification](docs/spec/specification.md#7-limits-access-security-and-failure-behavior));
 [quickstart section 7](docs/service-setup.md#7-implemented-limits-and-retention)
-also lists them.
+adds retention details.
 
 | Area                | Limit                                                                                                                                                                                                                                                                                |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

@@ -1,8 +1,8 @@
 # Make it your agent
 
-The starter ships a generic Slack assistant. This guide covers the first changes
-most forks make: its instructions, its model, and its tools. It assumes an
-installation from the [quickstart](service-setup.md).
+Slack agent starter ships a generic Slack assistant. This guide covers the first
+changes most forks make: its instructions, its model, and its tools. It assumes
+an installation from the [quickstart](service-setup.md).
 
 ## Change the instructions
 

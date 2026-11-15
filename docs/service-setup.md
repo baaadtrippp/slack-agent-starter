@@ -222,7 +222,7 @@ printed by setup must be copied exactly.
 | `SLACK_SIGNING_SECRET`      | Slack app signing secret                                                     |
 | `REDIS_URL`                 | dedicated password-bearing `rediss://` URL                                   |
 | `SLACK_WORKSPACE_ID`        | intended workspace ID                                                        |
-| `SLACK_ENABLED_CHANNEL_IDS` | the one intended public channel ID                                           |
+| `SLACK_ENABLED_CHANNEL_IDS` | the one intended public channel ID; a comma-separated list is untested       |
 | `GATEWAY_ORIGIN`            | reserved bare production origin                                              |
 | `SANDBOX_WORKER_NAME`       | setup output                                                                 |
 | `SANDBOX_MANAGED_DRIVE`     | setup output                                                                 |
@@ -351,24 +351,8 @@ validation, a Vercel build, and the bootstrap's asset checks do not replace it.
 
 ## 7. Implemented limits and retention
 
-The current code enforces these limits.
-
-| Area                   | Implemented behavior                                             |
-| ---------------------- | ---------------------------------------------------------------- |
-| Slack access           | configured workspace and one public channel only                 |
-| Run ownership          | one active run per Slack thread                                  |
-| Run deadline           | 60 seconds, including staging, model work, callback, and cleanup |
-| Prompt                 | 12,000 characters                                                |
-| Initial thread context | up to 20 earlier messages, 2 KiB each and 16 KiB total           |
-| Inputs                 | up to 5 Slack files plus 1 public URL per turn, 16 KiB each      |
-| Retained inputs        | up to 12 sources in one native session                           |
-| Generated result       | one UTF-8 file up to 16 KiB plus the text answer                 |
-| Shared notes           | 16 notes per channel, 512 UTF-8 bytes per note                   |
-| Worker resources       | one shared 1-vCPU Sandbox session and one 1 GiB Drive            |
-
-There is no separate workspace-wide Pi process cap in the gateway. Concurrent
-threads share that one-vCPU Sandbox and Drive. Broader command execution and a
-permanent production rollout policy remain outside this packaging path.
+The README lists the [current limits](../README.md#current-limits) that the code
+enforces.
 
 Native Pi sessions, per-run work and result manifests, retained inputs, and
 shared notes persist on the Drive. Redis run, message, conversation, feedback,
