@@ -47,7 +47,7 @@ export async function fetchPublicText(value: string): Promise<Buffer | string> {
       if (error.message.includes('internal attachment URL'))
         return 'That URL points to a private or restricted network address.';
       if (error.message.includes('exceeds the download limit'))
-        return 'The URL response exceeds the 16 KiB limit for this test.';
+        return 'The URL response exceeds the 16 KiB limit.';
       if (error.message.includes('Timed out'))
         return 'The public URL did not respond within 8 seconds.';
     }

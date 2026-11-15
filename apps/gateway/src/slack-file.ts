@@ -160,7 +160,7 @@ export async function downloadSlackFile(
           : kind === 'text'
             ? 'Attach one supported Slack-hosted UTF-8 text, Markdown, source, diff, or JSON file.'
             : 'Attach one Slack-hosted CSV file encoded as UTF-8.';
-  const oversized = `The ${label} exceeds the 16 KiB limit for this test. Attach a smaller file.`;
+  const oversized = `The ${label} exceeds the 16 KiB limit. Attach a smaller file.`;
 
   const parsed = metadata.safeParse(attachment);
   if (!parsed.success) return unsupported;

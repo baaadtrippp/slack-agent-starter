@@ -72,7 +72,7 @@ const retainedSourcesUnavailable = new Error(
 const uncertainRun = new Error('Worker state requires inspection');
 const cancelledRun = new Error('Worker run was cancelled');
 const unreadablePdf = new Error('PDF text extraction failed');
-const oversizedPdfText = new Error('PDF text exceeds the test limit');
+const oversizedPdfText = new Error('PDF text exceeds the 16 KiB limit');
 const providerQuotaFailure = Object.assign(
   new Error('Provider quota is unavailable'),
   { failureCategory: 'provider_quota' },

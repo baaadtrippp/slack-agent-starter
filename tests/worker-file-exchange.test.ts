@@ -13,7 +13,6 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { StagedSource } from '../packages/contracts/src/index.js';
 
-// The deployed Sandbox entry point is standalone JavaScript.
 // @ts-expect-error The Sandbox entry point has no declaration file.
 import * as sandboxWorker from '../apps/worker/sandbox/run.mjs';
 
