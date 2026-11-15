@@ -12,7 +12,7 @@
 
 ## Scope
 
-- [ ] The change is the smallest slice that proves the stated outcome.
+- [ ] The change is the smallest one that proves the stated outcome.
 - [ ] No credentials, session data, shared memory, or private source material
       are included.
 - [ ] Documentation and traceability match the behavior actually verified.

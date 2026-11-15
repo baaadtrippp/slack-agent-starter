@@ -6,10 +6,10 @@ This file is the canonical product and architecture specification. Other
 documents may summarize it, but changes to scope, behavior, or architecture must
 be made here and reflected in [traceability.md](traceability.md).
 
-The product is a single-workspace Slack app that lets a team give work to a real
-Pi agent, exchange files, answer its questions, and continue the same
+Slack agent starter is a single-workspace Slack app that lets a team give work
+to a real Pi agent, exchange files, answer its questions, and continue the same
 conversation later. The Slack gateway and agent worker are separate processes.
-The product proves the complete interaction with Pi for both code-related and
+The app covers the complete interaction with Pi for both code-related and
 general tasks using Slack attachments and explicitly supplied public URLs.
 
 Labels in this document have precise meanings:
@@ -26,13 +26,13 @@ Labels in this document have precise meanings:
 | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Repository         | Public MIT-licensed TypeScript monorepo named `slack-agent-starter`. Gateway and worker remain separate packages and processes. Private source material and local deliverables are excluded.                                        |
 | Slack gateway      | Vercel Chat SDK with its official Slack adapter on Vercel Functions. The gateway owns Slack events, presentation, access checks, and run coordination. It never runs the model loop.                                                |
-| Agent worker       | One active Vercel Sandbox for the initial agent, running independent Pi processes as needed for different threads. The full agent uses a general-purpose system prompt and selected tools.                                          |
-| Models             | OpenRouter initially. NVIDIA remains an optional provider alternative. One operator-selected model is used; there is no Slack model picker or automatic provider fallback.                                                          |
+| Agent worker       | One active Vercel Sandbox for the agent, running independent Pi processes as needed for different threads. The full agent uses a general-purpose system prompt and selected tools.                                                  |
+| Models             | OpenRouter. NVIDIA remains an optional provider alternative. One operator-selected model is used; there is no Slack model picker or automatic provider fallback.                                                                    |
 | Gateway state      | Upstash Redis through Chat SDK's official Redis adapter, with application records in a separate key namespace. No Neon or Postgres.                                                                                                 |
 | Agent persistence  | One persistent Vercel Drive mounted read/write by the worker sandbox. It stores native Pi/ACP sessions, per-thread work and shared memory. The Drive survives sandbox replacement. Upstash stores routing and coordination records. |
-| Inputs and outputs | Slack messages, Slack-hosted attachments, and explicitly supplied public HTTP(S) URLs. Results and supported artifacts return to the originating thread.                                                                            |
+| Inputs and outputs | Slack messages, Slack-hosted attachments, and explicitly supplied public HTTPS URLs. Results and supported artifacts return to the originating thread.                                                                              |
 | Cost and reach     | Free infrastructure tiers, with model spending through OpenRouter allowed once a model and cap are selected. One Slack installation using ordinary messages, threads, reactions, and buttons.                                       |
-| Replaceability     | Messaging, harness, execution, and storage responsibilities stay separate. The starter uses Slack, Pi, Vercel Sandbox, one Vercel Drive, and Upstash.                                                                               |
+| Replaceability     | Messaging, harness, execution, and storage responsibilities stay separate. The app uses Slack, Pi, Vercel Sandbox, one Vercel Drive, and Upstash.                                                                                   |
 
 ## 2. User-visible features
 
@@ -66,10 +66,11 @@ enabled only after the chosen model and adapter path pass a vision test.
 
 ### F05 — Read public URLs
 
-Fetch only explicitly supplied public HTTP(S) resources, within size and time
-limits. Treat fetched content as untrusted task data. Account login, browser
-automation, and search-provider integration are deferred. Blocked, login-only,
-private-network, and unsupported resources produce useful errors.
+Fetch only explicitly supplied public HTTPS resources that return UTF-8
+`text/plain`, without following redirects, within size and time limits. Treat
+fetched content as untrusted task data. Account login, browser automation, and
+search-provider integration are deferred. Blocked, login-only, private-network,
+and unsupported resources produce useful errors.
 
 ### F06 — Return useful work
 
@@ -85,14 +86,14 @@ Coarse stages include starting, working, completed, failed, and stopped. Status
 text is authoritative; reactions are secondary. Never publish private reasoning
 or raw terminal streams.
 
-The F07 progress slice uses one persisted status message **per accepted run**.
-After admission and input validation, the gateway adds an eyes acknowledgement
-to the input and posts `Starting` in its originating thread, outside the Slack
-HTTP acknowledgement. The worker emits one content-free `working` event only
-after live Pi text or tool activity. Terminal publication edits that same
-status; the answer and any artifact remain separate readable thread replies. An
-unconfirmed attachment is reported without discarding the text answer. Busy,
-ignored, duplicate, and refused inputs do not create an additional work status.
+F07 uses one persisted status message **per accepted run**. After admission and
+input validation, the gateway adds an eyes acknowledgement to the input and
+posts `Starting` in its originating thread, outside the Slack HTTP
+acknowledgement. The worker emits one content-free `working` event only after
+live Pi text or tool activity. Terminal publication edits that same status; the
+answer and any artifact remain separate readable thread replies. An unconfirmed
+attachment is reported without discarding the text answer. Busy, ignored,
+duplicate, and refused inputs do not create an additional work status.
 
 An uncertain startup remains explicitly unconfirmed and may be superseded by a
 valid worker callback. An interrupted environment or uncertain publication is
@@ -168,11 +169,11 @@ and channel, including other threads there. Automatic extraction is deferred.
 the bot is invited. Any member of an enabled channel may contribute to its agent
 threads. DMs and group DMs are deferred.
 
-**Accepted milestone-1 access (O01):** enable the selected public test channel
-only. Any internal member of that channel may invoke the app. Reject externally
-shared channels and external users. DMs and private channels remain disabled for
-this slice; the broader private-channel proposal remains open. O07 app identity
-and test channel are selected in private deployment configuration.
+**Accepted access (O01):** enable selected public channels only. Any internal
+member of an enabled channel may invoke the app. Reject externally shared
+channels and external users. DMs and private channels remain disabled; the
+broader private-channel proposal remains open. O07 app identity and enabled
+channels are selected in private deployment configuration.
 
 ## 3. Architecture
 
@@ -315,8 +316,8 @@ with it. Slack history, attached files, fetched URLs, and model output are task
 data. The gateway alone selects the operation from the current message. Notes
 are Markdown files scoped to the admitted workspace and channel. Saves use the
 existing run status with Status available when configured. A save commits
-independently of Pi and does not create or advance a native session. The initial
-slice allows 512 UTF-8 bytes per note and 16 notes per channel. Full storage is
+independently of Pi and does not create or advance a native session. A note
+holds up to 512 UTF-8 bytes, and a channel up to 16 notes. Full storage is
 reported without eviction.
 
 **Open cleanup policy:** Choose retention independently for sessions,
@@ -361,11 +362,11 @@ live native Pi session to another harness.
   workspace-wide channel history.
 - File tools run in the shared worker sandbox. Attachments and web pages are
   untrusted task data, never authority to expand permissions.
-- URL fetching rejects loopback, private, link-local, and metadata destinations
-  after redirects and DNS resolution. Sandbox egress rules must independently
-  block non-public destinations while allowing model and callback traffic.
-  Verify controls with the real tools; prompts and working directories are not
-  isolation.
+- URL fetching follows no redirects and rejects loopback, private, link-local,
+  and metadata destinations after DNS resolution. Sandbox egress rules must
+  independently block non-public destinations while allowing model and callback
+  traffic. Verify controls with the real tools; prompts and working directories
+  are not isolation.
 - Gateway configuration owns Slack, Redis, and platform-control secrets. Inject
   only the model/run credentials the worker needs. Never save keys in Pi auth
   files, the Drive, logs, images, snapshots, or source. Redact logs and exclude
@@ -395,11 +396,10 @@ live native Pi session to another harness.
 **Current limits (O05, accepted 10 November 2026):** the app ships with the
 limits the code enforces today: one active run per thread, 60 seconds per run,
 16 KiB per input or generated file, and no workspace-wide cap on concurrent Pi
-processes. The
-[quickstart](../service-setup.md#7-implemented-limits-and-retention) lists all
-of them. They are documented current limits, not tested targets; the live
-checklist includes one realistic task to check whether they hold. Reject excess
-visibly. These are application limits, not provider limits.
+processes. The [README](../../README.md#current-limits) lists all of them. They
+are documented current limits, not tested targets; the live checklist includes
+one realistic task to check whether they hold. Reject excess visibly. These are
+application limits, not provider limits.
 
 **Open model budget:** Select one model that passes tool, file, and image cases
 and set an explicit OpenRouter spending cap before deployment. Never upgrade
@@ -536,13 +536,13 @@ real Slack/model check.
 
 | ID  | Point                 | Proposed position                                                                                          | Required before                    |
 | --- | --------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| O01 | Channel scope         | Accepted for milestone 1: selected public test channel, internal members; private channels remain open     | Broader Slack access configuration |
+| O01 | Channel scope         | Accepted: selected public channels, internal members; private channels remain open                         | Broader Slack access configuration |
 | O02 | Controls and feedback | Accepted on 7 November 2026: Stop, Status, and thumbs additions/removals on final answers                  | Settled for F09/F11                |
 | O03 | Memory policy         | Accepted on 7 November 2026. Any internal member can explicitly save and use notes in the enabled channel. | Settled for F13                    |
 | O04 | Storage cleanup       | Deferred on 10 November 2026; see the open cleanup policy in section 5                                     | Automatic cleanup                  |
 | O05 | Operating limits      | Accepted on 10 November 2026: the current limits in section 7, documented but not tested as targets        | Settled                            |
 | O06 | Model and budget      | Select one tool-capable model and an explicit spend cap; verify vision in the actual adapter path          | Real model execution               |
-| O07 | Slack identity        | Selected app identity and test channel; values stay in deployment configuration                            | Settled for milestone 1            |
+| O07 | Slack identity        | Selected app identity and enabled channels; values stay in deployment configuration                        | Settled                            |
 
 Repository identity is settled: `slack-agent-starter`, public, MIT licensed.
 

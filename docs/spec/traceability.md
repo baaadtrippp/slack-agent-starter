@@ -59,7 +59,7 @@ names it.
 |                           |                        |          | provider integration             | Worker check with `--paid` after the identifier rename (worker paths, env names, resource prefix, Redis namespace): all stand-in scenarios and the paid turn passed.                                         | 2026-11-15               | `f88c269`                                                | [check script](../../apps/gateway/scripts/check-worker.mjs), [how to run](../../apps/worker/README.md#check-the-worker)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 AC11 (development path and sanitized fixtures) and AC13 (repository publication)
-apply across all slices.
+apply across all features.
 
 ## Known gaps
 
@@ -69,8 +69,8 @@ apply across all slices.
   only. A live gateway restart is not recorded (see F08).
 - F04: JPEG has no live Slack run. An inaccessible Slack download is refused
   only in deterministic tests (controlled HTTP 403).
-- F04–F06, F12: Runs used small synthetic fixtures under opt-in tracer limits;
-  the source docs leave AC06 partial.
+- F04–F06, F12: Runs used small synthetic fixtures within the 16 KiB input and
+  output limits; the source docs leave AC06 partial.
 - F05: IPv6 egress enforcement is unverified. The tested Sandbox had no routed
   IPv6, and gateway refusal cannot close this.
 - F06: Code and Markdown uploads and the upload-failure text fallback are
@@ -99,7 +99,7 @@ apply across all slices.
 
 ## Evidence rules
 
-For each slice, link evidence and label it as one of:
+Link each piece of evidence and label it as one of:
 
 - **deterministic** — local or CI checks using synthetic fixtures and test
   doubles;

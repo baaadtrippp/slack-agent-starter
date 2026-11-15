@@ -9,7 +9,7 @@
 The Slack agent must keep a conversation's native Pi session and files across
 worker shutdown and replacement, allow a small number of threads to work
 independently, and keep the Slack-facing request path separate from the
-model/tool loop. The initial deployment is deliberately small and uses free
+model/tool loop. The deployment is deliberately small and uses free
 infrastructure tiers where available.
 
 ## Decision
@@ -31,8 +31,8 @@ Upstash stores routing, coordination, leases, deduplication, and Chat SDK state.
 Only one sandbox may hold the Drive's writable mount. Processes share the mount,
 so directories organize work but do not isolate mutually untrusted code.
 
-Use OpenRouter initially. Prefer the existing acpx + pi-acp integration and
-verify it before designing another adapter.
+Use OpenRouter. Prefer the existing acpx + pi-acp integration and verify it
+before designing another adapter.
 
 ## Consequences
 
@@ -45,8 +45,11 @@ verify it before designing another adapter.
 - Neon/Postgres, another queue, an always-on worker, per-thread sandboxes,
   runtime account connectors, and additional compute vendors are deferred.
 
-## Open follow-up decisions
+## Follow-up decisions
 
-Memory audience/write policy, retention, model and spend cap, operating limits,
-Slack display identity/channels, and the proposed Stop/Status and reaction
-behaviors remain open as listed in the specification.
+The specification's
+[open review points](../spec/specification.md#10-open-review-points) track the
+follow-up decisions. Public-channel access (O01), Stop/Status and reactions
+(O02), the memory policy (O03), operating limits (O05), and Slack identity (O07)
+are settled. Storage cleanup (O04) is deferred. Private channels (O01) and the
+model and spend cap (O06) remain open.
