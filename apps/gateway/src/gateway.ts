@@ -466,10 +466,15 @@ export function createGateway({
       // Models link to sandbox:/workspace/... paths Slack users cannot open.
       // Keep the link label and drop the internal target.
       const text = result.text.replace(
-        /!?\[([^\]]*)\]\(sandbox:[^)]*\)/g,
+        /!?\[([^[\]]*)\]\(sandbox:[^)]*\)/g,
         '$1',
       );
-      const message = await bot.thread(threadId).post(text);
+      const message = await bot
+        .thread(threadId)
+        .post(
+          text.trim() ||
+            'The answer contained only a file link, which cannot be opened from Slack.',
+        );
       if (
         !message.id ||
         (result.session && !/^\d{10}\.\d{6}$/.test(message.id))
@@ -1207,7 +1212,7 @@ export function createGateway({
               downloadSlackFile(files[index], config.botToken, kind),
             );
         }
-        if (publicUrl) downloads.push(fetchPublicText(publicUrl));
+        if (publicUrl) downloads.push(fetchPublicText(publicUrl, run.runId));
         const stagedInputs: Buffer[] = [];
         for (const [index, value] of (await Promise.all(downloads)).entries()) {
           if (typeof value === 'string') {

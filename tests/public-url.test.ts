@@ -163,10 +163,14 @@ describe('public text URL fetch', () => {
     useRealDownloader(transport);
 
     await expect(
-      fetchPublicText('https://files.example/notes.txt?key=value'),
+      fetchPublicText(
+        'https://files.example/notes.txt?key=value',
+        'run-synthetic',
+      ),
     ).resolves.toBe('The public URL answered HTTP 429 instead of the text.');
     expect(log).toHaveBeenCalledExactlyOnceWith(
       JSON.stringify({
+        runId: 'run-synthetic',
         phase: 'public_url_unavailable',
         host: 'files.example',
         error: 'Failed to fetch file: 429',
@@ -184,10 +188,11 @@ describe('public text URL fetch', () => {
     useRealDownloader(transport);
 
     await expect(
-      fetchPublicText('https://files.example/notes.txt'),
+      fetchPublicText('https://files.example/notes.txt', 'run-synthetic'),
     ).resolves.toMatch(/could not fetch/);
     expect(log).toHaveBeenCalledExactlyOnceWith(
       JSON.stringify({
+        runId: 'run-synthetic',
         phase: 'public_url_unavailable',
         host: 'files.example',
         error: 'socket hang up',

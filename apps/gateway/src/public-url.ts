@@ -8,7 +8,10 @@ const inaccessible =
   'I could not fetch that public URL. Check that it opens without signing in and does not redirect.';
 const unexpectedType = new Error('Expected text/plain');
 
-export async function fetchPublicText(value: string): Promise<Buffer | string> {
+export async function fetchPublicText(
+  value: string,
+  runId?: string,
+): Promise<Buffer | string> {
   const url = URL.parse(value);
   if (
     !url ||
@@ -54,6 +57,7 @@ export async function fetchPublicText(value: string): Promise<Buffer | string> {
     const message = error instanceof Error ? error.message : String(error);
     console.error(
       JSON.stringify({
+        runId,
         phase: 'public_url_unavailable',
         host: url.hostname,
         error: message,
