@@ -26,3 +26,9 @@ export const limits = {
 
 // A run's deadline is its admission time plus this duration.
 export const RUN_DURATION_MS = 60_000;
+
+// Limit text for replies: whole KiB when exact, otherwise bytes.
+export const formatBytes = (bytes: number) =>
+  bytes % 1024
+    ? `${bytes.toLocaleString('en-US')} bytes`
+    : `${bytes / 1024} KiB`;

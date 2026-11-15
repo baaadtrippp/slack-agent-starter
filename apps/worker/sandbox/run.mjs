@@ -218,6 +218,12 @@ export default async function (pi) {
 }
 `;
 
+// Matches formatBytes in packages/contracts/src/limits.ts.
+const formatBytes = (bytes) =>
+  bytes % 1024
+    ? `${bytes.toLocaleString('en-US')} bytes`
+    : `${bytes / 1024} KiB`;
+
 export const writeArtifactExtension = (byteLimit) => `
 import { createHash } from 'node:crypto';
 import { constants, open, rm } from 'node:fs/promises';
@@ -239,7 +245,7 @@ export default function (pi) {
       if (!formats.includes(format) || typeof content !== 'string' ||
           !content.isWellFormed() || !content.length || content.includes(String.fromCharCode(0)) ||
           Buffer.byteLength(content) > ${byteLimit})
-        throw new Error('Provide one supported non-empty UTF-8 file up to ${byteLimit / 1024} KiB');
+        throw new Error('Provide one supported non-empty UTF-8 file up to ${formatBytes(byteLimit)}');
       if (reserved) throw new Error('This run already has an artifact');
       reserved = true;
       const bytes = Buffer.from(content);

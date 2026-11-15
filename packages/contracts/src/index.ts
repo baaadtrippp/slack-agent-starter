@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { limits } from './limits.js';
 
-export { limits, RUN_DURATION_MS } from './limits.js';
+export { formatBytes, limits, RUN_DURATION_MS } from './limits.js';
 
 const workerSessionSchema = z
   .object({
