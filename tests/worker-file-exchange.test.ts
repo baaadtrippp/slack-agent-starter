@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { limits } from '../packages/contracts/src/index.js';
 import type { StagedSource } from '../packages/contracts/src/index.js';
 
 // @ts-expect-error The Sandbox entry point has no declaration file.
@@ -69,7 +70,7 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
     const original = await prepareSources(
       [first, second],
       seed,
-      { runId: run },
+      { runId: run, limits },
       workspace,
       workspace,
     );
@@ -81,13 +82,13 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
     const revisions = join(session, 'input-revisions');
     await writeFile(join(revisions, '7.json'), JSON.stringify([first, second]));
     await writeFile(join(revisions, '8.json'), JSON.stringify([second]));
-    expect(await loadRetainedInputs(session, 6)).toEqual([]);
+    expect(await loadRetainedInputs(session, 6, limits)).toEqual([]);
 
-    const selected = await loadRetainedInputs(session, 7, true);
+    const selected = await loadRetainedInputs(session, 7, limits, true);
     const followup = await prepareSources(
       selected,
       seed,
-      { runId: randomUUID() },
+      { runId: randomUUID(), limits },
       workspace,
       workspace,
     );
@@ -108,7 +109,7 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
       prepareSources(
         selected,
         randomUUID(),
-        { runId: randomUUID() },
+        { runId: randomUUID(), limits },
         workspace,
         workspace,
       ),
@@ -116,14 +117,16 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
   });
 
   it('requires a nonempty catalog for a session with retained sources', async () => {
-    expect(await loadRetainedInputs(session, 7)).toEqual([]);
-    await expect(loadRetainedInputs(session, 7, true)).rejects.toMatchObject({
+    expect(await loadRetainedInputs(session, 7, limits)).toEqual([]);
+    await expect(
+      loadRetainedInputs(session, 7, limits, true),
+    ).rejects.toMatchObject({
       code: 'ENOENT',
     });
 
     await writeFile(join(session, 'input-revisions', '7.json'), '[]');
-    expect(await loadRetainedInputs(session, 7)).toEqual([]);
-    await expect(loadRetainedInputs(session, 7, true)).rejects.toThrow(
+    expect(await loadRetainedInputs(session, 7, limits)).toEqual([]);
+    await expect(loadRetainedInputs(session, 7, limits, true)).rejects.toThrow(
       'Invalid retained input catalog',
     );
   });
@@ -139,13 +142,19 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
         prepareSources(
           [source],
           seed,
-          { runId: randomUUID() },
+          { runId: randomUUID(), limits },
           workspace,
           workspace,
         ),
       ).rejects.toThrow('Retained sources are unavailable');
       await expect(
-        prepareSources([source], seed, { runId: run }, workspace, workspace),
+        prepareSources(
+          [source],
+          seed,
+          { runId: run, limits },
+          workspace,
+          workspace,
+        ),
       ).rejects.toThrow(
         failure === 'missing' ? 'ENOENT' : 'Staged input checksum mismatch',
       );
@@ -159,23 +168,60 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
       revision,
       JSON.stringify([{ ...source, runId: '../other-run' }]),
     );
-    await expect(loadRetainedInputs(session, 7)).rejects.toThrow(
+    await expect(loadRetainedInputs(session, 7, limits)).rejects.toThrow(
       'Invalid retained input catalog',
     );
+  });
+
+  it.each([
+    ['csv', 'inputFileBytes', 'publicLinkBytes'],
+    ['publicUrl', 'publicLinkBytes', 'inputFileBytes'],
+  ] as const)('bounds a staged %s by %s only', async (kind, own, other) => {
+    const { source } = await stage(csv, kind, 'revenue.csv', 0);
+    const job = (name: string) => ({
+      runId: run,
+      limits: { ...limits, [name]: csv.length - 1 },
+    });
+    await expect(
+      prepareSources([source], seed, job(own), workspace, workspace),
+    ).rejects.toThrow('Expected one bounded regular input file');
+    const accepted = await prepareSources(
+      [source],
+      seed,
+      job(other),
+      workspace,
+      workspace,
+    );
+    expect(accepted.inputs['input-1']).toEqual({
+      type: 'text',
+      text: csv.toString(),
+    });
   });
 
   it('rejects tampered bytes and symbolic links', async () => {
     const { path, source } = await stage(csv, 'csv', 'revenue.csv', 0);
     await writeFile(path, Buffer.from(csv).fill('A'));
     await expect(
-      prepareSources([source], seed, { runId: run }, workspace, workspace),
+      prepareSources(
+        [source],
+        seed,
+        { runId: run, limits },
+        workspace,
+        workspace,
+      ),
     ).rejects.toThrow('Staged input checksum mismatch');
     const other = join(workspace, 'other-conversation.csv');
     await writeFile(other, csv);
     await rm(path);
     await symlink(other, path);
     await expect(
-      prepareSources([source], seed, { runId: run }, workspace, workspace),
+      prepareSources(
+        [source],
+        seed,
+        { runId: run, limits },
+        workspace,
+        workspace,
+      ),
     ).rejects.toMatchObject({ code: 'ELOOP' });
   });
 
@@ -189,7 +235,7 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
     const first = await prepareSources(
       [source],
       seed,
-      { runId: run },
+      { runId: run, limits },
       workspace,
       workspace,
     );
@@ -198,7 +244,7 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
     const resumed = await prepareSources(
       [source],
       seed,
-      { runId: randomUUID() },
+      { runId: randomUUID(), limits },
       workspace,
       workspace,
     );
@@ -214,7 +260,7 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
     const extension = join(workspace, 'write-artifact.mjs');
     await writeFile(
       extension,
-      writeArtifactExtension.replace(
+      writeArtifactExtension(32).replace(
         "import { Type } from 'typebox';",
         'const Type = { String: (value) => value, Object: (value) => value, Unsafe: (value) => value };',
       ),
@@ -239,6 +285,10 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
         },
       });
       expect(tool!.name).toBe('write_artifact');
+      const oversized = { format: 'csv', content: 'a'.repeat(33) };
+      await expect(tool!.execute('oversized', oversized)).rejects.toThrow(
+        'Provide one supported non-empty UTF-8 file',
+      );
       const args = { format: 'csv', content: 'period,total\nQ1,18\n' };
       await expect(tool!.execute('first', args)).rejects.toMatchObject({
         code: 'ENOENT',

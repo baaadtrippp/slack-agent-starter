@@ -1,10 +1,7 @@
 import { fetchSlackThreadReplies } from '@chat-adapter/slack/api';
 import { z } from 'zod';
 import {
-  MAX_SLACK_ATTACHMENT_METADATA,
-  MAX_THREAD_CONTEXT_BYTES,
-  MAX_THREAD_CONTEXT_MESSAGES,
-  MAX_THREAD_MESSAGE_BYTES,
+  limits,
   slackAttachmentSchema,
   slackContextSender,
   slackTimestamp,
@@ -23,7 +20,7 @@ const slackFile = z.object({
 export function slackAttachmentMetadata(files: unknown) {
   if (!Array.isArray(files)) return;
   const attachments = files
-    .slice(0, MAX_SLACK_ATTACHMENT_METADATA)
+    .slice(0, limits.attachmentMetadataPerMessage)
     .flatMap((raw: unknown) => {
       const file = slackFile.safeParse(raw);
       if (!file.success) return [];
@@ -66,7 +63,7 @@ export async function loadThreadContext(
     ts: run.threadTs,
     latest: run.messageTs,
     inclusive: false,
-    limit: MAX_THREAD_CONTEXT_MESSAGES,
+    limit: limits.threadContextMessages,
     fetch: (url, init) =>
       fetch(url, {
         ...init,
@@ -103,7 +100,7 @@ export async function loadThreadContext(
   };
   for (const row of earlier) {
     if (row.ts === context.messages.at(-1)?.messageTs) continue;
-    if (context.messages.length === MAX_THREAD_CONTEXT_MESSAGES) {
+    if (context.messages.length === limits.threadContextMessages) {
       context.truncated = true;
       break;
     }
@@ -115,16 +112,16 @@ export async function loadThreadContext(
           '[Slack token omitted]',
         ),
     );
-    if (textBytes.length > MAX_THREAD_MESSAGE_BYTES) context.truncated = true;
+    if (textBytes.length > limits.threadMessageBytes) context.truncated = true;
     // Streaming decode drops a partial UTF-8 character at the byte boundary.
     const text = new TextDecoder().decode(
-      textBytes.subarray(0, MAX_THREAD_MESSAGE_BYTES),
+      textBytes.subarray(0, limits.threadMessageBytes),
       { stream: true },
     );
     const attachments = slackAttachmentMetadata(row.files);
     if (
       Array.isArray(row.files) &&
-      row.files.length > MAX_SLACK_ATTACHMENT_METADATA
+      row.files.length > limits.attachmentMetadataPerMessage
     )
       context.truncated = true;
     context.messages.push({
@@ -133,7 +130,9 @@ export async function loadThreadContext(
       text,
       ...(attachments ? { attachments } : {}),
     });
-    if (Buffer.byteLength(JSON.stringify(context)) > MAX_THREAD_CONTEXT_BYTES) {
+    if (
+      Buffer.byteLength(JSON.stringify(context)) > limits.threadContextBytes
+    ) {
       context.messages.pop();
       context.truncated = true;
       break;

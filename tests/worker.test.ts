@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { workerJobSchema } from '../packages/contracts/src/index.js';
+import { limits, workerJobSchema } from '../packages/contracts/src/index.js';
 
 const now = 1_800_000_000_000;
 const callbackToken = 'a'.repeat(64);
@@ -18,6 +18,7 @@ function makeJob(overrides: Record<string, unknown> = {}) {
       threadTs: '1800000000.000001',
       messageTs: '1800000000.000002',
     },
+    limits,
     deadline: now + 30_000,
     callbackUrl: 'https://gateway.example/api/worker/callback',
     callbackToken,
@@ -26,6 +27,16 @@ function makeJob(overrides: Record<string, unknown> = {}) {
 }
 
 describe('worker job contract', () => {
+  it('requires every content limit as a positive integer', () => {
+    expect(workerJobSchema.safeParse(makeJob()).success).toBe(true);
+    for (const value of [undefined, 0, 1.5])
+      expect(
+        workerJobSchema.safeParse(
+          makeJob({ limits: { ...limits, inputFileBytes: value } }),
+        ).success,
+      ).toBe(false);
+  });
+
   it.each([
     ['save', 'workspace', 'C00000001'],
     ['read', 'T00000001', 'channel'],

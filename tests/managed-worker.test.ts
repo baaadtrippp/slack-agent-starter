@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createManagedWorker } from '../apps/gateway/src/managed-worker.js';
 import { RedisRunStore } from '../apps/gateway/src/store.js';
 import type { RunRecord } from '../apps/gateway/src/store.js';
+import { limits } from '../packages/contracts/src/index.js';
 import type { WorkerJob } from '../packages/contracts/src/index.js';
 
 const { sandboxGet, driveGet } = vi.hoisted(() => ({
@@ -237,6 +238,7 @@ describe.skipIf(!redisUrl)('managed worker replacement', () => {
         threadTs: run.threadTs,
         messageTs: run.messageTs,
       },
+      limits,
       deadline: run.deadline,
       callbackUrl: 'https://gateway.example/api/worker/callback',
       callbackToken: 'c'.repeat(64),

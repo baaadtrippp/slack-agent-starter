@@ -2,13 +2,15 @@ import { mkdtemp, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { limits } from '../packages/contracts/src/index.js';
 
 // The Sandbox entry point is plain JavaScript because it is copied directly
 // into the worker image.
 // @ts-expect-error No declaration file is shipped for the Sandbox entry point.
 import * as sandboxWorker from '../apps/worker/sandbox/run.mjs';
 
-const { buildPromptText, verifySavedSession, writePiLauncher } = sandboxWorker;
+const { buildPromptText, isValidLimits, verifySavedSession, writePiLauncher } =
+  sandboxWorker;
 
 type Attachment = {
   id: string;
@@ -40,6 +42,7 @@ type TestJob = {
       [key: string]: unknown;
     };
   };
+  limits: typeof limits;
   session?: unknown;
 };
 
@@ -64,6 +67,7 @@ function job(): TestJob {
       threadTs: '1800000000.000001',
       messageTs: '1800000000.000004',
     },
+    limits,
   };
 }
 
@@ -258,6 +262,23 @@ describe('Sandbox worker Slack context prompt', () => {
     expect(() => buildPromptText(input)).toThrow(
       'Invalid Slack prompt metadata',
     );
+  });
+
+  it('enforces the context limit received in the job', () => {
+    const input = contextJob();
+    input.limits = { ...limits, threadContextMessages: 1 };
+
+    expect(() => buildPromptText(input)).toThrow(
+      'Invalid Slack prompt metadata',
+    );
+  });
+
+  it('accepts the contract limits and rejects a missing or invalid value', () => {
+    expect(isValidLimits(limits)).toBe(true);
+    for (const name of Object.keys(limits))
+      for (const value of [undefined, 0, 1.5, '16384'])
+        expect(isValidLimits({ ...limits, [name]: value })).toBe(false);
+    expect(isValidLimits(undefined)).toBe(false);
   });
 
   it('rejects more than 20 earlier messages', () => {

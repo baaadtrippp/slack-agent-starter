@@ -2,7 +2,7 @@ import { isUtf8 } from 'node:buffer';
 import { downloadAttachment, NetworkError } from '@chat-adapter/shared';
 import { z } from 'zod';
 
-import { INPUT_BYTE_LIMIT } from '../../../packages/contracts/src/index.js';
+import { limits } from '../../../packages/contracts/src/index.js';
 const pngSignature = Buffer.from('89504e470d0a1a0a', 'hex');
 const pngEnd = Buffer.from('0000000049454e44ae426082', 'hex');
 const maxImageEdge = 1_024;
@@ -160,13 +160,13 @@ export async function downloadSlackFile(
           : kind === 'text'
             ? 'Attach one supported Slack-hosted UTF-8 text, Markdown, source, diff, or JSON file.'
             : 'Attach one Slack-hosted CSV file encoded as UTF-8.';
-  const oversized = `The ${label} exceeds the 16 KiB limit. Attach a smaller file.`;
+  const oversized = `The ${label} exceeds the ${limits.inputFileBytes / 1024} KiB limit. Attach a smaller file.`;
 
   const parsed = metadata.safeParse(attachment);
   if (!parsed.success) return unsupported;
   const file = parsed.data;
   if (selectSlackFileKind(file) !== kind) return unsupported;
-  if (file.size > INPUT_BYTE_LIMIT) return oversized;
+  if (file.size > limits.inputFileBytes) return oversized;
   const url = new URL(file.url_private);
   if (
     url.origin !== 'https://files.slack.com' ||
@@ -182,7 +182,7 @@ export async function downloadSlackFile(
       adapter: 'slack-file',
       headers: () => ({ authorization: 'Bearer ' + token }),
       hosts: ['files.slack.com'],
-      limit: INPUT_BYTE_LIMIT,
+      limit: limits.inputFileBytes,
       redirects: 0,
       timeoutMs: 8_000,
       onResponse(response) {

@@ -1,5 +1,6 @@
 import { MIMEType } from 'node:util';
 import { downloadAttachment, NetworkError } from '@chat-adapter/shared';
+import { limits } from '../../../packages/contracts/src/index.js';
 
 const invalid =
   'Send a direct public HTTPS link without credentials or a custom port.';
@@ -26,7 +27,7 @@ export async function fetchPublicText(
   try {
     bytes = await downloadAttachment(url.href, {
       adapter: 'public-url',
-      limit: 16 * 1024,
+      limit: limits.publicLinkBytes,
       timeoutMs: 8_000,
       redirects: 0,
       onResponse(response) {
@@ -50,7 +51,7 @@ export async function fetchPublicText(
       if (error.message.includes('internal attachment URL'))
         return 'That URL points to a private or restricted network address.';
       if (error.message.includes('exceeds the download limit'))
-        return 'The URL response exceeds the 16 KiB limit.';
+        return `The URL response exceeds the ${limits.publicLinkBytes / 1024} KiB limit.`;
       if (error.message.includes('Timed out'))
         return 'The public URL did not respond within 8 seconds.';
     }

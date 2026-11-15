@@ -44,7 +44,8 @@ Tools are Pi extensions that the worker writes for each run. `write_artifact` in
 [`apps/worker/sandbox/run.mjs`](../apps/worker/sandbox/run.mjs) is the example
 to copy:
 
-1. `writeArtifactExtension` holds the extension source. Its default export calls
+1. `writeArtifactExtension(byteLimit)` returns the extension source, with the
+   job's generated-file limit written in. Its default export calls
    `pi.registerTool` with a name, a description for the model, TypeBox
    parameters, and an `execute` function that returns the tool result.
 2. In `prompt()`, the run writes that source to its scratch directory, adds an
