@@ -108,7 +108,10 @@ needs a new worker, and the gateway must be deployed from the same commit.
 
 1. Commit the change and run the checks from
    [quickstart section 1](service-setup.md#1-prepare-a-clean-checkout). Run the
-   [worker check](../apps/worker/README.md#check-the-worker) on that commit.
+   [worker check](../apps/worker/README.md#check-the-worker) on that commit. If
+   the Vercel project is connected to Git, push the commit to the production
+   branch only after step 3: a build from an earlier push goes live with the old
+   worker settings.
 2. Run setup from
    [quickstart section 3](service-setup.md#3-bootstrap-the-worker) with a new
    `WORKER_RECORD` path, such as `"$PRIVATE_SETUP_DIR/worker-record-2.json"`.
@@ -118,10 +121,7 @@ needs a new worker, and the gateway must be deployed from the same commit.
    output, using the loop in
    [section 4](service-setup.md#4-configure-and-deploy-the-gateway). Then deploy
    the gateway from the same commit and check that the stable origin serves that
-   deployment, as in section 4. The gateway must be built after the settings
-   change: a deployment keeps the settings it was built with, so if the project
-   is connected to Git, the build made when you pushed the commit still points
-   at the old worker. Do not promote it.
+   deployment, as in section 4.
 4. Wait until every status message posted before the switch shows a final state;
    press Status on any that stay unfinished. A run accepted before the switch
    still uses the old Drive. Also wait until Vercel's Sandbox view shows no

@@ -224,9 +224,9 @@ printed by setup must be copied exactly.
 | `SLACK_WORKSPACE_ID`        | intended workspace ID                                                        |
 | `SLACK_ENABLED_CHANNEL_IDS` | the one intended public channel ID; a comma-separated list is untested       |
 | `GATEWAY_ORIGIN`            | reserved bare production origin                                              |
-| `SANDBOX_WORKER_NAME`       | setup output                                                                 |
-| `SANDBOX_MANAGED_DRIVE`     | setup output                                                                 |
-| `SANDBOX_MANAGED_SEED`      | setup output                                                                 |
+| `SANDBOX_WORKER_NAME`       | setup output, added with the loop below                                      |
+| `SANDBOX_MANAGED_DRIVE`     | setup output, added with the loop below                                      |
+| `SANDBOX_MANAGED_SEED`      | setup output, added with the loop below                                      |
 | `OPENROUTER_MODEL`          | exact model slug used by setup                                               |
 | `SLACK_FILE_EXCHANGE`       | `1`                                                                          |
 | `SLACK_JPEG_INPUT`          | `1` after an exact-model vision check                                        |
@@ -238,29 +238,31 @@ Do not set `OPENROUTER_API_KEY`, `VERCEL_OIDC_TOKEN`, or `VERCEL_PROJECT_ID` in
 the gateway. Vercel supplies runtime project authentication to the Sandbox SDK.
 
 Store the three `SANDBOX_*` settings as Config variables, not Secrets. They are
-names and an ID, not credentials, and only a Config value can be read back to
-confirm which worker the next deployment uses. The CLI stores Production
-variables as Secrets unless told otherwise, and a Secret cannot be changed to
-Config in place, so the loop below removes each one before adding it again. On a
-first installation, the remove step reports that the variable was not found.
-Paste each value from the setup output when prompted. The same loop replaces
-them for a [worker change](make-it-your-agent.md#apply-worker-changes).
+names and an ID, not credentials, and only a Config value stays readable in the
+project's Environment Variables settings, to confirm which worker the next
+deployment uses. The CLI stores Production variables as Secrets unless told
+otherwise, and a Secret cannot be changed to Config in place, so the loop below
+removes each one before adding it again. On a first installation, the remove
+step reports that the variable was not found. Paste each value from the setup
+output when prompted. The same loop replaces them for a
+[worker change](make-it-your-agent.md#apply-worker-changes); skip it when the
+worker has not changed, as for a model or limits change.
 
 ```sh
 for NAME in SANDBOX_WORKER_NAME SANDBOX_MANAGED_DRIVE SANDBOX_MANAGED_SEED; do
   pnpm exec vercel env remove "$NAME" --environment production --yes --scope "$SCOPE"
   pnpm exec vercel env add "$NAME" --environment production --no-sensitive --scope "$SCOPE"
 done
-pnpm exec vercel env list --environment production --json --scope "$SCOPE" |
-  node -e 'for (const e of JSON.parse(require("fs").readFileSync(0)).envs)
-    if (e.key.startsWith("SANDBOX_")) console.log(`${e.key}=${e.value ?? "(Secret)"}`)'
+pnpm exec vercel env list --environment production --scope "$SCOPE"
 ```
 
+The list must show all three names with type `Config`. If one is missing, for
+example because its prompt was cancelled, run the loop again before deploying;
+without it the gateway fails every request with `Missing configuration`.
+
 Deploy the gateway from the clean clone after the variables are set. A
-deployment keeps the environment variables it was built with. If the project is
-connected to the Git repository, a push to the production branch also builds a
-production deployment; a build made before a settings change still carries the
-old values, so deploy again instead of promoting it.
+deployment keeps the environment variables it was built with, so never promote a
+deployment built before a settings change, such as one built from a Git push.
 
 ```sh
 DEPLOYMENT_URL=$(pnpm exec vercel deploy --prod --yes --scope "$SCOPE")
@@ -268,11 +270,11 @@ pnpm exec vercel inspect "$DEPLOYMENT_URL" --scope "$SCOPE" --json
 pnpm exec vercel inspect "$GATEWAY_ORIGIN" --scope "$SCOPE" --json
 ```
 
-Both commands must report the same `id`, and the origin must report your project
-as `name`, `readyState` `READY`, and `target` `production`. If the origin still
-reports an older `id`, the project does not assign production domains
-automatically, as happens after an Instant Rollback. Promote the new deployment
-and inspect the origin again.
+The new deployment must report `readyState` `READY` and `target` `production`;
+if it does not, fix the build and deploy again. The origin must then report the
+same `id` and your project as `name`. If the origin still reports an older `id`,
+the project does not assign production domains automatically, as happens after
+an Instant Rollback. Promote the new deployment and inspect the origin again.
 
 ```sh
 pnpm exec vercel promote "$DEPLOYMENT_URL" --scope "$SCOPE"
@@ -281,8 +283,9 @@ pnpm exec vercel inspect "$GATEWAY_ORIGIN" --scope "$SCOPE" --json
 
 Slack and the worker must reach this origin without signing in to Vercel. If the
 project's Deployment Protection covers production, limit it to preview
-deployments. Keep the deployment URL for rollback until the Slack smoke has
-passed.
+deployments. For rollback, keep the URL of the deployment the origin served
+before this one until the Slack smoke has passed; on a later rollout, record it
+from the origin's `inspect` output before you deploy.
 
 ## 5. Apply the complete Slack manifest
 
@@ -401,23 +404,20 @@ data. The Drive is durable working storage rather than a backup.
 To roll back a bad gateway deployment, point the stable Vercel origin to the
 previous known-good deployment or redeploy that exact commit. A redeploy uses
 the current worker settings, so first restore the three `SANDBOX_*` values of
-the worker built from that commit. Keep the matching worker snapshot and Drive
+the worker that deployment used. Keep the matching worker snapshot and Drive
 until accepted work is terminal and the rollback has been checked. A gateway and
 worker built from different revisions are not a supported steady state. The
 exception is a gateway from a later commit that changes only values in
 `packages/contracts/src/limits.ts`; see
 [Change the limits](make-it-your-agent.md#change-the-limits).
 
-The previous deployment keeps the worker settings it was built with. After a
-[worker change](make-it-your-agent.md#apply-worker-changes), keep the previous
-worker until the new deployment has been checked. Once that worker has been
-cleaned up, the previous deployment points at a deleted worker, and a rollback
-needs a new worker with a new, empty Drive: check out the previous commit, run
-setup from [section 3](#3-bootstrap-the-worker) with a new `WORKER_RECORD` path,
+After a [worker change](make-it-your-agent.md#apply-worker-changes), keep the
+previous worker until the new deployment has been checked, because the previous
+deployment still uses it. Once that worker has been cleaned up, a rollback needs
+a new worker with a new, empty Drive: check out the previous commit, run setup
+from [section 3](#3-bootstrap-the-worker) with a new `WORKER_RECORD` path,
 replace the three settings, and deploy as in
-[section 4](#4-configure-and-deploy-the-gateway). After an Instant Rollback,
-Vercel stops assigning production domains to new production deployments, so the
-next deployment needs the promote step from section 4.
+[section 4](#4-configure-and-deploy-the-gateway).
 
 For complete teardown, first disable Slack Event Subscriptions so no new run
 starts. Keep Interactivity enabled and the app installed until every status
