@@ -115,15 +115,21 @@ needs a new worker, and the gateway must be deployed from the same commit.
    Setup refuses the old record because it names a different commit.
 3. In the gateway's Production environment, replace `SANDBOX_WORKER_NAME`,
    `SANDBOX_MANAGED_DRIVE`, and `SANDBOX_MANAGED_SEED` with the new setup
-   output. Deploy the gateway from the same commit, as in
-   [section 4](service-setup.md#4-configure-and-deploy-the-gateway).
+   output, using the loop in
+   [section 4](service-setup.md#4-configure-and-deploy-the-gateway). Then deploy
+   the gateway from the same commit and check that the stable origin serves that
+   deployment, as in section 4. The gateway must be built after the settings
+   change: a deployment keeps the settings it was built with, so if the project
+   is connected to Git, the build made when you pushed the commit still points
+   at the old worker. Do not promote it.
 4. Wait until every status message posted before the switch shows a final state;
    press Status on any that stay unfinished. A run accepted before the switch
    still uses the old Drive. Also wait until Vercel's Sandbox view shows no
    running session for the old worker Sandbox, which can keep running until its
-   25-minute session timeout. Then run only the cleanup command from
-   [section 8](service-setup.md#8-rollback-and-teardown), with a fresh OIDC
-   token and the old record. It deletes the old Drive.
+   25-minute session timeout. Keep the old worker until the new deployment has
+   answered in a new thread, because a rollback needs it. Then run only the
+   cleanup command from [section 8](service-setup.md#8-rollback-and-teardown),
+   with a fresh OIDC token and the old record. It deletes the old Drive.
 
 The new worker has a new, empty Drive. Replies in threads started before the
 switch fail, because their Pi sessions stayed on the old Drive; start a new
