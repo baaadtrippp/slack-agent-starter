@@ -9,7 +9,7 @@ be made here and reflected in [traceability.md](traceability.md).
 Slack agent starter is a single-workspace Slack app that lets a team give work
 to a real Pi agent, exchange files, answer its questions, and continue the same
 conversation later. The Slack gateway and agent worker are separate processes.
-The app covers the complete interaction with Pi for both code-related and
+The app proves the complete interaction with Pi for both code-related and
 general tasks using Slack attachments and explicitly supplied public URLs.
 
 Labels in this document have precise meanings:
@@ -27,7 +27,7 @@ Labels in this document have precise meanings:
 | Repository         | Public MIT-licensed TypeScript monorepo named `slack-agent-starter`. Gateway and worker remain separate packages and processes. Private source material and local deliverables are excluded.                                        |
 | Slack gateway      | Vercel Chat SDK with its official Slack adapter on Vercel Functions. The gateway owns Slack events, presentation, access checks, and run coordination. It never runs the model loop.                                                |
 | Agent worker       | One active Vercel Sandbox for the agent, running independent Pi processes as needed for different threads. The full agent uses a general-purpose system prompt and selected tools.                                                  |
-| Models             | OpenRouter. NVIDIA remains an optional provider alternative. One operator-selected model is used; there is no Slack model picker or automatic provider fallback.                                                                    |
+| Models             | OpenRouter is the model provider. NVIDIA remains an optional provider alternative. One operator-selected model is used; there is no Slack model picker or automatic provider fallback.                                              |
 | Gateway state      | Upstash Redis through Chat SDK's official Redis adapter, with application records in a separate key namespace. No Neon or Postgres.                                                                                                 |
 | Agent persistence  | One persistent Vercel Drive mounted read/write by the worker sandbox. It stores native Pi/ACP sessions, per-thread work and shared memory. The Drive survives sandbox replacement. Upstash stores routing and coordination records. |
 | Inputs and outputs | Slack messages, Slack-hosted attachments, and explicitly supplied public HTTPS URLs. Results and supported artifacts return to the originating thread.                                                                              |
@@ -169,11 +169,11 @@ and channel, including other threads there. Automatic extraction is deferred.
 the bot is invited. Any member of an enabled channel may contribute to its agent
 threads. DMs and group DMs are deferred.
 
-**Accepted access (O01):** enable selected public channels only. Any internal
-member of an enabled channel may invoke the app. Reject externally shared
-channels and external users. DMs and private channels remain disabled; the
-broader private-channel proposal remains open. O07 app identity and enabled
-channels are selected in private deployment configuration.
+**Accepted access (O01):** enable the selected public channel only. Any internal
+member of that channel may invoke the app. Reject externally shared channels and
+external users. DMs and private channels remain disabled; the broader
+private-channel proposal remains open. O07 app identity and channel are selected
+in private deployment configuration.
 
 ## 3. Architecture
 
@@ -536,13 +536,13 @@ real Slack/model check.
 
 | ID  | Point                 | Proposed position                                                                                          | Required before                    |
 | --- | --------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| O01 | Channel scope         | Accepted: selected public channels, internal members; private channels remain open                         | Broader Slack access configuration |
+| O01 | Channel scope         | Accepted: the selected public channel, internal members; private channels remain open                      | Broader Slack access configuration |
 | O02 | Controls and feedback | Accepted on 7 November 2026: Stop, Status, and thumbs additions/removals on final answers                  | Settled for F09/F11                |
 | O03 | Memory policy         | Accepted on 7 November 2026. Any internal member can explicitly save and use notes in the enabled channel. | Settled for F13                    |
 | O04 | Storage cleanup       | Deferred on 10 November 2026; see the open cleanup policy in section 5                                     | Automatic cleanup                  |
 | O05 | Operating limits      | Accepted on 10 November 2026: the current limits in section 7, documented but not tested as targets        | Settled                            |
 | O06 | Model and budget      | Select one tool-capable model and an explicit spend cap; verify vision in the actual adapter path          | Real model execution               |
-| O07 | Slack identity        | Selected app identity and enabled channels; values stay in deployment configuration                        | Settled                            |
+| O07 | Slack identity        | Selected app identity and channel; values stay in deployment configuration                                 | Settled                            |
 
 Repository identity is settled: `slack-agent-starter`, public, MIT licensed.
 

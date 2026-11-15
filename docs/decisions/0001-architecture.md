@@ -48,8 +48,5 @@ before designing another adapter.
 ## Follow-up decisions
 
 The specification's
-[open review points](../spec/specification.md#10-open-review-points) track the
-follow-up decisions. Public-channel access (O01), Stop/Status and reactions
-(O02), the memory policy (O03), operating limits (O05), and Slack identity (O07)
-are settled. Storage cleanup (O04) is deferred. Private channels (O01) and the
-model and spend cap (O06) remain open.
+[decision table](../spec/specification.md#10-open-review-points) records the
+status of each follow-up decision.

@@ -4,9 +4,9 @@ This is the authoritative installation path.
 
 The completed installation uses one new Vercel gateway project, one dedicated
 Upstash Redis database, one capped OpenRouter key and model, one Slack app in
-one workspace with one or more public channels, one named nonpersistent Sandbox,
-and one 1 GiB Drive. Start with new isolated resources so setup, validation, and
-teardown cannot affect another application.
+one workspace and public channel, one named nonpersistent Sandbox, and one 1 GiB
+Drive. Start with new isolated resources so setup, validation, and teardown
+cannot affect another application.
 
 The quickstart assumes Bash on x86_64 Linux or WSL, with Docker for the test
 Redis. On macOS, replace the two toolchain script lines below with the
@@ -116,10 +116,9 @@ display name. Add the `chat:write` bot scope and install the shell so Slack
 issues a bot token. Copy the `xoxb-` bot token and the app's signing secret. The
 complete manifest is applied after the gateway exists.
 
-Record the workspace ID and the ID of one ordinary public channel, or of each
-channel if you want several. The gateway admits internal workspace members only
-in the configured public channels and rejects DMs, private channels, Slack
-Connect channels, external users, and bot messages.
+Record the workspace ID and the ID of one ordinary public channel. The gateway
+admits internal workspace members in that configured public channel and rejects
+DMs, private channels, Slack Connect channels, external users, and bot messages.
 
 ## 3. Bootstrap the worker
 
@@ -223,7 +222,7 @@ printed by setup must be copied exactly.
 | `SLACK_SIGNING_SECRET`      | Slack app signing secret                                                     |
 | `REDIS_URL`                 | dedicated password-bearing `rediss://` URL                                   |
 | `SLACK_WORKSPACE_ID`        | intended workspace ID                                                        |
-| `SLACK_ENABLED_CHANNEL_IDS` | intended public channel ID, or several separated by commas                   |
+| `SLACK_ENABLED_CHANNEL_IDS` | the one intended public channel ID; a comma-separated list is untested       |
 | `GATEWAY_ORIGIN`            | reserved bare production origin                                              |
 | `SANDBOX_WORKER_NAME`       | setup output                                                                 |
 | `SANDBOX_MANAGED_DRIVE`     | setup output                                                                 |
@@ -276,7 +275,7 @@ The manifest requests these bot scopes.
 It subscribes to `app_mention`, `message.channels`, `reaction_added`, and
 `reaction_removed`, enables signed interactivity, disables Socket Mode and org
 deployment, and keeps token rotation disabled. Invite the bot only to the
-configured public channels.
+configured public channel.
 
 ## 6. Run the paid installation smoke
 

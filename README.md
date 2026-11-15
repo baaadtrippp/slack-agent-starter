@@ -8,11 +8,11 @@ down. You deploy it on your own Vercel, Upstash, OpenRouter, and Slack accounts,
 and you change its instructions, model, and tools in this repository.
 
 It is for developers who want a team assistant they run and control: one Slack
-workspace, one or more public channels, one model, and a small codebase with a
-TypeScript gateway and a plain JavaScript worker. A team gets files and links
-in, a file out, Status and Stop buttons, thumbs feedback, and shared channel
-notes ([features](#supported-features)). The worker holds no Slack, Redis, or
-model keys and runs no shell commands
+workspace, one public channel, one model, and a small codebase with a TypeScript
+gateway and a plain JavaScript worker. A team gets files and links in, a file
+out, Status and Stop buttons, thumbs feedback, and shared channel notes
+([features](#supported-features)). The worker holds no Slack, Redis, or model
+keys and runs no shell commands
 ([why](docs/make-it-your-agent.md#why-the-agent-has-no-shell)).
 
 ## How it works
@@ -58,7 +58,7 @@ Bash on x86_64 Linux or WSL (or macOS with the
 [macOS toolchain steps](docs/toolchain.md#macos)), Docker for the local test
 Redis, a Vercel account, a dedicated Upstash Redis database, an OpenRouter key
 with a spending limit and a model that supports tool calls, and a Slack
-workspace where you can create an app, with a public channel. The guide also
+workspace where you can create an app, with one public channel. The guide also
 covers [rollback and teardown](docs/service-setup.md#8-rollback-and-teardown).
 
 1. [Prepare a clean checkout](docs/service-setup.md#1-prepare-a-clean-checkout).
@@ -88,8 +88,8 @@ gateway environment variables, off unless `1`; the quickstart sets
 ### Works today
 
 - **Mentions** ([F01](docs/spec/specification.md#f01--start-work)): mention the
-  bot in a configured channel, at the top level or in an existing thread. In an
-  existing thread it first reads the earlier messages
+  bot in the configured channel, at the top level or in an existing thread. In
+  an existing thread it first reads the earlier messages
   ([F03](docs/spec/specification.md#f03--know-the-context)).
 - **Thread replies** ([F02](docs/spec/specification.md#f02--continue-a-thread)):
   replies continue the same Pi session without another mention, also after the
