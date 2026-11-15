@@ -56,8 +56,10 @@ function useRealDownloader(transport?: AttachmentTransport) {
 }
 
 describe('public text URL fetch', () => {
+  let log: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
     shared.downloadAttachment.mockReset();
+    log = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   it('downloads a direct HTTPS URL with the fixed safety limits', async () => {
@@ -152,6 +154,46 @@ describe('public text URL fetch', () => {
       fetchPublicText('https://example.com/fixture.txt'),
     ).resolves.toMatch(/could not fetch/);
     expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it('reports the HTTP status a site answered and logs only its host', async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValue(streamResponse(Buffer.alloc(0), 429, {}));
+    useRealDownloader(transport);
+
+    await expect(
+      fetchPublicText('https://files.example/notes.txt?key=value'),
+    ).resolves.toBe('The public URL answered HTTP 429 instead of the text.');
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      JSON.stringify({
+        phase: 'public_url_unavailable',
+        host: 'files.example',
+        error: 'Failed to fetch file: 429',
+        code: 'NETWORK_ERROR',
+      }),
+    );
+  });
+
+  it('logs a connection failure and keeps the generic reply', async () => {
+    const transport = vi
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),
+      );
+    useRealDownloader(transport);
+
+    await expect(
+      fetchPublicText('https://files.example/notes.txt'),
+    ).resolves.toMatch(/could not fetch/);
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      JSON.stringify({
+        phase: 'public_url_unavailable',
+        host: 'files.example',
+        error: 'socket hang up',
+        code: 'ECONNRESET',
+      }),
+    );
   });
 
   it('applies the byte limit after decompressing a response', async () => {

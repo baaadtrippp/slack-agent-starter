@@ -51,7 +51,19 @@ export async function fetchPublicText(value: string): Promise<Buffer | string> {
       if (error.message.includes('Timed out'))
         return 'The public URL did not respond within 8 seconds.';
     }
-    return inaccessible;
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(
+      JSON.stringify({
+        phase: 'public_url_unavailable',
+        host: url.hostname,
+        error: message,
+        code: (error as { code?: unknown } | null)?.code,
+      }),
+    );
+    const status = /^Failed to fetch file: (\d{3})/.exec(message)?.[1];
+    return status
+      ? 'The public URL answered HTTP ' + status + ' instead of the text.'
+      : inaccessible;
   }
 
   if (bytes.length === 0 || bytes.includes(0)) return unsupported;
