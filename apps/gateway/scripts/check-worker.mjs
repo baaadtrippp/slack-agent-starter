@@ -78,11 +78,9 @@ client.on('error', () => {});
 
 const csvMarker = randomBytes(8).toString('hex');
 const csv = 'region,units\nnorth,' + csvMarker + '\n';
-// A file of exactly the generated-file limit.
-const artifact = ('checked,' + csvMarker + '\n').padEnd(
-  limits.generatedFileBytes,
-  '.',
-);
+// Pi estimates four characters per token and compacts the session near the
+// model's context window, so the model-written files stay small.
+const artifact = ('checked,' + csvMarker + '\n').padEnd(64 * 1024, '.');
 const job = () => ({
   version: 1,
   runId: randomUUID(),
@@ -103,6 +101,7 @@ const stopped = job();
 stopped.input = { text: 'Check stop ' + stopped.runId };
 const refused = job();
 refused.input = { text: 'Check refused file ' + refused.runId };
+refused.limits = { ...limits, generatedFileBytes: 1024 };
 const paidMarker = randomBytes(8).toString('hex');
 const paid = job();
 paid.input = { text: 'Reply with this exact code only: ' + paidMarker };
@@ -113,7 +112,7 @@ const config = {
   refused: refused.runId,
   csvMarker,
   artifact,
-  fileLimit: limits.generatedFileBytes,
+  fileLimit: refused.limits.generatedFileBytes,
   // Bootstrap refuses tracked changes, so this matches the copied file.
   instructions: readFileSync(
     join(import.meta.dirname, '../../worker/sandbox/instructions.md'),
@@ -326,13 +325,21 @@ try {
   assert.equal(replyResult.artifact?.sha256, sha256(artifact));
   const path = '/workspace/runs/' + reply.runId + '/results/result.csv';
   assert.equal(await read(resumed, path), artifact);
-  // The gateway's collector reads the file through a Sandbox command.
+  // The gateway's collector reads a file of exactly the generated-file limit
+  // through a Sandbox command.
+  const collectedRun = randomUUID();
+  const largest = 'x'.repeat(limits.generatedFileBytes);
+  const results = '/workspace/runs/' + collectedRun + '/results';
+  await resumed.writeFiles(
+    [{ path: results + '/result.txt', content: largest, mode: 0o600 }],
+    { signal: signal() },
+  );
   const target = {
     sandboxName: settings.SANDBOX_WORKER_NAME,
     sessionId: resumed.sessionId,
   };
-  const collected = await collectRunArtifact(reply.runId, target, 'csv');
-  assert.equal(collected.toString(), artifact, 'The collected file differs.');
+  const collected = await collectRunArtifact(collectedRun, target, 'txt');
+  assert.equal(collected.toString(), largest, 'The collected file differs.');
   const refusedResult = await run(resumed, refused);
   assert.equal(refusedResult.artifactRefused, true, 'No refusal was reported.');
   assert.equal(refusedResult.artifact, undefined);
