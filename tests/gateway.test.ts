@@ -2091,6 +2091,32 @@ describe.skipIf(!redisUrl)(
       );
     });
 
+    it('adds a no-file line to a full-length answer after a refused file write', async () => {
+      const gateway = harness({ fileExchange: true });
+      const body = envelope();
+      await gateway.events(signed(body));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      const output = {
+        ...result(job),
+        text: 'a'.repeat(limits.answerChars),
+        artifactRefused: true,
+      };
+      expect(
+        (await gateway.callback(callback(output, job.callbackToken))).status,
+      ).toBe(202);
+      await gateway.flush();
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(
+        `slack:CTEST1:${body.event.ts}`,
+        output.text +
+          '\n\nNo file is attached because saving the file failed. Files can be up to 16 KiB of text.',
+      );
+      const saved = await gateway.store.getRun(job.runId);
+      expect(saved?.result?.text).toBe(output.text);
+    });
+
     it('recovers the artifact and releases the replacement when a lost worker callback arrives late', async () => {
       const csv = Buffer.from('label,value\nsynthetic,1\n');
       const collectArtifact = vi.fn(

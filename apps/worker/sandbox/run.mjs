@@ -176,7 +176,27 @@ export function recoverDriveWriteFailure(job, result, error) {
   if (isDriveFullError(error)) result.failureCategory = 'drive_full';
   delete result.session;
   delete result.artifact;
+  delete result.artifactRefused;
   return result;
+}
+
+/**
+ * Returns the file a tool call saved, or a refusal when every call of the tool
+ * failed. Pi records a schema-rejected call and a throwing execute alike.
+ */
+export function artifactOutcome(records, toolName) {
+  const calls = records.flatMap((row) =>
+    row.type === 'message' &&
+    row.message.role === 'toolResult' &&
+    row.message.toolName === toolName
+      ? [row.message]
+      : [],
+  );
+  const artifact = calls.find((call) => call.isError === false)?.details;
+  if (artifact) return { artifact };
+  return calls.some((call) => call.isError === true)
+    ? { artifactRefused: true }
+    : {};
 }
 
 export const readStagedInputExtension = `
@@ -448,6 +468,7 @@ async function run(job, model, key, stopSignal = new AbortController().signal) {
         result.text = completed.text;
         result.session = completed.session;
         if (completed.artifact) result.artifact = completed.artifact;
+        if (completed.artifactRefused) result.artifactRefused = true;
       }
       result.type = 'completed';
     } catch (error) {
@@ -747,13 +768,6 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
     const users = newRecords.filter(
       (row) => row.type === 'message' && row.message.role === 'user',
     );
-    const successfulToolResults = newRecords.flatMap((row) =>
-      row.type === 'message' &&
-      row.message.role === 'toolResult' &&
-      row.message.isError === false
-        ? [row.message]
-        : [],
-    );
     if (attachments.length) {
       const content = users[0]?.message.content;
       const images = Array.isArray(content)
@@ -789,10 +803,7 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
       .trim();
     if (answer?.stopReason !== 'stop' || !text)
       throw new Error('No successful Pi answer');
-    const artifact =
-      outputTool &&
-      successfulToolResults.find((message) => message.toolName === outputTool)
-        ?.details;
+    const output = outputTool ? artifactOutcome(newRecords, outputTool) : {};
     if (sources.length) {
       const revisions = join(sessionRoot, 'input-revisions');
       await mkdir(revisions, { recursive: true, mode: 0o700 });
@@ -800,7 +811,7 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
     }
     return {
       text: text.slice(0, job.limits.answerChars).toWellFormed(),
-      ...(artifact ? { artifact } : {}),
+      ...output,
       session: {
         seedRunId,
         nativeId: saved.nativeId,

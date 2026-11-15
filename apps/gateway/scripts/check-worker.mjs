@@ -83,6 +83,8 @@ const reply = job();
 reply.input = { text: 'Check turn two ' + reply.runId };
 const stopped = job();
 stopped.input = { text: 'Check stop ' + stopped.runId };
+const refused = job();
+refused.input = { text: 'Check refused file ' + refused.runId };
 const paidMarker = randomBytes(8).toString('hex');
 const paid = job();
 paid.input = { text: 'Reply with this exact code only: ' + paidMarker };
@@ -90,15 +92,17 @@ const config = {
   first: first.runId,
   reply: reply.runId,
   stopped: stopped.runId,
+  refused: refused.runId,
   csvMarker,
   artifact,
+  fileLimit: limits.generatedFileBytes,
   // Bootstrap refuses tracked changes, so this matches the copied file.
   instructions: readFileSync(
     join(import.meta.dirname, '../../worker/sandbox/instructions.md'),
     'utf8',
   ),
   tokens: Object.fromEntries(
-    [first, reply, stopped, paid].map(({ runId, callbackToken }) => [
+    [first, reply, stopped, refused, paid].map(({ runId, callbackToken }) => [
       runId,
       callbackToken,
     ]),
@@ -304,6 +308,9 @@ try {
   assert.equal(replyResult.artifact?.sha256, sha256(artifact));
   const path = '/workspace/runs/' + reply.runId + '/results/result.csv';
   assert.equal(await read(resumed, path), artifact);
+  const refusedResult = await run(resumed, refused);
+  assert.equal(refusedResult.artifactRefused, true, 'No refusal was reported.');
+  assert.equal(refusedResult.artifact, undefined);
   if (values.paid) {
     // Remove the stand-in override so the next run reaches the real host.
     const restore = await resumed.runCommand({

@@ -155,6 +155,7 @@ const THREAD_CONTEXT_UNAVAILABLE_REPLY =
 const PDF_UNREADABLE_REPLY =
   'I could not extract readable text from this PDF. Mention me again with a small text-based PDF.';
 const PDF_TEXT_TOO_LARGE_REPLY = `The PDF contains more than ${limits.pdfTextBytes / 1024} KiB of text. Mention me again with a shorter PDF.`;
+const ARTIFACT_REFUSED_NOTICE = `No file is attached because saving the file failed. Files can be up to ${limits.generatedFileBytes / 1024} KiB of text.`;
 const RETAINED_SOURCES_UNAVAILABLE_REPLY =
   'I could not reopen an earlier file or link in this thread. Start a new message in the channel, mention me there, and include the files and links you still need.';
 
@@ -466,11 +467,13 @@ export function createGateway({
         /!?\[([^[\]]*)\]\(<?sandbox:[^)]*\)/g,
         '$1',
       );
+      // The notice goes only into the post; the saved answer keeps its limit.
       const message = await bot
         .thread(threadId)
         .post(
-          text.trim() ||
-            'The answer contained only a file link, which cannot be opened from Slack.',
+          (text.trim() ||
+            'The answer contained only a file link, which cannot be opened from Slack.') +
+            (result.artifactRefused ? '\n\n' + ARTIFACT_REFUSED_NOTICE : ''),
         );
       if (
         !message.id ||

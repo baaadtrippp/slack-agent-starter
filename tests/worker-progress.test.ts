@@ -7,6 +7,7 @@ import { workerResultSchema } from '../packages/contracts/src/index.js';
 import * as sandboxWorker from '../apps/worker/sandbox/run.mjs';
 
 const {
+  artifactOutcome,
   consumeTurn,
   durableProviderQuota,
   isProviderQuotaSignal,
@@ -78,6 +79,75 @@ describe('Sandbox worker progress', () => {
         failureCategory: 'private_provider_error',
       }).success,
     ).toBe(false);
+  });
+
+  it('accepts a refused file only on a completed result without a file', () => {
+    const result = {
+      version: 1,
+      runId: '00000000-0000-4000-8000-000000000001',
+      generation: 1,
+      eventId: '00000000-0000-4000-8000-000000000002',
+      sequence: 2,
+      type: 'completed',
+      text: 'Answer',
+      artifactRefused: true,
+    } as const;
+    expect(workerResultSchema.safeParse(result).success).toBe(true);
+    expect(
+      workerResultSchema.safeParse({ ...result, type: 'failed' }).success,
+    ).toBe(false);
+    expect(
+      workerResultSchema.safeParse({
+        ...result,
+        artifact: { sha256: 'a'.repeat(64) },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('reports a refused file only when no write_artifact call succeeded', () => {
+    const toolResult = (
+      toolName: string,
+      isError: boolean,
+      text: string,
+      details = {},
+    ) => ({
+      type: 'message',
+      message: {
+        role: 'toolResult',
+        toolName,
+        content: [{ type: 'text', text }],
+        details,
+        isError,
+      },
+    });
+    // Pinned Pi records a schema-rejected call and a throwing execute alike.
+    const rejected = toolResult(
+      'write_artifact',
+      true,
+      'Validation failed for tool "write_artifact":\n  - content: expected at most 32 characters',
+    );
+    const thrown = toolResult(
+      'write_artifact',
+      true,
+      'Provide one supported non-empty UTF-8 file up to 32 bytes',
+    );
+    const details = { sha256: 'a'.repeat(64), format: 'csv' };
+    const saved = toolResult('write_artifact', false, 'Saved.', details);
+
+    for (const records of [[rejected], [thrown], [rejected, thrown]])
+      expect(artifactOutcome(records, 'write_artifact')).toEqual({
+        artifactRefused: true,
+      });
+    expect(artifactOutcome([rejected, saved], 'write_artifact')).toEqual({
+      artifact: details,
+    });
+    expect(
+      artifactOutcome(
+        [toolResult('read_input', true, 'Unknown source ID')],
+        'write_artifact',
+      ),
+    ).toEqual({});
+    expect(artifactOutcome([], 'write_artifact')).toEqual({});
   });
 
   it('reports working once on the first live Pi output without exposing it', async () => {
@@ -201,6 +271,13 @@ describe('Sandbox worker progress', () => {
       failureCategory: 'drive_full',
     });
     expect(result.text).not.toContain('Saved');
+    expect(
+      recoverDriveWriteFailure(
+        {},
+        { type: 'completed', text: 'Answer', artifactRefused: true },
+        full,
+      ),
+    ).not.toHaveProperty('artifactRefused');
     expect(() =>
       recoverDriveWriteFailure(
         { session: { seedRunId: 'retained' } },
