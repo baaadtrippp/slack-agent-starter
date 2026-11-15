@@ -15,6 +15,7 @@ import {
   collectRunArtifact,
   readRunArtifact,
 } from '../apps/gateway/src/generated-artifact.js';
+import { limits } from '../packages/contracts/src/index.js';
 
 const { sandboxGet } = vi.hoisted(() => ({ sandboxGet: vi.fn() }));
 vi.mock('../apps/gateway/node_modules/@vercel/sandbox/dist/index.js', () => ({
@@ -67,6 +68,14 @@ describe.skipIf(process.platform !== 'linux')('Sandbox result reader', () => {
     expect(Buffer.from(read.stdout.toString(), 'base64')).toEqual(csv);
   });
 
+  it('returns a file of exactly the generated-file limit', () => {
+    const content = Buffer.alloc(limits.generatedFileBytes, 'a');
+    writeFileSync(result, content);
+    const read = collect();
+    expect(read.status).toBe(0);
+    expect(Buffer.from(read.stdout.toString(), 'base64')).toEqual(content);
+  });
+
   it.each(['diff', 'md'])('collects exact UTF-8 bytes for %s', (format) => {
     const content = Buffer.from('Synthetic artifact.\n');
     writeFileSync(join(results, 'result.' + format), content);
@@ -112,7 +121,7 @@ describe.skipIf(process.platform !== 'linux')('Sandbox result reader', () => {
     if (kind === 'hard link') linkSync(otherResult, result);
     if (kind === 'directory') mkdirSync(result);
     if (kind === 'oversized')
-      writeFileSync(result, Buffer.alloc(16 * 1024 + 1));
+      writeFileSync(result, Buffer.alloc(limits.generatedFileBytes + 1));
     const read = collect();
     expect(read.status).toBe(1);
     expect(read.stdout.length).toBe(0);

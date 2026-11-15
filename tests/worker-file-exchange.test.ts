@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { limits } from '../packages/contracts/src/index.js';
+import { formatBytes, limits } from '../packages/contracts/src/index.js';
 import type { StagedSource } from '../packages/contracts/src/index.js';
 
 // @ts-expect-error The Sandbox entry point has no declaration file.
@@ -271,6 +271,7 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
     let tool:
       | {
           name: string;
+          description: string;
           execute(
             id: string,
             args: { format: string; content: string },
@@ -285,10 +286,16 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
         },
       });
       expect(tool!.name).toBe('write_artifact');
+      expect(tool!.description).toContain('file of up to 32 bytes');
       const oversized = { format: 'csv', content: 'a'.repeat(33) };
       await expect(tool!.execute('oversized', oversized)).rejects.toThrow(
-        'Provide one supported non-empty UTF-8 file',
+        'Provide one supported non-empty UTF-8 file up to 32 bytes',
       );
+      // Only execute checks the size, so a refusal does not echo the content.
+      expect(writeArtifactExtension(32)).not.toContain('maxLength');
+      // The worker's copy of formatBytes must print the same text.
+      for (const bytes of [2048, 10_000, 2 * 1024 * 1024])
+        expect(writeArtifactExtension(bytes)).toContain(formatBytes(bytes));
       const args = { format: 'csv', content: 'period,total\nQ1,18\n' };
       await expect(tool!.execute('first', args)).rejects.toMatchObject({
         code: 'ENOENT',

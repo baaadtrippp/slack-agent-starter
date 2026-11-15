@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { limits } from './limits.js';
 
-export { limits, RUN_DURATION_MS } from './limits.js';
+export { formatBytes, limits, RUN_DURATION_MS } from './limits.js';
 
 const workerSessionSchema = z
   .object({
@@ -212,6 +212,8 @@ export const workerResultSchema = z
       .object({ sha256: checksum, format: z.enum(artifactFormats).optional() })
       .strict()
       .optional(),
+    // A write_artifact call failed and none succeeded.
+    artifactRefused: z.literal(true).optional(),
     session: workerSessionSchema.optional(),
     text: z.string().min(1).max(limits.answerChars),
   })
@@ -221,6 +223,14 @@ export const workerResultSchema = z
     {
       message: 'A completed worker result cannot include a failure category',
       path: ['failureCategory'],
+    },
+  )
+  .refine(
+    ({ type, artifact, artifactRefused }) =>
+      !artifactRefused || (type === 'completed' && !artifact),
+    {
+      message: 'Only a completed result without a file can report a refusal',
+      path: ['artifactRefused'],
     },
   );
 

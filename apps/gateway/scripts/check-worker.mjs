@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { registerHooks } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -16,6 +17,19 @@ import {
   MANAGED_WORKER_LAUNCH,
 } from '../src/managed-worker.ts';
 import { RedisRunStore } from '../src/store.ts';
+
+// Gateway sources import TypeScript files by their .js names.
+registerHooks({
+  resolve(specifier, context, next) {
+    try {
+      return next(specifier, context);
+    } catch (error) {
+      if (!specifier.startsWith('.') || !specifier.endsWith('.js')) throw error;
+      return next(specifier.slice(0, -3) + '.ts', context);
+    }
+  },
+});
+const { collectRunArtifact } = await import('../src/generated-artifact.ts');
 
 const fixtureDir = '/tmp/check-worker';
 const statePath = fixtureDir + '/state.json';
@@ -64,7 +78,13 @@ client.on('error', () => {});
 
 const csvMarker = randomBytes(8).toString('hex');
 const csv = 'region,units\nnorth,' + csvMarker + '\n';
-const artifact = 'checked,' + csvMarker + '\n';
+// Pi estimates four characters per token and compacts the session near the
+// model's context window, so the model-written files stay small. 20 KiB is
+// still above the earlier 16 KiB limit.
+const artifact = ('checked,' + csvMarker + '\n').padEnd(
+  Math.min(20 * 1024, limits.generatedFileBytes),
+  '.',
+);
 const job = () => ({
   version: 1,
   runId: randomUUID(),
@@ -83,6 +103,9 @@ const reply = job();
 reply.input = { text: 'Check turn two ' + reply.runId };
 const stopped = job();
 stopped.input = { text: 'Check stop ' + stopped.runId };
+const refused = job();
+refused.input = { text: 'Check refused file ' + refused.runId };
+refused.limits = { ...limits, generatedFileBytes: 1024 };
 const paidMarker = randomBytes(8).toString('hex');
 const paid = job();
 paid.input = { text: 'Reply with this exact code only: ' + paidMarker };
@@ -90,15 +113,17 @@ const config = {
   first: first.runId,
   reply: reply.runId,
   stopped: stopped.runId,
+  refused: refused.runId,
   csvMarker,
   artifact,
+  fileLimit: refused.limits.generatedFileBytes,
   // Bootstrap refuses tracked changes, so this matches the copied file.
   instructions: readFileSync(
     join(import.meta.dirname, '../../worker/sandbox/instructions.md'),
     'utf8',
   ),
   tokens: Object.fromEntries(
-    [first, reply, stopped, paid].map(({ runId, callbackToken }) => [
+    [first, reply, stopped, refused, paid].map(({ runId, callbackToken }) => [
       runId,
       callbackToken,
     ]),
@@ -304,6 +329,26 @@ try {
   assert.equal(replyResult.artifact?.sha256, sha256(artifact));
   const path = '/workspace/runs/' + reply.runId + '/results/result.csv';
   assert.equal(await read(resumed, path), artifact);
+  // The gateway's collector reads the worker's file, and one of exactly the
+  // generated-file limit, through a Sandbox command.
+  const target = {
+    sandboxName: settings.SANDBOX_WORKER_NAME,
+    sessionId: resumed.sessionId,
+  };
+  const fromWorker = await collectRunArtifact(reply.runId, target, 'csv');
+  assert.equal(sha256(fromWorker), replyResult.artifact.sha256);
+  const collectedRun = randomUUID();
+  const largest = 'x'.repeat(limits.generatedFileBytes);
+  const results = '/workspace/runs/' + collectedRun + '/results';
+  await resumed.writeFiles(
+    [{ path: results + '/result.txt', content: largest, mode: 0o600 }],
+    { signal: signal() },
+  );
+  const collected = await collectRunArtifact(collectedRun, target, 'txt');
+  assert.equal(collected.toString(), largest, 'The collected file differs.');
+  const refusedResult = await run(resumed, refused);
+  assert.equal(refusedResult.artifactRefused, true, 'No refusal was reported.');
+  assert.equal(refusedResult.artifact, undefined);
   if (values.paid) {
     // Remove the stand-in override so the next run reaches the real host.
     const restore = await resumed.runCommand({

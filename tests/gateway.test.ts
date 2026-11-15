@@ -2060,7 +2060,7 @@ describe.skipIf(!redisUrl)(
       );
     });
 
-    it.each([
+    it.each<[string, string, { artifactRefused: true }?]>([
       [
         'Range [0, 1) is used. See [out.csv](sandbox:/workspace/out.csv).',
         'Range [0, 1) is used. See out.csv.',
@@ -2069,7 +2069,12 @@ describe.skipIf(!redisUrl)(
         '![](sandbox:/workspace/chart.png)',
         'The answer contained only a file link, which cannot be opened from Slack.',
       ],
-    ])('posts a readable answer for %j', async (text, posted) => {
+      [
+        '![](sandbox:/workspace/chart.png)',
+        'The answer contained only a file link, which cannot be opened from Slack.\n\nNo file is attached because saving the file failed. Files must be text in a supported format, up to 256 KiB.',
+        { artifactRefused: true },
+      ],
+    ])('posts a readable answer for %j', async (text, posted, extra) => {
       const gateway = harness();
       const body = envelope();
       await gateway.events(signed(body));
@@ -2078,7 +2083,7 @@ describe.skipIf(!redisUrl)(
       expect(
         (
           await gateway.callback(
-            callback({ ...result(job), text }, job.callbackToken),
+            callback({ ...result(job), text, ...extra }, job.callbackToken),
           )
         ).status,
       ).toBe(202);
@@ -2089,6 +2094,32 @@ describe.skipIf(!redisUrl)(
         `slack:CTEST1:${body.event.ts}`,
         posted,
       );
+    });
+
+    it('adds a no-file line to a full-length answer after a refused file write', async () => {
+      const gateway = harness({ fileExchange: true });
+      const body = envelope();
+      await gateway.events(signed(body));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      const output = {
+        ...result(job),
+        text: 'a'.repeat(limits.answerChars),
+        artifactRefused: true,
+      };
+      expect(
+        (await gateway.callback(callback(output, job.callbackToken))).status,
+      ).toBe(202);
+      await gateway.flush();
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(
+        `slack:CTEST1:${body.event.ts}`,
+        output.text +
+          '\n\nNo file is attached because saving the file failed. Files must be text in a supported format, up to 256 KiB.',
+      );
+      const saved = await gateway.store.getRun(job.runId);
+      expect(saved?.result?.text).toBe(output.text);
     });
 
     it('recovers the artifact and releases the replacement when a lost worker callback arrives late', async () => {

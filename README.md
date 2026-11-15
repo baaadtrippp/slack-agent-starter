@@ -138,8 +138,10 @@ gateway environment variables, off unless `1`; the quickstart sets
 
 ### Current limits
 
-These are the current limits in the code, not load-tested
+These are the default limits, not load-tested
 ([specification](docs/spec/specification.md#7-limits-access-security-and-failure-behavior));
+[Change the limits](docs/make-it-your-agent.md#change-the-limits) says where
+they live, and
 [quickstart section 7](docs/service-setup.md#7-implemented-limits-and-retention)
 adds retention details.
 
@@ -155,7 +157,7 @@ adds retention details.
 | Inputs per thread   | 12 files and links in total                                                                                                                                                                                                                                                          |
 | Thread context      | up to 20 messages from the thread, 2 KiB each, 16 KiB in total                                                                                                                                                                                                                       |
 | Answer              | 4,000 characters; a longer answer is cut                                                                                                                                                                                                                                             |
-| Generated file      | one per answer, UTF-8, up to 16 KiB: CSV, Markdown, text, diff, JSON, YAML, HTML, CSS, SQL, shell, or code                                                                                                                                                                           |
+| Generated file      | one per answer, UTF-8, up to 256 KiB: CSV, Markdown, text, diff, JSON, YAML, HTML, CSS, SQL, shell, or code                                                                                                                                                                          |
 | Shared notes        | 16 per channel, 512 UTF-8 bytes each; a full channel is reported and nothing is evicted                                                                                                                                                                                              |
 | Worker Sandbox      | stops after the last active run, otherwise at its 25-minute session timeout                                                                                                                                                                                                          |
 | Retention           | Drive data, the startup snapshot, and Redis run, session, message, feedback, and managed-runtime records stay until teardown; only short-lived coordination keys expire                                                                                                              |

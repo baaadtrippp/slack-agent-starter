@@ -176,7 +176,27 @@ export function recoverDriveWriteFailure(job, result, error) {
   if (isDriveFullError(error)) result.failureCategory = 'drive_full';
   delete result.session;
   delete result.artifact;
+  delete result.artifactRefused;
   return result;
+}
+
+/**
+ * Returns the file a tool call saved, or a refusal when every call of the tool
+ * failed. Pi records a schema-rejected call and a throwing execute alike.
+ */
+export function artifactOutcome(records, toolName) {
+  const calls = records.flatMap((row) =>
+    row.type === 'message' &&
+    row.message.role === 'toolResult' &&
+    row.message.toolName === toolName
+      ? [row.message]
+      : [],
+  );
+  const artifact = calls.find((call) => call.isError === false)?.details;
+  if (artifact) return { artifact };
+  return calls.some((call) => call.isError === true)
+    ? { artifactRefused: true }
+    : {};
 }
 
 export const readStagedInputExtension = `
@@ -198,6 +218,13 @@ export default async function (pi) {
 }
 `;
 
+// Matches formatBytes in packages/contracts/src/limits.ts.
+const formatBytes = (bytes) =>
+  bytes % 1024
+    ? `${bytes.toLocaleString('en-US')} bytes`
+    : `${(bytes / 1024).toLocaleString('en-US')} KiB`;
+
+// The tool states the job's limit, so the model learns it from the tool.
 export const writeArtifactExtension = (byteLimit) => `
 import { createHash } from 'node:crypto';
 import { constants, open, rm } from 'node:fs/promises';
@@ -210,16 +237,16 @@ export default function (pi) {
   pi.registerTool({
     name: 'write_artifact',
     label: 'Write result file',
-    description: 'Save one UTF-8 result file for delivery to the originating Slack thread.',
+    description: 'Save one UTF-8 result file of up to ${formatBytes(byteLimit)} for delivery to the originating Slack thread.',
     parameters: Type.Object({
       format: Type.Unsafe({ type: 'string', enum: formats }),
-      content: Type.String({ minLength: 1, maxLength: ${byteLimit} }),
+      content: Type.String({ minLength: 1 }),
     }),
     async execute(_id, { format, content }) {
       if (!formats.includes(format) || typeof content !== 'string' ||
           !content.isWellFormed() || !content.length || content.includes(String.fromCharCode(0)) ||
           Buffer.byteLength(content) > ${byteLimit})
-        throw new Error('Provide one supported non-empty UTF-8 file up to ${byteLimit / 1024} KiB');
+        throw new Error('Provide one supported non-empty UTF-8 file up to ${formatBytes(byteLimit)}');
       if (reserved) throw new Error('This run already has an artifact');
       reserved = true;
       const bytes = Buffer.from(content);
@@ -448,6 +475,7 @@ async function run(job, model, key, stopSignal = new AbortController().signal) {
         result.text = completed.text;
         result.session = completed.session;
         if (completed.artifact) result.artifact = completed.artifact;
+        if (completed.artifactRefused) result.artifactRefused = true;
       }
       result.type = 'completed';
     } catch (error) {
@@ -747,13 +775,6 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
     const users = newRecords.filter(
       (row) => row.type === 'message' && row.message.role === 'user',
     );
-    const successfulToolResults = newRecords.flatMap((row) =>
-      row.type === 'message' &&
-      row.message.role === 'toolResult' &&
-      row.message.isError === false
-        ? [row.message]
-        : [],
-    );
     if (attachments.length) {
       const content = users[0]?.message.content;
       const images = Array.isArray(content)
@@ -789,10 +810,7 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
       .trim();
     if (answer?.stopReason !== 'stop' || !text)
       throw new Error('No successful Pi answer');
-    const artifact =
-      outputTool &&
-      successfulToolResults.find((message) => message.toolName === outputTool)
-        ?.details;
+    const output = outputTool ? artifactOutcome(newRecords, outputTool) : {};
     if (sources.length) {
       const revisions = join(sessionRoot, 'input-revisions');
       await mkdir(revisions, { recursive: true, mode: 0o700 });
@@ -800,7 +818,7 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
     }
     return {
       text: text.slice(0, job.limits.answerChars).toWellFormed(),
-      ...(artifact ? { artifact } : {}),
+      ...output,
       session: {
         seedRunId,
         nativeId: saved.nativeId,

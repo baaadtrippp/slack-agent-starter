@@ -57,12 +57,35 @@ function chunk(delta, reason) {
   return 'data: ' + JSON.stringify(event) + '\n\n';
 }
 
-function toolCall(name, args) {
+function toolCall(name, args, id = name) {
   const call = { name, arguments: JSON.stringify(args) };
   const delta = {
-    tool_calls: [{ index: 0, id: name, type: 'function', function: call }],
+    tool_calls: [{ index: 0, id, type: 'function', function: call }],
   };
   return chunk(delta, 'tool_calls');
+}
+
+// The refused run writes ASCII over the job's byte limit, then fewer
+// characters than the limit but more bytes; execute must refuse both.
+function refuse(tools, results) {
+  assert.deepEqual(
+    tools.map((tool) => tool.function.name),
+    ['write_artifact'],
+  );
+  assert.match(tools[0].function.description, /up to 1 KiB/);
+  results.forEach((result, index) =>
+    assert.ok(
+      JSON.stringify(result).includes('Provide one supported'),
+      'Pi did not refuse write ' + index,
+    ),
+  );
+  const content = [
+    'x'.repeat(config.fileLimit + 1),
+    'é'.repeat(Math.floor(config.fileLimit / 2) + 1),
+  ][results.length];
+  if (!content) return chunk({ content: 'Refused done.' }, 'stop');
+  const args = { format: 'txt', content };
+  return toolCall('write_artifact', args, 'refused-' + results.length);
 }
 
 // Scripted turns: the first run answers at once; the resumed reply reads the
@@ -73,9 +96,12 @@ function toolCall(name, args) {
 // A replayed prompt followed by a section update would be a second message.
 async function respond({ messages, tools = [] }, response) {
   const latest = JSON.stringify(messages.findLast((m) => m.role === 'user'));
-  const runId = [config.first, config.reply, config.stopped].find((id) =>
-    latest.includes(id),
-  );
+  const runId = [
+    config.first,
+    config.reply,
+    config.stopped,
+    config.refused,
+  ].find((id) => latest.includes(id));
   assert.ok(runId, 'Unknown model request');
   state.models.push(runId);
   save();
@@ -90,10 +116,11 @@ async function respond({ messages, tools = [] }, response) {
       ),
     'Expected one system prompt with the instructions file',
   );
+  const results = messages.filter((m) => m.role === 'tool');
+  if (runId === config.refused) return refuse(tools, results);
   if (runId === config.reply) await stopClosed;
   const names = tools.map((tool) => tool.function.name);
   assert.deepEqual(names, ['read_input', 'write_artifact']);
-  const results = messages.filter((m) => m.role === 'tool');
   if (runId === config.first)
     return chunk({ content: 'First turn done.' }, 'stop');
   assert.ok(JSON.stringify(messages).includes(config.first), 'Lost turn one');

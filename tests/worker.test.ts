@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { limits, workerJobSchema } from '../packages/contracts/src/index.js';
+import {
+  formatBytes,
+  limits,
+  workerJobSchema,
+} from '../packages/contracts/src/index.js';
 
 const now = 1_800_000_000_000;
 const callbackToken = 'a'.repeat(64);
@@ -25,6 +29,15 @@ function makeJob(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+it.each([
+  [16 * 1024, '16 KiB'],
+  [10_000, '10,000 bytes'],
+  [512, '512 bytes'],
+  [2 * 1024 * 1024, '2,048 KiB'],
+])('prints the limit %i as %s', (bytes, text) => {
+  expect(formatBytes(bytes)).toBe(text);
+});
 
 describe('worker job contract', () => {
   it('requires every content limit as a positive integer', () => {

@@ -1,8 +1,8 @@
 # Make it your agent
 
 Slack agent starter ships a generic Slack assistant. This guide covers the first
-changes most forks make: its instructions, its model, and its tools. It assumes
-an installation from the [quickstart](service-setup.md).
+changes most forks make: its instructions, its model, its tools, and its limits.
+It assumes an installation from the [quickstart](service-setup.md).
 
 ## Change the instructions
 
@@ -61,6 +61,32 @@ expects the exact tool list, so add the new name there too. A tool runs inside
 the worker Sandbox within the 60-second run deadline, and it can reach only the
 gateway origin and OpenRouter. Treat everything a tool reads as untrusted data.
 Then [apply the change](#apply-worker-changes).
+
+## Change the limits
+
+The content limits are defaults in
+[`packages/contracts/src/limits.ts`](../packages/contracts/src/limits.ts), one
+name per purpose: Slack files, public links, generated files, PDF text, thread
+context, answers, and shared notes. Edit a value there, run the checks, and
+deploy the gateway from the new commit, as in
+[quickstart section 4](service-setup.md#4-configure-and-deploy-the-gateway). The
+gateway sends the limits with every job and the worker enforces the values it
+receives, so a changed value needs no new worker. Replies and the
+`write_artifact` tool description show the new values. Tests that check a reply
+text expect the defaults; update them with your values. Two limits have fixed
+bounds, noted beside them in the file: `answerChars` must fit 32 KiB message
+bodies, and `sourcesPerThread` must fit the worker's 16 KiB source catalog.
+
+Adding, renaming, or removing a limit changes the job shape. Then the worker and
+the gateway must come from the same commit:
+[apply the change](#apply-worker-changes) as for any worker change.
+
+Two related values live elsewhere. The image edge limit of 1,024 pixels is in
+[`apps/gateway/src/slack-file.ts`](../apps/gateway/src/slack-file.ts). The
+instructions file tells the model that answers are cut after 4,000 characters;
+change that line with `answerChars`, which needs a new worker. The model writes
+a generated file as tool-call output within the 60-second run, so the run time
+can stop a large file before its limit does.
 
 ## Why the agent has no shell
 
