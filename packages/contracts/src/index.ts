@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { limits } from './limits.js';
+
+export { limits, RUN_DURATION_MS } from './limits.js';
 
 const workerSessionSchema = z
   .object({
@@ -17,11 +20,6 @@ export const slackContextSender = z.string().regex(/^[UWB][A-Z0-9]{1,31}$/);
 const slackWorkspaceId = /^T[A-Z0-9]{1,31}$/;
 const slackChannelId = /^C[A-Z0-9]{1,31}$/;
 
-export const MAX_SLACK_ATTACHMENT_METADATA = 5;
-export const MAX_THREAD_CONTEXT_MESSAGES = 20;
-export const MAX_THREAD_MESSAGE_BYTES = 2 * 1024;
-export const MAX_THREAD_CONTEXT_BYTES = 16 * 1024;
-
 export const slackAttachmentSchema = z
   .object({
     id: z.string().regex(/^F[A-Z0-9]{1,31}$/),
@@ -35,12 +33,7 @@ export const slackAttachmentSchema = z
   })
   .strict();
 
-export const SHARED_NOTE_BYTE_LIMIT = 512;
 export const SHARED_NOTE_SAVED = 'Saved to this channel’s shared notes.';
-
-export const MAX_SLACK_INPUT_FILES = 5;
-export const MAX_RETAINED_INPUTS = 12;
-export const INPUT_BYTE_LIMIT = 16 * 1024;
 
 export const artifactFormats = [
   'csv',
@@ -90,7 +83,7 @@ export type ArtifactFormat = (typeof artifactFormats)[number];
 
 const slackAttachments = z
   .array(slackAttachmentSchema)
-  .max(MAX_SLACK_ATTACHMENT_METADATA);
+  .max(limits.attachmentMetadataPerMessage);
 const slackThreadContextSchema = z
   .object({
     messages: z
@@ -102,21 +95,28 @@ const slackThreadContextSchema = z
             text: z
               .string()
               .refine(
-                (text) => Buffer.byteLength(text) <= MAX_THREAD_MESSAGE_BYTES,
+                (text) => Buffer.byteLength(text) <= limits.threadMessageBytes,
               ),
             attachments: slackAttachments.optional(),
           })
           .strict(),
       )
       .min(1)
-      .max(MAX_THREAD_CONTEXT_MESSAGES),
+      .max(limits.threadContextMessages),
     truncated: z.boolean(),
   })
   .strict()
   .refine(
     (context) =>
-      Buffer.byteLength(JSON.stringify(context)) <= MAX_THREAD_CONTEXT_BYTES,
+      Buffer.byteLength(JSON.stringify(context)) <= limits.threadContextBytes,
   );
+
+const limitValue = z.int().positive();
+const limitsSchema = z.strictObject(
+  Object.fromEntries(
+    Object.keys(limits).map((name) => [name, limitValue]),
+  ) as Record<keyof typeof limits, typeof limitValue>,
+);
 
 export const workerJobSchema = z
   .object({
@@ -126,7 +126,7 @@ export const workerJobSchema = z
     generation: z.number().int().positive(),
     input: z
       .object({
-        text: z.string().min(1).max(12_000),
+        text: z.string().min(1).max(limits.messageChars),
         senderId: z.string().min(1),
         workspaceId: z.string().min(1),
         channelId: z.string().min(1),
@@ -137,12 +137,12 @@ export const workerJobSchema = z
         sources: z
           .array(stagedSourceSchema)
           .min(1)
-          .max(MAX_SLACK_INPUT_FILES + 1)
+          .max(limits.filesPerMessage + 1)
           .refine((sources) => {
             const urls = sources.filter(
               ({ kind }) => kind === 'publicUrl',
             ).length;
-            return urls <= 1 && sources.length - urls <= MAX_SLACK_INPUT_FILES;
+            return urls <= 1 && sources.length - urls <= limits.filesPerMessage;
           })
           .optional(),
       })
@@ -150,6 +150,7 @@ export const workerJobSchema = z
     session: workerSessionSchema.optional(),
     memory: z.enum(['save', 'read']).optional(),
     artifactOutput: z.literal(true).optional(),
+    limits: limitsSchema,
     deadline: z.number().int().positive(),
     callbackUrl: z.url().startsWith('https://'),
     callbackToken: z.string().regex(/^[0-9a-f]{64}$/),
@@ -169,7 +170,7 @@ export const workerJobSchema = z
         !input.sources &&
         !artifactOutput &&
         input.text === input.text.trim() &&
-        Buffer.byteLength(input.text) <= SHARED_NOTE_BYTE_LIMIT &&
+        Buffer.byteLength(input.text) <= limits.sharedNoteBytes &&
         !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(input.text)),
   )
   .refine(({ input, session }) => {
@@ -212,7 +213,7 @@ export const workerResultSchema = z
       .strict()
       .optional(),
     session: workerSessionSchema.optional(),
-    text: z.string().min(1).max(4_000),
+    text: z.string().min(1).max(limits.answerChars),
   })
   .strict()
   .refine(

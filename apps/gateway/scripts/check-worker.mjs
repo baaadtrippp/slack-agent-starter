@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseArgs, parseEnv } from 'node:util';
 import { createClient } from 'redis';
+import { limits } from '../../../packages/contracts/src/limits.ts';
 import {
   createManagedWorker,
   MANAGED_WORKER_LAUNCH,
@@ -68,6 +69,7 @@ const job = () => ({
   callbackUrl: 'https://127.0.0.1:8443/api/worker/callback',
   callbackToken: randomBytes(32).toString('hex'),
   artifactOutput: true,
+  limits,
 });
 const first = job();
 first.input = {

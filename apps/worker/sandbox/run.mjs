@@ -29,9 +29,26 @@ import {
 const failureText =
   'The agent could not finish this run. You can retry by mentioning it again.';
 const callbackReserve = 12_000;
-const sourceByteLimit = 16 * 1024;
-const maxInputsPerTurn = 6;
-const maxRetainedInputs = 12;
+// Bounds the worker's own retained-source catalog file.
+const catalogByteLimit = 16 * 1024;
+// The job carries these limits; see packages/contracts/src/limits.ts.
+const limitNames = [
+  'inputFileBytes',
+  'publicLinkBytes',
+  'generatedFileBytes',
+  'pdfTextBytes',
+  'messageChars',
+  'answerChars',
+  'filesPerMessage',
+  'attachmentMetadataPerMessage',
+  'sourcesPerThread',
+  'threadContextMessages',
+  'threadMessageBytes',
+  'threadContextBytes',
+  'sharedNoteBytes',
+  'sharedNotesPerChannel',
+  'sharedNotesFileBytes',
+];
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const checksum = /^[0-9a-f]{64}$/;
 const sourceKinds = ['csv', 'pdf', 'png', 'jpeg', 'text', 'publicUrl'];
@@ -72,7 +89,7 @@ const retainedSourcesUnavailable = new Error(
 const uncertainRun = new Error('Worker state requires inspection');
 const cancelledRun = new Error('Worker run was cancelled');
 const unreadablePdf = new Error('PDF text extraction failed');
-const oversizedPdfText = new Error('PDF text exceeds the 16 KiB limit');
+const oversizedPdfText = new Error('PDF text exceeds its limit');
 const providerQuotaFailure = Object.assign(
   new Error('Provider quota is unavailable'),
   { failureCategory: 'provider_quota' },
@@ -84,9 +101,6 @@ const slackSenderId = /^[UWB][A-Z0-9]{1,31}$/;
 const slackFileId = /^F[A-Z0-9]{1,31}$/;
 const mimeType =
   /^[A-Za-z0-9][A-Za-z0-9.+_-]{0,62}\/[A-Za-z0-9][A-Za-z0-9.+_-]{0,62}$/;
-const maxContextMessages = 20;
-const maxContextMessageBytes = 2 * 1024;
-const maxContextBytes = 16 * 1024;
 
 const providerQuotaCodes = new Set([
   '402',
@@ -121,6 +135,12 @@ export function isProviderQuotaSignal(value) {
     ) ||
     /\b(?:insufficient|no|out of) (?:credits?|balance)\b/i.test(value) ||
     /\bpayment required\b/i.test(value)
+  );
+}
+
+export function isValidLimits(limits) {
+  return limitNames.every(
+    (name) => Number.isSafeInteger(limits?.[name]) && limits[name] > 0,
   );
 }
 
@@ -178,7 +198,7 @@ export default async function (pi) {
 }
 `;
 
-export const writeArtifactExtension = `
+export const writeArtifactExtension = (byteLimit) => `
 import { createHash } from 'node:crypto';
 import { constants, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -193,13 +213,13 @@ export default function (pi) {
     description: 'Save one UTF-8 result file for delivery to the originating Slack thread.',
     parameters: Type.Object({
       format: Type.Unsafe({ type: 'string', enum: formats }),
-      content: Type.String({ minLength: 1, maxLength: ${sourceByteLimit} }),
+      content: Type.String({ minLength: 1, maxLength: ${byteLimit} }),
     }),
     async execute(_id, { format, content }) {
       if (!formats.includes(format) || typeof content !== 'string' ||
           !content.isWellFormed() || !content.length || content.includes(String.fromCharCode(0)) ||
-          Buffer.byteLength(content) > ${sourceByteLimit})
-        throw new Error('Provide one supported non-empty UTF-8 file up to 16 KiB');
+          Buffer.byteLength(content) > ${byteLimit})
+        throw new Error('Provide one supported non-empty UTF-8 file up to ${byteLimit / 1024} KiB');
       if (reserved) throw new Error('This run already has an artifact');
       reserved = true;
       const bytes = Buffer.from(content);
@@ -303,12 +323,13 @@ async function run(job, model, key, stopSignal = new AbortController().signal) {
     job.generation < 1 ||
     !Number.isSafeInteger(job.deadline) ||
     job.deadline <= Date.now() ||
+    !isValidLimits(job.limits) ||
     typeof job.input?.text !== 'string' ||
     !job.input.text.trim() ||
-    job.input.text.length > 12_000 ||
+    job.input.text.length > job.limits.messageChars ||
     !isValidPromptMetadata(job) ||
     !validSharedNoteJob(job) ||
-    !isValidSources(job.input.sources) ||
+    !isValidSources(job.input.sources, job.limits) ||
     (job.artifactOutput !== undefined && job.artifactOutput !== true) ||
     !/^[0-9a-f]{64}$/.test(job.callbackToken) ||
     (job.session !== undefined &&
@@ -406,12 +427,12 @@ async function run(job, model, key, stopSignal = new AbortController().signal) {
     }
     try {
       if (job.memory === 'save') {
-        await saveSharedNote(job.input, stopSignal);
+        await saveSharedNote(job.input, job.limits, stopSignal);
         result.text = sharedNoteSaved;
       } else {
         const notes =
           job.memory === 'read'
-            ? await readSharedNotes(job.input).catch(() => {
+            ? await readSharedNotes(job.input, job.limits).catch(() => {
                 throw sharedNotesUnavailable;
               })
             : undefined;
@@ -559,13 +580,14 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
       ? await loadRetainedInputs(
           sessionRoot,
           job.session.revision,
+          job.limits,
           job.session.hasRetainedSources,
         ).catch(() => {
           throw retainedSourcesUnavailable;
         })
       : [];
     const sources = [...retained, ...current];
-    if (sources.length > maxRetainedInputs) throw tooManySources;
+    if (sources.length > job.limits.sourcesPerThread) throw tooManySources;
     const { inputs, attachments, catalog } = await prepareSources(
       sources,
       seedRunId,
@@ -606,7 +628,11 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
     }
     if (outputTool) {
       await mkdir(results, { mode: 0o700 });
-      await writeFile(outputExtension, writeArtifactExtension, { mode: 0o600 });
+      await writeFile(
+        outputExtension,
+        writeArtifactExtension(job.limits.generatedFileBytes),
+        { mode: 0o600 },
+      );
     }
     await writePiLauncher(launcher, toolOptions, job.runId);
 
@@ -773,7 +799,7 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
       await writeRevisionCatalog(revisions, saved.records.length, sources);
     }
     return {
-      text: text.slice(0, 4000).toWellFormed(),
+      text: text.slice(0, job.limits.answerChars).toWellFormed(),
       ...(artifact ? { artifact } : {}),
       session: {
         seedRunId,
@@ -903,12 +929,12 @@ function isValidSource(source) {
   );
 }
 
-function isValidSources(sources) {
+function isValidSources(sources, limits) {
   if (sources === undefined) return true;
   if (
     !Array.isArray(sources) ||
     !sources.length ||
-    sources.length > maxInputsPerTurn ||
+    sources.length > limits.filesPerMessage + 1 ||
     !sources.every(
       (source) =>
         hasOnlyKeys(source, ['kind', 'name', 'sha256']) &&
@@ -917,7 +943,7 @@ function isValidSources(sources) {
   )
     return false;
   const urls = sources.filter(({ kind }) => kind === 'publicUrl').length;
-  return urls <= 1 && sources.length - urls < maxInputsPerTurn;
+  return urls <= 1 && sources.length - urls <= limits.filesPerMessage;
 }
 
 async function readBoundedFile(base, directories, filename, limit) {
@@ -963,6 +989,7 @@ async function readBoundedFile(base, directories, filename, limit) {
 export async function loadRetainedInputs(
   sessionRoot,
   revision,
+  limits,
   hasRetainedSources = false,
 ) {
   // A missing catalog is valid for legacy and source-free sessions.
@@ -970,7 +997,7 @@ export async function loadRetainedInputs(
     sessionRoot,
     ['input-revisions'],
     String(revision) + '.json',
-    sourceByteLimit,
+    catalogByteLimit,
   ).catch((error) => {
     if (hasRetainedSources || error.code !== 'ENOENT') throw error;
   });
@@ -979,7 +1006,7 @@ export async function loadRetainedInputs(
   if (
     !Array.isArray(sources) ||
     (hasRetainedSources && sources.length === 0) ||
-    sources.length > maxRetainedInputs ||
+    sources.length > limits.sourcesPerThread ||
     !sources.every(
       (source) =>
         hasOnlyKeys(source, ['kind', 'name', 'sha256', 'runId', 'index']) &&
@@ -988,7 +1015,7 @@ export async function loadRetainedInputs(
         uuid.test(source.runId) &&
         Number.isSafeInteger(source.index) &&
         source.index >= 0 &&
-        source.index < maxInputsPerTurn,
+        source.index <= limits.filesPerMessage,
     )
   )
     throw new Error('Invalid retained input catalog');
@@ -1018,7 +1045,9 @@ export async function prepareSources(
         workspace,
         ['inputs', seedRunId, source.runId],
         'input-' + source.index,
-        sourceByteLimit,
+        source.kind === 'publicUrl'
+          ? job.limits.publicLinkBytes
+          : job.limits.inputFileBytes,
       );
       if (createHash('sha256').update(bytes).digest('hex') !== source.sha256)
         throw new Error('Staged input checksum mismatch');
@@ -1037,7 +1066,12 @@ export async function prepareSources(
         await writeFile(path, bytes, { mode: 0o600 });
         const budget = job.deadline - Date.now() - callbackReserve;
         if (budget <= 0) throw new Error('Worker deadline expired');
-        text = extractPdfText(path, Math.min(3_000, budget), job.runId);
+        text = extractPdfText(
+          path,
+          Math.min(3_000, budget),
+          job.runId,
+          job.limits.pdfTextBytes,
+        );
       } else {
         text = bytes.toString('utf8');
       }
@@ -1057,9 +1091,9 @@ function hasOnlyKeys(value, keys) {
   );
 }
 
-function isValidAttachments(attachments) {
+function isValidAttachments(attachments, limit) {
   if (attachments === undefined) return true;
-  if (!Array.isArray(attachments) || attachments.length > 5) return false;
+  if (!Array.isArray(attachments) || attachments.length > limit) return false;
   return attachments.every(
     (attachment) =>
       hasOnlyKeys(attachment, ['id', 'mimeType', 'size']) &&
@@ -1074,8 +1108,9 @@ function isValidAttachments(attachments) {
 }
 
 function isValidPromptMetadata(job) {
-  const { input } = job;
-  if (!isValidAttachments(input.attachments)) return false;
+  const { input, limits } = job;
+  const attachmentLimit = limits.attachmentMetadataPerMessage;
+  if (!isValidAttachments(input.attachments, attachmentLimit)) return false;
   const context = input.threadContext;
   if (context === undefined && !input.attachments?.length) return true;
   if (
@@ -1098,7 +1133,7 @@ function isValidPromptMetadata(job) {
     typeof context.truncated !== 'boolean' ||
     !Array.isArray(context.messages) ||
     context.messages.length < 1 ||
-    context.messages.length > maxContextMessages ||
+    context.messages.length > limits.threadContextMessages ||
     input.threadTs >= input.messageTs
   )
     return false;
@@ -1112,8 +1147,8 @@ function isValidPromptMetadata(job) {
       typeof message.senderId !== 'string' ||
       !slackSenderId.test(message.senderId) ||
       typeof message.text !== 'string' ||
-      Buffer.byteLength(message.text) > maxContextMessageBytes ||
-      !isValidAttachments(message.attachments) ||
+      Buffer.byteLength(message.text) > limits.threadMessageBytes ||
+      !isValidAttachments(message.attachments, attachmentLimit) ||
       message.messageTs < input.threadTs ||
       message.messageTs >= input.messageTs ||
       (previousTimestamp !== undefined &&
@@ -1122,7 +1157,9 @@ function isValidPromptMetadata(job) {
       return false;
     previousTimestamp = message.messageTs;
   }
-  return Buffer.byteLength(JSON.stringify(context)) <= maxContextBytes;
+  return (
+    Buffer.byteLength(JSON.stringify(context)) <= limits.threadContextBytes
+  );
 }
 
 export function buildPromptText(job) {
@@ -1177,7 +1214,7 @@ export async function consumeTurn(turn, reportWorking) {
   return result;
 }
 
-function extractPdfText(path, timeout, runId) {
+function extractPdfText(path, timeout, runId, byteLimit) {
   let text;
   try {
     text = execFileSync(
@@ -1199,7 +1236,7 @@ function extractPdfText(path, timeout, runId) {
         encoding: 'utf8',
         env: { LC_ALL: 'C.UTF-8' },
         killSignal: 'SIGKILL',
-        maxBuffer: 16 * 1024,
+        maxBuffer: byteLimit,
         stdio: ['ignore', 'pipe', 'ignore'],
         timeout,
       },

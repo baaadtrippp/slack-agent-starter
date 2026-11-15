@@ -1,6 +1,7 @@
 import { createRedisState } from '@chat-adapter/state-redis';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll } from 'vitest';
+import { limits } from '../packages/contracts/src/index.js';
 import type {
   WorkerJob,
   WorkerResult,
@@ -83,6 +84,7 @@ export function makeJob(run: RunRecord): WorkerJob {
       threadTs: run.threadTs,
       messageTs: run.messageTs,
     },
+    limits,
     deadline: run.deadline,
     callbackUrl: 'https://gateway.example/api/worker/callback',
     callbackToken: 'e'.repeat(64),

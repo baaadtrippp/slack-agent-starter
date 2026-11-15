@@ -5,9 +5,6 @@ import { mkdir, open, realpath, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const header = '# Shared channel notes\n\n';
-const maxNotes = 16;
-const maxNoteBytes = 512;
-const maxFileBytes = 20 * 1024;
 const messageTs = /^\d{10}\.\d{6}$/;
 const workspaceId = /^T[A-Z0-9]{1,31}$/;
 const channelId = /^C[A-Z0-9]{1,31}$/;
@@ -30,12 +27,12 @@ export function isDriveFullError(error) {
   return false;
 }
 
-function validNote(note) {
+function validNote(note, limits) {
   return (
     typeof note === 'string' &&
     note.trim() === note &&
     note.length > 0 &&
-    Buffer.byteLength(note) <= maxNoteBytes &&
+    Buffer.byteLength(note) <= limits.sharedNoteBytes &&
     !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(note)
   );
 }
@@ -56,7 +53,7 @@ export function validSharedNoteJob(job) {
   return (
     job.memory === 'read' ||
     (job.memory === 'save' &&
-      validNote(input.text) &&
+      validNote(input.text, job.limits) &&
       !input.threadContext &&
       !input.attachments &&
       !input.sources &&
@@ -71,7 +68,7 @@ function scope(input, workspace) {
   return { key, directory: join(workspace, 'shared-memory') };
 }
 
-async function readNotes(directory, key) {
+async function readNotes(directory, key, limits) {
   let file;
   try {
     if ((await realpath(directory)) !== directory) throw sharedNotesUnavailable;
@@ -86,10 +83,10 @@ async function readNotes(directory, key) {
   let text;
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || stat.size > maxFileBytes)
+    if (!stat.isFile() || stat.size > limits.sharedNotesFileBytes)
       throw sharedNotesUnavailable;
     const stream = file.createReadStream({
-      end: maxFileBytes,
+      end: limits.sharedNotesFileBytes,
       autoClose: false,
     });
     const bytes = Buffer.concat(await Array.fromAsync(stream));
@@ -102,21 +99,21 @@ async function readNotes(directory, key) {
     throw sharedNotesUnavailable;
   const notes = new Map();
   const rows = text.slice(header.length, -1).split('\n');
-  if (rows.length > maxNotes) throw sharedNotesUnavailable;
+  if (rows.length > limits.sharedNotesPerChannel) throw sharedNotesUnavailable;
   for (const row of rows) {
     const match = /^- (\d{10}\.\d{6}) (.+)$/.exec(row);
     if (!match || notes.has(match[1])) throw sharedNotesUnavailable;
     const note = JSON.parse(match[2]);
-    if (!validNote(note)) throw sharedNotesUnavailable;
+    if (!validNote(note, limits)) throw sharedNotesUnavailable;
     notes.set(match[1], note);
   }
   return notes;
 }
 
 /** Opens only the Markdown file for this admitted workspace and channel. */
-export async function readSharedNotes(input, { workspace } = paths) {
+export async function readSharedNotes(input, limits, { workspace } = paths) {
   const { key, directory } = scope(input, workspace);
-  return [...(await readNotes(directory, key)).values()];
+  return [...(await readNotes(directory, key, limits)).values()];
 }
 
 async function syncDirectory(path) {
@@ -134,6 +131,7 @@ async function syncDirectory(path) {
 /** Serializes channel writes inside the one Sandbox holding the writable Drive. */
 export async function saveSharedNote(
   input,
+  limits,
   signal,
   { workspace, locks } = paths,
 ) {
@@ -154,12 +152,12 @@ export async function saveSharedNote(
     if (acquired.status !== 0) throw sharedNotesUnavailable;
     signal.throwIfAborted();
     await mkdir(directory, { recursive: true, mode: 0o700 });
-    const notes = await readNotes(directory, key);
+    const notes = await readNotes(directory, key, limits);
     if (notes.has(input.messageTs)) {
       if (notes.get(input.messageTs) !== input.text)
         throw sharedNotesUnavailable;
     } else {
-      if (notes.size >= maxNotes) throw sharedNotesFull;
+      if (notes.size >= limits.sharedNotesPerChannel) throw sharedNotesFull;
       notes.set(input.messageTs, input.text);
       const contents =
         header +

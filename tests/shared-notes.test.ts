@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, expect, it as vitestIt } from 'vitest';
+import { limits } from '../packages/contracts/src/index.js';
 // @ts-expect-error No declaration file is shipped for the Sandbox module.
 import * as sharedNotes from '../apps/worker/sandbox/shared-notes.mjs';
 
@@ -51,7 +52,7 @@ function writeInNewWorker(input: ReturnType<typeof note>) {
       import { createHash } from 'node:crypto';
       import { join } from 'node:path';
 
-      const [moduleUrl, inputJson, pathsJson] = process.argv.slice(1);
+      const [moduleUrl, inputJson, pathsJson, limitsJson] = process.argv.slice(1);
       const input = JSON.parse(inputJson);
       const paths = JSON.parse(pathsJson);
       const { saveSharedNote } = await import(moduleUrl);
@@ -59,7 +60,7 @@ function writeInNewWorker(input: ReturnType<typeof note>) {
         .update(JSON.stringify([input.workspaceId, input.channelId]))
         .digest('hex');
       let checked = false;
-      await saveSharedNote(input, {
+      await saveSharedNote(input, JSON.parse(limitsJson), {
         throwIfAborted() {
           if (checked) return;
           checked = true;
@@ -72,6 +73,7 @@ function writeInNewWorker(input: ReturnType<typeof note>) {
     moduleUrl.href,
     JSON.stringify(input),
     JSON.stringify(paths),
+    JSON.stringify(limits),
   ]);
 }
 
@@ -101,14 +103,22 @@ it('retains both concurrent writes and deduplicates across worker replacement', 
   await writeInNewWorker(first);
 
   const thirdThread = note(3, 'What do we know about the badge?');
-  expect((await readSharedNotes(thirdThread, paths)).sort()).toEqual(
+  expect((await readSharedNotes(thirdThread, limits, paths)).sort()).toEqual(
     [first.text, second.text].sort(),
   );
   expect(
-    await readSharedNotes({ ...thirdThread, channelId: 'CTEST2' }, paths),
+    await readSharedNotes(
+      { ...thirdThread, channelId: 'CTEST2' },
+      limits,
+      paths,
+    ),
   ).toEqual([]);
   expect(
-    await readSharedNotes({ ...thirdThread, workspaceId: 'TTEST2' }, paths),
+    await readSharedNotes(
+      { ...thirdThread, workspaceId: 'TTEST2' },
+      limits,
+      paths,
+    ),
   ).toEqual([]);
   const memory = join(paths.workspace, 'shared-memory');
   const [file] = await readdir(memory);
@@ -119,12 +129,13 @@ it('retains both concurrent writes and deduplicates across worker replacement', 
 
 it('preserves the prior snapshot if a write is interrupted before rename', async () => {
   const first = note(1, 'Initial note');
-  await saveSharedNote(first, signal, paths);
+  await saveSharedNote(first, limits, signal, paths);
   const interrupted = new Error('Synthetic interruption');
   let checks = 0;
   await expect(
     saveSharedNote(
       note(2, 'Uncommitted note'),
+      limits,
       {
         throwIfAborted() {
           if (++checks === 2) throw interrupted;
@@ -133,9 +144,9 @@ it('preserves the prior snapshot if a write is interrupted before rename', async
       paths,
     ),
   ).rejects.toBe(interrupted);
-  expect(await readSharedNotes(first, paths)).toEqual([first.text]);
+  expect(await readSharedNotes(first, limits, paths)).toEqual([first.text]);
   await writeInNewWorker(note(3, 'Next note'));
-  expect(await readSharedNotes(first, paths)).toEqual([
+  expect(await readSharedNotes(first, limits, paths)).toEqual([
     first.text,
     'Next note',
   ]);
@@ -145,7 +156,7 @@ it.each(['writeFile', 'sync'])(
   'preserves the prior snapshot when the Drive fills during %s',
   async (operation) => {
     const first = note(1, 'Initial note');
-    await saveSharedNote(first, signal, paths);
+    await saveSharedNote(first, limits, signal, paths);
     const memory = join(paths.workspace, 'shared-memory');
     const filesBefore = await readdir(memory);
 
@@ -157,7 +168,7 @@ it.each(['writeFile', 'sync'])(
         import fs from 'node:fs/promises';
         import { syncBuiltinESMExports } from 'node:module';
 
-        const [moduleUrl, input, paths, operation] = process.argv.slice(1);
+        const [moduleUrl, input, paths, operation, limits] = process.argv.slice(1);
         const realOpen = fs.open;
         const full = Object.assign(new Error('Synthetic full Drive'), {
           code: 'ENOSPC',
@@ -176,7 +187,7 @@ it.each(['writeFile', 'sync'])(
         syncBuiltinESMExports();
         const { isDriveFullError, saveSharedNote } = await import(moduleUrl);
         await assert.rejects(
-          saveSharedNote(JSON.parse(input), new AbortController().signal, JSON.parse(paths)),
+          saveSharedNote(JSON.parse(input), JSON.parse(limits), new AbortController().signal, JSON.parse(paths)),
           (error) => error === full && isDriveFullError(error),
         );
         assert.equal(attempts, 1);
@@ -185,10 +196,11 @@ it.each(['writeFile', 'sync'])(
       JSON.stringify(note(2, 'Uncommitted note')),
       JSON.stringify(paths),
       operation,
+      JSON.stringify(limits),
     ]);
 
     expect(await readdir(memory)).toEqual(filesBefore);
-    expect(await readSharedNotes(first, paths)).toEqual([first.text]);
+    expect(await readSharedNotes(first, limits, paths)).toEqual([first.text]);
   },
 );
 
@@ -196,11 +208,22 @@ it('refuses excess notes and preserves all previously saved entries', async () =
   for (let number = 1; number <= 16; number++)
     await saveSharedNote(
       note(number, 'Synthetic note ' + number),
+      limits,
       signal,
       paths,
     );
   await expect(
-    saveSharedNote(note(17, 'Extra note'), signal, paths),
+    saveSharedNote(note(17, 'Extra note'), limits, signal, paths),
   ).rejects.toBe(sharedNotesFull);
-  expect(await readSharedNotes(note(18, 'Query'), paths)).toHaveLength(16);
+  expect(await readSharedNotes(note(18, 'Query'), limits, paths)).toHaveLength(
+    16,
+  );
+});
+
+it('refuses a note beyond the per-channel limit received in the job', async () => {
+  const one = { ...limits, sharedNotesPerChannel: 1 };
+  await saveSharedNote(note(1, 'Only note'), one, signal, paths);
+  await expect(
+    saveSharedNote(note(2, 'Extra note'), one, signal, paths),
+  ).rejects.toBe(sharedNotesFull);
 });

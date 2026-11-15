@@ -1,7 +1,7 @@
 import { isUtf8 } from 'node:buffer';
 import {
   artifactFormats,
-  INPUT_BYTE_LIMIT,
+  limits,
 } from '../../../packages/contracts/src/index.js';
 import type { ArtifactFormat } from '../../../packages/contracts/src/index.js';
 import type { SandboxTarget } from './store.js';
@@ -29,7 +29,7 @@ try {
   const file = openSync('/proc/self/fd/' + dir + '/result.' + format,
     O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
   closeSync(dir);
-  const limit = ${INPUT_BYTE_LIMIT};
+  const limit = ${limits.generatedFileBytes};
   const stat = fstatSync(file);
   if (!stat.isFile() || stat.nlink !== 1 || stat.size < 1 || stat.size > limit)
     throw new Error();
@@ -77,12 +77,12 @@ export async function collectRunArtifact(
   });
   if (command.exitCode !== 0) throw new Error('Artifact is unavailable');
   const encoded = await command.stdout({ signal });
-  if (encoded.length > Math.ceil(INPUT_BYTE_LIMIT / 3) * 4)
+  if (encoded.length > Math.ceil(limits.generatedFileBytes / 3) * 4)
     throw new Error('Artifact transfer exceeded its limit');
   const bytes = Buffer.from(encoded, 'base64');
   if (
     bytes.length === 0 ||
-    bytes.length > INPUT_BYTE_LIMIT ||
+    bytes.length > limits.generatedFileBytes ||
     bytes.toString('base64') !== encoded ||
     !isUtf8(bytes)
   )

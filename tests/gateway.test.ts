@@ -30,6 +30,7 @@ import {
 import { RedisRunStore } from '../apps/gateway/src/store.js';
 import type { RunRecord, SandboxTarget } from '../apps/gateway/src/store.js';
 import {
+  limits,
   SHARED_NOTE_SAVED,
   WORKER_FAILURE_REPLY,
   workerJobSchema,
@@ -1852,6 +1853,7 @@ describe.skipIf(!redisUrl)(
       await gateway.flush();
 
       const job = workerJobSchema.parse(gateway.dispatch.mock.calls[0]![0]);
+      expect(job.limits).toEqual(limits);
       expect(job.input.attachments).toEqual([
         { id: 'FREQUEST1', mimeType: 'text/plain', size: 0 },
       ]);

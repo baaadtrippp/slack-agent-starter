@@ -14,9 +14,8 @@ import { Actions, Button, CardText, Chat, ConsoleLogger, emoji } from 'chat';
 import type { StateAdapter } from 'chat';
 import { z } from 'zod';
 import {
-  MAX_RETAINED_INPUTS,
-  MAX_SLACK_INPUT_FILES,
-  SHARED_NOTE_BYTE_LIMIT,
+  limits,
+  RUN_DURATION_MS,
   SHARED_NOTE_SAVED,
   WORKER_FAILURE_REPLY,
   workerCallbackSchema,
@@ -155,8 +154,7 @@ const THREAD_CONTEXT_UNAVAILABLE_REPLY =
   'I could not read the earlier messages in this thread. Your request was not submitted. Mention me again in this thread to retry.';
 const PDF_UNREADABLE_REPLY =
   'I could not extract readable text from this PDF. Mention me again with a small text-based PDF.';
-const PDF_TEXT_TOO_LARGE_REPLY =
-  'The PDF contains more than 16 KiB of text. Mention me again with a shorter PDF.';
+const PDF_TEXT_TOO_LARGE_REPLY = `The PDF contains more than ${limits.pdfTextBytes / 1024} KiB of text. Mention me again with a shorter PDF.`;
 const RETAINED_SOURCES_UNAVAILABLE_REPLY =
   'I could not reopen an earlier file or link in this thread. Start a new message in the channel, mention me there, and include the files and links you still need.';
 
@@ -169,7 +167,6 @@ const SHARED_NOTES_UNAVAILABLE_REPLY =
 
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_EVENT_BYTES = 256 * 1024;
-const RUN_DURATION_MS = 60_000;
 const CONTROL_FRESHNESS_MS = 300_000;
 
 const threadReplyEnvelope = z.object({
@@ -252,7 +249,7 @@ export function normalizeFailureResult(run: RunRecord, result: WorkerResult) {
         ? PDF_TEXT_TOO_LARGE_REPLY
         : result.inputError === 'too_many_sources'
           ? 'This thread has reached its ' +
-            MAX_RETAINED_INPUTS +
+            limits.sourcesPerThread +
             '-source limit. Start a new thread to add more files or links.'
           : result.inputError === 'retained_sources_unavailable'
             ? RETAINED_SOURCES_UNAVAILABLE_REPLY
@@ -1038,7 +1035,7 @@ export function createGateway({
       !/^\d{10}\.\d{6}$/.test(input.threadTs) ||
       input.threadTs > input.ts ||
       (!input.text.trim() && !(hasFiles && fileInputEnabled && !mention)) ||
-      input.text.length > 12_000 ||
+      input.text.length > limits.messageChars ||
       !rawEvent ||
       rawEvent.bot_id ||
       rawEvent.bot_profile ||
@@ -1158,14 +1155,14 @@ export function createGateway({
           if (
             !text ||
             (memory === 'save' &&
-              (Buffer.byteLength(text) > SHARED_NOTE_BYTE_LIMIT ||
+              (Buffer.byteLength(text) > limits.sharedNoteBytes ||
                 /[\p{Cc}\p{Zl}\p{Zp}]/u.test(text)))
           ) {
             await publishNotice(
               run,
               'failed',
               memory === 'save'
-                ? 'Put the note on one line after “remember for this channel:”, up to 512 UTF-8 bytes.'
+                ? `Put the note on one line after “remember for this channel:”, up to ${limits.sharedNoteBytes} UTF-8 bytes.`
                 : 'Put your question after “use shared notes:”.',
             );
             return;
@@ -1187,12 +1184,12 @@ export function createGateway({
 
         const files =
           !saving && fileInputEnabled && hasFiles ? attachedFiles : [];
-        if (files.length > MAX_SLACK_INPUT_FILES) {
+        if (files.length > limits.filesPerMessage) {
           await publishNotice(
             run,
             'failed',
             'Attach at most ' +
-              MAX_SLACK_INPUT_FILES +
+              limits.filesPerMessage +
               ' Slack files per message.',
           );
           return;
@@ -1287,6 +1284,7 @@ export function createGateway({
           ...(run.session ? { session: run.session } : {}),
           ...(memory ? { memory } : {}),
           ...(!saving && config.fileExchange ? { artifactOutput: true } : {}),
+          limits,
           deadline: run.deadline,
           callbackUrl: `${config.origin}/api/worker/callback`,
           callbackToken,
