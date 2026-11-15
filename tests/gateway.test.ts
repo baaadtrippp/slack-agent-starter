@@ -2036,6 +2036,28 @@ describe.skipIf(!redisUrl)(
       });
     });
 
+    it('drops internal sandbox link targets from the posted answer', async () => {
+      const gateway = harness();
+      const body = envelope();
+      await gateway.events(signed(body));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      const output = {
+        ...result(job),
+        text: 'Done. [out.csv](sandbox:/workspace/runs/x/work/out.csv) and ![chart](sandbox:/tmp/c.png).',
+      };
+      expect(
+        (await gateway.callback(callback(output, job.callbackToken))).status,
+      ).toBe(202);
+      await gateway.flush();
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(
+        `slack:CTEST1:${body.event.ts}`,
+        'Done. out.csv and chart.',
+      );
+    });
+
     it('recovers the artifact and releases the replacement when a lost worker callback arrives late', async () => {
       const csv = Buffer.from('label,value\nsynthetic,1\n');
       const collectArtifact = vi.fn(

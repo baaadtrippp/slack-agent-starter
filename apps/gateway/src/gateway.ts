@@ -463,7 +463,13 @@ export function createGateway({
           .openAnswerPublication(run.workspaceId, run.channelId)
           .catch(() => {});
       }
-      const message = await bot.thread(threadId).post(result.text);
+      // Models link to sandbox:/workspace/... paths Slack users cannot open.
+      // Keep the link label and drop the internal target.
+      const text = result.text.replace(
+        /!?\[([^\]]*)\]\(sandbox:[^)]*\)/g,
+        '$1',
+      );
+      const message = await bot.thread(threadId).post(text);
       if (
         !message.id ||
         (result.session && !/^\d{10}\.\d{6}$/.test(message.id))
