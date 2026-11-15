@@ -393,13 +393,17 @@ live native Pi session to another harness.
   when available. Use provider and deployment logs; do not add an observability
   vendor.
 
-**Current limits (O05, accepted 10 November 2026):** the app ships with the
-limits the code enforces today: one active run per thread, 60 seconds per run,
-16 KiB per input or generated file, and no workspace-wide cap on concurrent Pi
-processes. The [README](../../README.md#current-limits) lists all of them. They
-are documented current limits, not tested targets; the live checklist includes
-one realistic task to check whether they hold. Reject excess visibly. These are
-application limits, not provider limits.
+**Limits (O05, accepted 10 November 2026, corrected 15 November 2026):** the
+limits are defaults kept in one file, `packages/contracts/src/limits.ts`, with
+one name per purpose; the gateway sends them with every job. Inputs and
+generated files have separate limits. The defaults are one active run per
+thread, 60 seconds per run, 16 KiB per input file or link, 256 KiB per generated
+file, and no workspace-wide cap on concurrent Pi processes. The
+[README](../../README.md#current-limits) lists all of them. They are documented
+defaults, not tested targets; the live checklist includes one realistic task to
+check whether they hold. Reject excess visibly; when the file tool refuses every
+write in a run, the answer says that no file is attached. These are application
+limits, not provider limits.
 
 **Open model budget:** Select one model that passes tool, file, and image cases
 and set an explicit OpenRouter spending cap before deployment. Never upgrade
@@ -540,7 +544,7 @@ real Slack/model check.
 | O02 | Controls and feedback | Accepted on 7 November 2026: Stop, Status, and thumbs additions/removals on final answers                  | Settled for F09/F11                |
 | O03 | Memory policy         | Accepted on 7 November 2026. Any internal member can explicitly save and use notes in the enabled channel. | Settled for F13                    |
 | O04 | Storage cleanup       | Deferred on 10 November 2026; see the open cleanup policy in section 5                                     | Automatic cleanup                  |
-| O05 | Operating limits      | Accepted on 10 November 2026: the current limits in section 7, documented but not tested as targets        | Settled                            |
+| O05 | Operating limits      | Accepted on 10 November 2026, corrected 15 November: defaults in one file, separate input and file limits  | Settled                            |
 | O06 | Model and budget      | Select one tool-capable model and an explicit spend cap; verify vision in the actual adapter path          | Real model execution               |
 | O07 | Slack identity        | Selected app identity and channel; values stay in deployment configuration                                 | Settled                            |
 
