@@ -271,6 +271,7 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
     let tool:
       | {
           name: string;
+          description: string;
           execute(
             id: string,
             args: { format: string; content: string },
@@ -285,6 +286,7 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
         },
       });
       expect(tool!.name).toBe('write_artifact');
+      expect(tool!.description).toContain('file of up to 32 bytes');
       const oversized = { format: 'csv', content: 'a'.repeat(33) };
       await expect(tool!.execute('oversized', oversized)).rejects.toThrow(
         'Provide one supported non-empty UTF-8 file up to 32 bytes',
