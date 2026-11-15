@@ -710,13 +710,13 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         expect((await handle(event.request, 'events')).status).toBe(200);
         expect(fetchPublicText).not.toHaveBeenCalled();
         await drainBackground();
-        if (isUrl || isMixed)
-          expect(fetchPublicText).toHaveBeenCalledExactlyOnceWith(url);
         runId =
           (await observer
             .getClient()
             .get(`slack-agent:event:TTEST1:${event.eventId}`)) ?? undefined;
         expect(runId).toBeDefined();
+        if (isUrl || isMixed)
+          expect(fetchPublicText).toHaveBeenCalledExactlyOnceWith(url, runId);
         expect(writeFiles).toHaveBeenCalledExactlyOnceWith(
           [
             {

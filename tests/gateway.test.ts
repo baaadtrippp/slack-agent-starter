@@ -2036,6 +2036,59 @@ describe.skipIf(!redisUrl)(
       });
     });
 
+    it('drops internal sandbox link targets from the posted answer', async () => {
+      const gateway = harness();
+      const body = envelope();
+      await gateway.events(signed(body));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      const output = {
+        ...result(job),
+        text: 'Done. [out.csv](sandbox:/workspace/runs/x/work/out.csv) and ![chart](<sandbox:/tmp/c.png>).',
+      };
+      expect(
+        (await gateway.callback(callback(output, job.callbackToken))).status,
+      ).toBe(202);
+      await gateway.flush();
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(
+        `slack:CTEST1:${body.event.ts}`,
+        'Done. out.csv and chart.',
+      );
+    });
+
+    it.each([
+      [
+        'Range [0, 1) is used. See [out.csv](sandbox:/workspace/out.csv).',
+        'Range [0, 1) is used. See out.csv.',
+      ],
+      [
+        '![](sandbox:/workspace/chart.png)',
+        'The answer contained only a file link, which cannot be opened from Slack.',
+      ],
+    ])('posts a readable answer for %j', async (text, posted) => {
+      const gateway = harness();
+      const body = envelope();
+      await gateway.events(signed(body));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      expect(
+        (
+          await gateway.callback(
+            callback({ ...result(job), text }, job.callbackToken),
+          )
+        ).status,
+      ).toBe(202);
+      await gateway.flush();
+      expect(
+        SlackAdapter.prototype.postMessage,
+      ).toHaveBeenCalledExactlyOnceWith(
+        `slack:CTEST1:${body.event.ts}`,
+        posted,
+      );
+    });
+
     it('recovers the artifact and releases the replacement when a lost worker callback arrives late', async () => {
       const csv = Buffer.from('label,value\nsynthetic,1\n');
       const collectArtifact = vi.fn(
@@ -3498,8 +3551,8 @@ describe.skipIf(!redisUrl)(
       expect((await gateway.events(signed(mention))).status).toBe(200);
       await gateway.flush();
 
-      expect(fetchPublicText).toHaveBeenCalledExactlyOnceWith(url);
       const [job, staged] = gateway.dispatch.mock.calls[0]!;
+      expect(fetchPublicText).toHaveBeenCalledExactlyOnceWith(url, job.runId);
       expect(job.input.sources).toEqual([
         {
           kind: 'publicUrl',
