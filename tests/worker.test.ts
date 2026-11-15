@@ -34,6 +34,7 @@ it.each([
   [16 * 1024, '16 KiB'],
   [10_000, '10,000 bytes'],
   [512, '512 bytes'],
+  [2 * 1024 * 1024, '2,048 KiB'],
 ])('prints the limit %i as %s', (bytes, text) => {
   expect(formatBytes(bytes)).toBe(text);
 });

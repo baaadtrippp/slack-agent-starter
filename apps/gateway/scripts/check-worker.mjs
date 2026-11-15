@@ -79,8 +79,12 @@ client.on('error', () => {});
 const csvMarker = randomBytes(8).toString('hex');
 const csv = 'region,units\nnorth,' + csvMarker + '\n';
 // Pi estimates four characters per token and compacts the session near the
-// model's context window, so the model-written files stay small.
-const artifact = ('checked,' + csvMarker + '\n').padEnd(64 * 1024, '.');
+// model's context window, so the model-written files stay small. 20 KiB is
+// still above the earlier 16 KiB limit.
+const artifact = ('checked,' + csvMarker + '\n').padEnd(
+  Math.min(20 * 1024, limits.generatedFileBytes),
+  '.',
+);
 const job = () => ({
   version: 1,
   runId: randomUUID(),
@@ -325,8 +329,14 @@ try {
   assert.equal(replyResult.artifact?.sha256, sha256(artifact));
   const path = '/workspace/runs/' + reply.runId + '/results/result.csv';
   assert.equal(await read(resumed, path), artifact);
-  // The gateway's collector reads a file of exactly the generated-file limit
-  // through a Sandbox command.
+  // The gateway's collector reads the worker's file, and one of exactly the
+  // generated-file limit, through a Sandbox command.
+  const target = {
+    sandboxName: settings.SANDBOX_WORKER_NAME,
+    sessionId: resumed.sessionId,
+  };
+  const fromWorker = await collectRunArtifact(reply.runId, target, 'csv');
+  assert.equal(sha256(fromWorker), replyResult.artifact.sha256);
   const collectedRun = randomUUID();
   const largest = 'x'.repeat(limits.generatedFileBytes);
   const results = '/workspace/runs/' + collectedRun + '/results';
@@ -334,10 +344,6 @@ try {
     [{ path: results + '/result.txt', content: largest, mode: 0o600 }],
     { signal: signal() },
   );
-  const target = {
-    sandboxName: settings.SANDBOX_WORKER_NAME,
-    sessionId: resumed.sessionId,
-  };
   const collected = await collectRunArtifact(collectedRun, target, 'txt');
   assert.equal(collected.toString(), largest, 'The collected file differs.');
   const refusedResult = await run(resumed, refused);

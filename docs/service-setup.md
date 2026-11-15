@@ -368,7 +368,9 @@ To roll back a bad gateway deployment, point the stable Vercel origin to the
 previous known-good deployment or redeploy that exact commit. Keep the matching
 worker snapshot and Drive until accepted work is terminal and the rollback has
 been checked. A gateway and worker built from different revisions are not a
-supported steady state.
+supported steady state. The exception is a gateway from a later commit that
+changes only values in `packages/contracts/src/limits.ts`; see
+[Change the limits](make-it-your-agent.md#change-the-limits).
 
 For complete teardown, first disable Slack Event Subscriptions so no new run
 starts. Keep Interactivity enabled and the app installed until every status

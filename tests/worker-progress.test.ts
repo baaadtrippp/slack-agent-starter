@@ -124,7 +124,7 @@ describe('Sandbox worker progress', () => {
     const rejected = toolResult(
       'write_artifact',
       true,
-      'Validation failed for tool "write_artifact":\n  - content: expected at most 32 characters',
+      'Validation failed for tool "write_artifact":\n  - format: expected one of "csv", "md"',
     );
     const thrown = toolResult(
       'write_artifact',

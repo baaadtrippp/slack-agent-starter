@@ -65,17 +65,17 @@ function toolCall(name, args, id = name) {
   return chunk(delta, 'tool_calls');
 }
 
-// The refused run writes over the schema's maxLength, then within maxLength
-// but over the byte limit; Pi must return both calls as errors.
+// The refused run writes ASCII over the job's byte limit, then fewer
+// characters than the limit but more bytes; execute must refuse both.
 function refuse(tools, results) {
   assert.deepEqual(
     tools.map((tool) => tool.function.name),
     ['write_artifact'],
   );
-  const errors = ['Validation failed', 'Provide one supported'];
+  assert.match(tools[0].function.description, /up to 1 KiB/);
   results.forEach((result, index) =>
     assert.ok(
-      JSON.stringify(result).includes(errors[index]),
+      JSON.stringify(result).includes('Provide one supported'),
       'Pi did not refuse write ' + index,
     ),
   );

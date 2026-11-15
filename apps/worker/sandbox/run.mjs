@@ -222,10 +222,9 @@ export default async function (pi) {
 const formatBytes = (bytes) =>
   bytes % 1024
     ? `${bytes.toLocaleString('en-US')} bytes`
-    : `${bytes / 1024} KiB`;
+    : `${(bytes / 1024).toLocaleString('en-US')} KiB`;
 
 // The tool states the job's limit, so the model learns it from the tool.
-// maxLength counts characters, never more than the UTF-8 bytes execute checks.
 export const writeArtifactExtension = (byteLimit) => `
 import { createHash } from 'node:crypto';
 import { constants, open, rm } from 'node:fs/promises';
@@ -241,7 +240,7 @@ export default function (pi) {
     description: 'Save one UTF-8 result file of up to ${formatBytes(byteLimit)} for delivery to the originating Slack thread.',
     parameters: Type.Object({
       format: Type.Unsafe({ type: 'string', enum: formats }),
-      content: Type.String({ minLength: 1, maxLength: ${byteLimit} }),
+      content: Type.String({ minLength: 1 }),
     }),
     async execute(_id, { format, content }) {
       if (!formats.includes(format) || typeof content !== 'string' ||

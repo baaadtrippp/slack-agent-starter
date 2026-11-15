@@ -2060,7 +2060,7 @@ describe.skipIf(!redisUrl)(
       );
     });
 
-    it.each([
+    it.each<[string, string, { artifactRefused: true }?]>([
       [
         'Range [0, 1) is used. See [out.csv](sandbox:/workspace/out.csv).',
         'Range [0, 1) is used. See out.csv.',
@@ -2069,7 +2069,12 @@ describe.skipIf(!redisUrl)(
         '![](sandbox:/workspace/chart.png)',
         'The answer contained only a file link, which cannot be opened from Slack.',
       ],
-    ])('posts a readable answer for %j', async (text, posted) => {
+      [
+        '![](sandbox:/workspace/chart.png)',
+        'The answer contained only a file link, which cannot be opened from Slack.\n\nNo file is attached because saving the file failed. Files must be text in a supported format, up to 256 KiB.',
+        { artifactRefused: true },
+      ],
+    ])('posts a readable answer for %j', async (text, posted, extra) => {
       const gateway = harness();
       const body = envelope();
       await gateway.events(signed(body));
@@ -2078,7 +2083,7 @@ describe.skipIf(!redisUrl)(
       expect(
         (
           await gateway.callback(
-            callback({ ...result(job), text }, job.callbackToken),
+            callback({ ...result(job), text, ...extra }, job.callbackToken),
           )
         ).status,
       ).toBe(202);
@@ -2111,7 +2116,7 @@ describe.skipIf(!redisUrl)(
       ).toHaveBeenCalledExactlyOnceWith(
         `slack:CTEST1:${body.event.ts}`,
         output.text +
-          '\n\nNo file is attached because saving the file failed. Files can be up to 256 KiB of text.',
+          '\n\nNo file is attached because saving the file failed. Files must be text in a supported format, up to 256 KiB.',
       );
       const saved = await gateway.store.getRun(job.runId);
       expect(saved?.result?.text).toBe(output.text);

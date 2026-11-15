@@ -73,7 +73,9 @@ deploy the gateway from the new commit, as in
 gateway sends the limits with every job and the worker enforces the values it
 receives, so a changed value needs no new worker. Replies and the
 `write_artifact` tool description show the new values. Tests that check a reply
-text expect the defaults; update them with your values.
+text expect the defaults; update them with your values. Two limits have fixed
+bounds, noted beside them in the file: `answerChars` must fit 32 KiB message
+bodies, and `sourcesPerThread` must fit the worker's 16 KiB source catalog.
 
 Adding, renaming, or removing a limit changes the job shape. Then the worker and
 the gateway must come from the same commit:

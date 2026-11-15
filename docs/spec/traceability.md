@@ -97,8 +97,8 @@ apply across all features.
   evidence. Quota handling used synthetic 402 responses, not an exhausted paid
   quota. No check shows that a paid model follows the instructions file; the
   paid turn only repeats a code.
-- O04 automatic cleanup is deferred. The O05 limits are current code limits, not
-  tested targets.
+- O04 automatic cleanup is deferred. The O05 limits are defaults, not tested
+  targets.
 
 ## Evidence rules
 

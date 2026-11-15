@@ -68,18 +68,19 @@ CHECK_RECORD="$(mktemp -d)/check-record.json"
 It bootstraps a separate worker from the commit, with loopback stand-ins for
 OpenRouter and the gateway callback. A first run stages a CSV; after the
 gateway's idle stop, a new session resumes on the same Drive, and a reply
-continues the exact native session, reads the retained CSV, and saves a 64 KiB
-file with `write_artifact`. The gateway's collector then reads a file of exactly
-the generated-file limit from the Sandbox. While the reply runs, a new run in
-another thread gets the gateway's Stop request; it ends stopped without an
-answer, and the reply still completes. A last run in a new thread, with a 1 KiB
-file limit in its job, sends one `write_artifact` call over the tool's character
-limit and one over its byte limit, and its result must report the refused file.
-The stand-in model also checks that the system prompt of the new and the resumed
-session contains `instructions.md`. It prints the tested commit, then runs
-bootstrap cleanup and removes the check worker's Redis records, also after a
-failure. This is provider integration evidence with a stand-in model, not proof
-of the paid model path or live Slack.
+continues the exact native session, reads the retained CSV, and saves a 20 KiB
+file with `write_artifact`. The gateway's collector then reads that file and a
+file of exactly the generated-file limit from the Sandbox. While the reply runs,
+a new run in another thread gets the gateway's Stop request; it ends stopped
+without an answer, and the reply still completes. A last run in a new thread,
+with a 1 KiB file limit in its job, gets a tool description that states it,
+sends two `write_artifact` calls over it, one with fewer characters than the
+limit but more bytes, and its result must report the refused file. The stand-in
+model also checks that the system prompt of the new and the resumed session
+contains `instructions.md`. It prints the tested commit, then runs bootstrap
+cleanup and removes the check worker's Redis records, also after a failure. This
+is provider integration evidence with a stand-in model, not proof of the paid
+model path or live Slack.
 
 With `--paid` (for example `check-worker.mjs --paid "$CHECK_RECORD"`), the check
 then removes the stand-in's `openrouter.ai` override and runs one real turn with
