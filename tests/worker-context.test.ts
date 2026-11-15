@@ -275,8 +275,9 @@ describe('Sandbox worker Slack context prompt', () => {
 
   it('accepts the contract limits and rejects a missing or invalid value', () => {
     expect(isValidLimits(limits)).toBe(true);
-    for (const value of [undefined, 0, 1.5, '16384'])
-      expect(isValidLimits({ ...limits, pdfTextBytes: value })).toBe(false);
+    for (const name of Object.keys(limits))
+      for (const value of [undefined, 0, 1.5, '16384'])
+        expect(isValidLimits({ ...limits, [name]: value })).toBe(false);
     expect(isValidLimits(undefined)).toBe(false);
   });
 

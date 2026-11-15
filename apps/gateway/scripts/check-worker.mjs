@@ -7,7 +7,10 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseArgs, parseEnv } from 'node:util';
 import { createClient } from 'redis';
-import { limits } from '../../../packages/contracts/src/limits.ts';
+import {
+  limits,
+  RUN_DURATION_MS,
+} from '../../../packages/contracts/src/limits.ts';
 import {
   createManagedWorker,
   MANAGED_WORKER_LAUNCH,
@@ -166,7 +169,7 @@ async function prepare(session) {
 
 // Launches one job the way the gateway does.
 function launch(session, job) {
-  job.deadline = Date.now() + 60_000;
+  job.deadline = Date.now() + RUN_DURATION_MS;
   return session.runCommand({
     cmd: 'bash',
     args: ['-c', MANAGED_WORKER_LAUNCH, 'worker', '/tmp/worker/supervise.mjs'],
@@ -179,7 +182,7 @@ function launch(session, job) {
       NODE_EXTRA_CA_CERTS: fixtureDir + '/bundle.pem',
     },
     detached: true,
-    timeoutMs: 60_000,
+    timeoutMs: RUN_DURATION_MS,
     signal: signal(),
   });
 }
@@ -187,7 +190,9 @@ function launch(session, job) {
 // Launches one job and returns its saved result.
 async function run(session, job) {
   const command = await launch(session, job);
-  const finished = await command.wait({ signal: signal(70_000) });
+  const finished = await command.wait({
+    signal: signal(RUN_DURATION_MS + 10_000),
+  });
   const path = '/workspace/runs/' + job.runId + '/result.json';
   const result = JSON.parse((await read(session, path)) ?? 'null');
   const state = JSON.parse(await read(session, statePath));

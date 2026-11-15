@@ -1,6 +1,6 @@
-// Content limits shared by the gateway and the worker. The gateway enforces
-// them and sends `limits` with every job; the worker enforces the values it
-// receives.
+// Content limits shared by the gateway and the worker. Each limit is enforced
+// where its input is handled. The gateway sends `limits` with every job, and
+// the worker enforces the values it receives.
 export const limits = {
   inputFileBytes: 16 * 1024,
   publicLinkBytes: 16 * 1024,
