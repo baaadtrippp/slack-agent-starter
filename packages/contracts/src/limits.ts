@@ -4,7 +4,7 @@
 export const limits = {
   inputFileBytes: 16 * 1024,
   publicLinkBytes: 16 * 1024,
-  generatedFileBytes: 16 * 1024,
+  generatedFileBytes: 256 * 1024,
   pdfTextBytes: 16 * 1024,
   messageChars: 12_000,
   // A longer answer is cut.

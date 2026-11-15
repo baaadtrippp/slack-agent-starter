@@ -2111,7 +2111,7 @@ describe.skipIf(!redisUrl)(
       ).toHaveBeenCalledExactlyOnceWith(
         `slack:CTEST1:${body.event.ts}`,
         output.text +
-          '\n\nNo file is attached because saving the file failed. Files can be up to 16 KiB of text.',
+          '\n\nNo file is attached because saving the file failed. Files can be up to 256 KiB of text.',
       );
       const saved = await gateway.store.getRun(job.runId);
       expect(saved?.result?.text).toBe(output.text);

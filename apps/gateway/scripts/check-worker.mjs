@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { registerHooks } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -16,6 +17,19 @@ import {
   MANAGED_WORKER_LAUNCH,
 } from '../src/managed-worker.ts';
 import { RedisRunStore } from '../src/store.ts';
+
+// Gateway sources import TypeScript files by their .js names.
+registerHooks({
+  resolve(specifier, context, next) {
+    try {
+      return next(specifier, context);
+    } catch (error) {
+      if (!specifier.startsWith('.') || !specifier.endsWith('.js')) throw error;
+      return next(specifier.slice(0, -3) + '.ts', context);
+    }
+  },
+});
+const { collectRunArtifact } = await import('../src/generated-artifact.ts');
 
 const fixtureDir = '/tmp/check-worker';
 const statePath = fixtureDir + '/state.json';
@@ -64,7 +78,11 @@ client.on('error', () => {});
 
 const csvMarker = randomBytes(8).toString('hex');
 const csv = 'region,units\nnorth,' + csvMarker + '\n';
-const artifact = 'checked,' + csvMarker + '\n';
+// A file of exactly the generated-file limit.
+const artifact = ('checked,' + csvMarker + '\n').padEnd(
+  limits.generatedFileBytes,
+  '.',
+);
 const job = () => ({
   version: 1,
   runId: randomUUID(),
@@ -308,6 +326,13 @@ try {
   assert.equal(replyResult.artifact?.sha256, sha256(artifact));
   const path = '/workspace/runs/' + reply.runId + '/results/result.csv';
   assert.equal(await read(resumed, path), artifact);
+  // The gateway's collector reads the file through a Sandbox command.
+  const target = {
+    sandboxName: settings.SANDBOX_WORKER_NAME,
+    sessionId: resumed.sessionId,
+  };
+  const collected = await collectRunArtifact(reply.runId, target, 'csv');
+  assert.equal(collected.toString(), artifact, 'The collected file differs.');
   const refusedResult = await run(resumed, refused);
   assert.equal(refusedResult.artifactRefused, true, 'No refusal was reported.');
   assert.equal(refusedResult.artifact, undefined);
