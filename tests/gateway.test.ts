@@ -2044,7 +2044,7 @@ describe.skipIf(!redisUrl)(
       const job = gateway.dispatch.mock.calls[0]![0];
       const output = {
         ...result(job),
-        text: 'Done. [out.csv](sandbox:/workspace/runs/x/work/out.csv) and ![chart](sandbox:/tmp/c.png).',
+        text: 'Done. [out.csv](sandbox:/workspace/runs/x/work/out.csv) and ![chart](<sandbox:/tmp/c.png>).',
       };
       expect(
         (await gateway.callback(callback(output, job.callbackToken))).status,

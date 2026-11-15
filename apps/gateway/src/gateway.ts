@@ -466,7 +466,7 @@ export function createGateway({
       // Models link to sandbox:/workspace/... paths Slack users cannot open.
       // Keep the link label and drop the internal target.
       const text = result.text.replace(
-        /!?\[([^[\]]*)\]\(sandbox:[^)]*\)/g,
+        /!?\[([^[\]]*)\]\(<?sandbox:[^)]*\)/g,
         '$1',
       );
       const message = await bot
