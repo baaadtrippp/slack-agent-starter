@@ -52,7 +52,7 @@ to copy:
    `tools`, which becomes Pi's `--tools` list. Pi offers the model only the
    tools that `--tools` names, so Pi's built-in tools stay off.
 3. Values the tool needs at run time go into `agentProcessEnv`, as
-   `HYDRA_RESULTS` does for `write_artifact`.
+   `WORKER_RESULTS` does for `write_artifact`.
 
 Add your extension the same way. The stand-in model in
 [`check-worker-fixture.mjs`](../apps/gateway/scripts/check-worker-fixture.mjs)
@@ -70,7 +70,7 @@ arbitrary paths, would let one thread read or change another thread's data, and
 a working directory or prompt is not a security boundary. So the tools only read
 the inputs staged for the run and write one result file. Running commands is
 deferred until it has its own design (see
-[section 8 of the spec](spec/v1.md#8-deferred-from-v1)).
+[section 8 of the spec](spec/specification.md#8-deferred)).
 
 ## Apply worker changes
 

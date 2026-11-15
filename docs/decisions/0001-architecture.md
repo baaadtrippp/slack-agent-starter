@@ -1,8 +1,8 @@
-# ADR 0001: V1 component and persistence architecture
+# ADR 0001: Component and persistence architecture
 
 - Status: accepted
 - Date: 2026-11-02
-- Canonical requirements: [v1 specification](../spec/v1.md)
+- Canonical requirements: [specification](../spec/specification.md)
 
 ## Context
 
@@ -43,7 +43,7 @@ verify it before designing another adapter.
 - Session and shared-memory writes require explicit ownership and serialization.
 - The Drive is durable storage, not a backup or an isolation boundary.
 - Neon/Postgres, another queue, an always-on worker, per-thread sandboxes,
-  runtime account connectors, and additional compute vendors are outside v1.
+  runtime account connectors, and additional compute vendors are deferred.
 
 ## Open follow-up decisions
 

@@ -13,7 +13,7 @@ const workspaceId = /^T[A-Z0-9]{1,31}$/;
 const channelId = /^C[A-Z0-9]{1,31}$/;
 const paths = {
   workspace: '/workspace',
-  locks: '/tmp/hydra-shared-note-locks',
+  locks: '/tmp/shared-note-locks',
 };
 
 export const sharedNotesFull = new Error('Shared notes are full');

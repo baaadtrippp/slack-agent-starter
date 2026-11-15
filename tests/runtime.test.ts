@@ -103,9 +103,9 @@ describe('Sandbox run inspection', () => {
     }
     expect(runCommand).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        args: ['/tmp/hydra-worker/control.mjs'],
+        args: ['/tmp/worker/control.mjs'],
         env: {
-          HYDRA_CONTROL: JSON.stringify({
+          WORKER_CONTROL: JSON.stringify({
             version: 1,
             runId: run.runId,
             generation: run.generation,
@@ -153,7 +153,7 @@ describe('Sandbox run inspection', () => {
     expect(runCommand).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         env: {
-          HYDRA_CONTROL: JSON.stringify({
+          WORKER_CONTROL: JSON.stringify({
             version: 1,
             runId: run.runId,
             generation: 1,
@@ -171,7 +171,7 @@ describe('Sandbox run inspection', () => {
     expect(runCommand).toHaveBeenLastCalledWith(
       expect.objectContaining({
         env: {
-          HYDRA_CONTROL: JSON.stringify({
+          WORKER_CONTROL: JSON.stringify({
             version: 1,
             runId: run.runId,
             generation: run.generation,
@@ -335,8 +335,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
     // The Sandbox worker delivers its result callback before it exits.
     mockManagedSandbox({
       sessionId,
-      runCommand: async (command: { env: { HYDRA_JOB: string } }) => {
-        job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
+      runCommand: async (command: { env: { WORKER_JOB: string } }) => {
+        job = JSON.parse(command.env.WORKER_JOB) as WorkerJob;
         const callback = new Request(
           'https://gateway.example/api/worker/callback',
           {
@@ -392,14 +392,14 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       expect(initialize).toHaveBeenCalledTimes(1);
       const encoded = await observer
         .getClient()
-        .get(`slack-agent:m1:run:${job!.runId}`);
+        .get(`slack-agent:run:${job!.runId}`);
       expect(JSON.parse(encoded!)).toMatchObject({
         state: 'completed',
         messageId: '1800000001.000001',
       });
     } finally {
       await cleanupRuntimeRun(observer, event);
-      const key = `slack-agent:m1:idle:synthetic-worker:${sessionId}`;
+      const key = `slack-agent:idle:synthetic-worker:${sessionId}`;
       await observer.getClient().del([key + ':gate', key + ':active']);
       await observer.disconnect();
     }
@@ -474,10 +474,10 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         };
       });
       const sessionRunCommand = vi.fn().mockImplementation(async (command) => {
-        job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
+        job = JSON.parse(command.env.WORKER_JOB) as WorkerJob;
         const encoded = await observer
           .getClient()
-          .get(`slack-agent:m1:run:${job.runId}`);
+          .get(`slack-agent:run:${job.runId}`);
         recorded = JSON.parse(encoded!);
         if (startResponseLost)
           throw new Error('Synthetic command start response lost');
@@ -506,11 +506,11 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         runId =
           (await observer
             .getClient()
-            .get(`slack-agent:m1:event:TTEST1:${event.eventId}`)) ?? undefined;
+            .get(`slack-agent:event:TTEST1:${event.eventId}`)) ?? undefined;
         expect(runId).toBeDefined();
         const encoded = await observer
           .getClient()
-          .get(`slack-agent:m1:run:${runId}`);
+          .get(`slack-agent:run:${runId}`);
         expect(sandboxGet).toHaveBeenCalledWith({
           name: 'synthetic-worker',
           resume: false,
@@ -555,8 +555,8 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
               args: [
                 '-c',
                 expect.any(String),
-                'hydra-worker',
-                '/tmp/hydra-worker/supervise.mjs',
+                'worker',
+                '/tmp/worker/supervise.mjs',
               ],
             }),
           );
@@ -594,7 +594,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         );
       } finally {
         await cleanupRuntimeRun(observer, event, runId);
-        const key = `slack-agent:m1:idle:synthetic-worker:${sessionId}`;
+        const key = `slack-agent:idle:synthetic-worker:${sessionId}`;
         await observer.getClient().del([key + ':gate', key + ':active']);
         await observer.disconnect();
         vi.restoreAllMocks();
@@ -670,7 +670,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
       let stagedBeforeLaunch = false;
       const runCommand = vi.fn().mockImplementation(async (command) => {
         stagedBeforeLaunch = staged;
-        job = JSON.parse(command.env.HYDRA_JOB) as WorkerJob;
+        job = JSON.parse(command.env.WORKER_JOB) as WorkerJob;
         return { wait: async () => ({ exitCode: 1 }) };
       });
       const { stop: sessionStop } = mockManagedSandbox({
@@ -715,7 +715,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         runId =
           (await observer
             .getClient()
-            .get(`slack-agent:m1:event:TTEST1:${event.eventId}`)) ?? undefined;
+            .get(`slack-agent:event:TTEST1:${event.eventId}`)) ?? undefined;
         expect(runId).toBeDefined();
         expect(writeFiles).toHaveBeenCalledExactlyOnceWith(
           [
@@ -779,7 +779,7 @@ describe.skipIf(!redisUrl)('gateway runtime Redis recovery', () => {
         }
       } finally {
         await cleanupRuntimeRun(observer, event, runId);
-        const key = `slack-agent:m1:idle:synthetic-worker:${sessionId}`;
+        const key = `slack-agent:idle:synthetic-worker:${sessionId}`;
         await observer.getClient().del([key + ':gate', key + ':active']);
         await observer.disconnect();
         vi.restoreAllMocks();
@@ -937,20 +937,20 @@ async function cleanupRuntimeRun(
   knownRunId?: string,
 ) {
   const client = observer.getClient();
-  const eventKey = `slack-agent:m1:event:TTEST1:${event.eventId}`;
+  const eventKey = `slack-agent:event:TTEST1:${event.eventId}`;
   const runId = knownRunId ?? (await client.get(eventKey));
   const keys = [
     eventKey,
-    `slack-agent:m1:message:TTEST1:CTEST1:${event.ts}`,
-    `slack-agent:m1:owner:TTEST1:CTEST1:${event.ts}`,
-    'slack-agent:m1:runtime:synthetic-worker:managed',
+    `slack-agent:message:TTEST1:CTEST1:${event.ts}`,
+    `slack-agent:owner:TTEST1:CTEST1:${event.ts}`,
+    'slack-agent:runtime:synthetic-worker:managed',
   ];
   if (runId) {
-    const runKey = `slack-agent:m1:run:${runId}`;
+    const runKey = `slack-agent:run:${runId}`;
     const encoded = await client.get(runKey);
     const run = encoded ? (JSON.parse(encoded) as RunRecord) : undefined;
     if (run?.messageId) {
-      const index = `slack-agent:m1:answer:${run.workspaceId}:${run.channelId}:${run.messageId}`;
+      const index = `slack-agent:answer:${run.workspaceId}:${run.channelId}:${run.messageId}`;
       if ((await client.get(index)) === runId) keys.push(index);
     }
     keys.push(runKey);

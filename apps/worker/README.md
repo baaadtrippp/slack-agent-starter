@@ -5,8 +5,8 @@ one named, nonpersistent Vercel Sandbox with one Vercel Drive mounted read/write
 at `/workspace`. The public bootstrap creates the clean startup snapshot, Drive,
 initial exact session, network policy, and Redis enrollment.
 
-Follow the [v1 quickstart](../../docs/service-setup.md). From the repository
-root, its worker entry points are:
+Follow the [quickstart](../../docs/service-setup.md). From the repository root,
+its worker entry points are:
 
 ```text
 node --env-file="$SETUP_ENV" apps/gateway/scripts/bootstrap-worker.mjs setup "$WORKER_RECORD"

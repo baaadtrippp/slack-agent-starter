@@ -221,8 +221,8 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
       ),
     );
     const results = join(workspace, 'results');
-    const previousResults = process.env.HYDRA_RESULTS;
-    process.env.HYDRA_RESULTS = results;
+    const previousResults = process.env.WORKER_RESULTS;
+    process.env.WORKER_RESULTS = results;
     let tool:
       | {
           name: string;
@@ -253,8 +253,8 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
         args.content,
       );
     } finally {
-      if (previousResults === undefined) delete process.env.HYDRA_RESULTS;
-      else process.env.HYDRA_RESULTS = previousResults;
+      if (previousResults === undefined) delete process.env.WORKER_RESULTS;
+      else process.env.WORKER_RESULTS = previousResults;
     }
   });
 

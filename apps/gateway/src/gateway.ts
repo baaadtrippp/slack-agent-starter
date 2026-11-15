@@ -132,7 +132,7 @@ function statusText(run: RunRecord) {
 }
 
 export const RECOVERED_REPLY =
-  'The environment assigned to the previous run has stopped. Hydra could not confirm a result. This message was not submitted. Mention me again in this thread to try a fresh run.';
+  'The environment assigned to the previous run has stopped. I could not confirm a result. This message was not submitted. Mention me again in this thread to try a fresh run.';
 
 export const WORKER_UNAVAILABLE_REPLY =
   'The worker is unavailable. Your message was not submitted. Mention me again when the worker is ready.';

@@ -5,12 +5,12 @@ worker in Vercel Sandbox. Slack threads map to exact native Pi sessions on one
 persistent Vercel Drive. Upstash Redis stores routing and coordination state,
 and OpenRouter supplies the selected model.
 
-The supported v1 installation is the [v1 quickstart](docs/service-setup.md). It
+The supported installation is the [quickstart](docs/service-setup.md). It
 creates a clean worker snapshot, one named nonpersistent Sandbox, and one
 writable Drive using only files in this repository and adopter-supplied service
 accounts.
 
-## V1 behavior
+## Behavior
 
 - Mentions in one configured public channel start work.
 - Ordinary replies continue the same saved Pi session.
@@ -24,9 +24,9 @@ accounts.
 
 ## Documentation
 
-- [V1 quickstart](docs/service-setup.md)
+- [Quickstart](docs/service-setup.md)
 - [Make it your agent](docs/make-it-your-agent.md)
-- [V1 requirements and architecture](docs/spec/v1.md)
+- [Requirements and architecture](docs/spec/specification.md)
 - [Requirements traceability](docs/spec/traceability.md)
 - [Worker implementation](apps/worker/README.md)
 - [Toolchain and full local checks](docs/toolchain.md)

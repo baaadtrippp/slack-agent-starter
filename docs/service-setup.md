@@ -1,6 +1,6 @@
-# V1 quickstart
+# Quickstart
 
-This is the authoritative installation path for the public v1 stack.
+This is the authoritative installation path.
 
 The completed installation uses one new Vercel gateway project, one dedicated
 Upstash Redis database, one capped OpenRouter key and model, one Slack app in
@@ -93,10 +93,10 @@ in `rediss://` form. The REST URL and token are not accepted by the gateway or
 bootstrap. Keep automatic paid upgrades disabled if your plan offers that
 control.
 
-The application uses `slack-agent:chat-sdk` for Chat SDK state and
-`slack-agent:m1` for its own records. Application run, session, message,
-feedback, and managed-runtime records have no automatic retention policy.
-Deleting a Slack message does not remove them.
+The application uses `slack-agent:chat-sdk` for Chat SDK state and the rest of
+the `slack-agent:` namespace for its own records. Application run, session,
+message, feedback, and managed-runtime records have no automatic retention
+policy. Deleting a Slack message does not remove them.
 
 ### OpenRouter
 
@@ -114,7 +114,7 @@ Drive file, or startup-snapshot file.
 Create an app from scratch in the intended workspace. Use the final app and bot
 display name. Add the `chat:write` bot scope and install the shell so Slack
 issues a bot token. Copy the `xoxb-` bot token and the app's signing secret. The
-complete v1 manifest is applied after the gateway exists.
+complete manifest is applied after the gateway exists.
 
 Record the workspace ID and the ID of one ordinary public channel. The gateway
 admits internal workspace members in that configured public channel and rejects
@@ -252,10 +252,11 @@ rollback until the Slack smoke has passed.
 
 ## 5. Apply the complete Slack manifest
 
-Copy [`integrations/slack/v1.yaml`](../integrations/slack/v1.yaml) to a private
-temporary file. Replace both `REPLACE-ME` values with the app display name and
-replace `https://example.invalid` with `GATEWAY_ORIGIN`. Keep the event route
-`/api/slack/events` and interaction route `/api/slack/interactions` unchanged.
+Copy [`integrations/slack/manifest.yaml`](../integrations/slack/manifest.yaml)
+to a private temporary file. Replace both `REPLACE-ME` values with the app
+display name and replace `https://example.invalid` with `GATEWAY_ORIGIN`. Keep
+the event route `/api/slack/events` and interaction route
+`/api/slack/interactions` unchanged.
 
 In Slack app management, open **App Manifest**, validate the completed copy, and
 save it to the existing app. Slack's signed URL challenge must verify the

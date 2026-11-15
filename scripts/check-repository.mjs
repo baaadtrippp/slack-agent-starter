@@ -16,7 +16,6 @@ const errors = [];
 const requiredPaths = [
   '.github/workflows/quality.yml',
   'AGENTS.md',
-  'CLAUDE.md',
   'LICENSE',
   'README.md',
   'apps/gateway/package.json',

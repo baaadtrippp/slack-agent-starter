@@ -164,7 +164,7 @@ import { readFile } from 'node:fs/promises';
 import { Type } from 'typebox';
 
 export default async function (pi) {
-  const inputs = JSON.parse(await readFile(process.env.HYDRA_INPUT_DATA, 'utf8'));
+  const inputs = JSON.parse(await readFile(process.env.WORKER_INPUT_DATA, 'utf8'));
   pi.registerTool({
     name: 'read_input',
     label: 'Read accepted input',
@@ -204,7 +204,7 @@ export default function (pi) {
       reserved = true;
       const bytes = Buffer.from(content);
       const filename = 'result.' + format;
-      const path = join(process.env.HYDRA_RESULTS, filename);
+      const path = join(process.env.WORKER_RESULTS, filename);
       let file;
       let owned = false;
       try {
@@ -244,17 +244,17 @@ if (
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
   try {
-    const { HYDRA_JOB, HYDRA_MODEL, OPENROUTER_API_KEY } = process.env;
-    delete process.env.HYDRA_JOB;
-    delete process.env.HYDRA_MODEL;
+    const { WORKER_JOB, WORKER_MODEL, OPENROUTER_API_KEY } = process.env;
+    delete process.env.WORKER_JOB;
+    delete process.env.WORKER_MODEL;
     delete process.env.OPENROUTER_API_KEY;
     const stop = new AbortController();
     const cancel = () => stop.abort(cancelledRun);
     process.on('SIGTERM', cancel);
     try {
-      const job = JSON.parse(HYDRA_JOB ?? 'null');
+      const job = JSON.parse(WORKER_JOB ?? 'null');
       await waitForSupervisor(job, stop.signal);
-      await run(job, HYDRA_MODEL, OPENROUTER_API_KEY, stop.signal);
+      await run(job, WORKER_MODEL, OPENROUTER_API_KEY, stop.signal);
     } finally {
       process.removeListener('SIGTERM', cancel);
     }
@@ -519,7 +519,7 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
     await import('acpx/runtime');
   const seedRunId = job.session?.seedRunId ?? job.runId;
   const sessionRoot = job.session ? join('/workspace/runs', seedRunId) : root;
-  const scratch = join('/tmp/hydra-worker-state', seedRunId);
+  const scratch = join('/tmp/worker-state', seedRunId);
   const agent = join(scratch, 'agent');
   const home = join(scratch, 'home');
   const work = join(sessionRoot, 'work');
@@ -543,7 +543,7 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
   await mkdir(dirname(scratch), { recursive: true, mode: 0o700 });
   await mkdir(scratch, { mode: 0o700 });
   try {
-    const supervised = process.env.HYDRA_RUN_ID === job.runId;
+    const supervised = process.env.WORKER_RUN_ID === job.runId;
     if (supervised) await writeRollbackOwner(scratch, job);
     if (job.session)
       before = await verifySavedSession(
@@ -621,7 +621,7 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
       cwd: work,
       sessionStore: createRuntimeStore({ stateDir: join(scratch, 'acpx') }),
       agentRegistry: createAgentRegistry({
-        overrides: { hydra: [join(bin, 'pi-acp')] },
+        overrides: { worker: [join(bin, 'pi-acp')] },
       }),
       agentProcessEnvAllow: ['NODE_EXTRA_CA_CERTS'],
       agentProcessEnv: {
@@ -629,11 +629,11 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
         PATH: `${bin}:${process.env.PATH}`,
         PI_CODING_AGENT_DIR: agent,
         PI_ACP_PI_COMMAND: launcher,
-        HYDRA_MODEL: model,
+        WORKER_MODEL: model,
         OPENROUTER_API_KEY: key,
-        HYDRA_RUN_ID: job.runId,
-        ...(sources.length ? { HYDRA_INPUT_DATA: inputData } : {}),
-        ...(outputTool ? { HYDRA_RESULTS: results } : {}),
+        WORKER_RUN_ID: job.runId,
+        ...(sources.length ? { WORKER_INPUT_DATA: inputData } : {}),
+        ...(outputTool ? { WORKER_RESULTS: results } : {}),
       },
       permissionMode: 'deny-all',
       fs: false,
@@ -645,7 +645,7 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
     try {
       const handle = await runtime.ensureSession({
         sessionKey: job.runId,
-        agent: 'hydra',
+        agent: 'worker',
         mode: 'persistent',
         resumeSessionId: job.session?.adapterId,
       });
@@ -827,7 +827,7 @@ export async function writePiLauncher(
   });
   await writeFile(
     launcher,
-    `#!/bin/bash\nexec pi --provider openrouter --model "$HYDRA_MODEL" --thinking off --no-extensions ${toolOptions} --no-mcp --no-skills --no-context-files --append-system-prompt "${instructions}" "$@"\n`,
+    `#!/bin/bash\nexec pi --provider openrouter --model "$WORKER_MODEL" --thinking off --no-extensions ${toolOptions} --no-mcp --no-skills --no-context-files --append-system-prompt "${instructions}" "$@"\n`,
     { mode: 0o700 },
   );
 }

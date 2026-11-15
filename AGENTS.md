@@ -7,11 +7,11 @@ installed package's `docs/` and `resources/`, then `chat-sdk.dev`. Use Context7
 only when those sources leave a gap; this overrides generic Context7-first
 guidance for this SDK.
 
-Read [docs/spec/v1.md](docs/spec/v1.md) before changing application behavior. It
-is the canonical v1 specification. Use its stable feature IDs (F01–F13),
-acceptance IDs (AC01–AC13), and open-decision IDs (O01–O07). Keep
-[docs/spec/traceability.md](docs/spec/traceability.md) current when a slice adds
-evidence.
+Read [docs/spec/specification.md](docs/spec/specification.md) before changing
+application behavior. It is the canonical specification. Use its stable feature
+IDs (F01–F13), acceptance IDs (AC01–AC13), and open-decision IDs (O01–O07). Keep
+[docs/spec/traceability.md](docs/spec/traceability.md) current when a change
+adds evidence.
 
 Do not treat proposed defaults as accepted decisions. Do not implement behavior
 gated by an open decision until that decision is settled.
@@ -41,18 +41,14 @@ State assumptions and success criteria. Surface an ambiguity when it changes
 product behavior or architecture. Prefer the simplest approach that proves the
 required behavior.
 
-For a non-trivial change, write a short tracer-bullet spec before code:
-
-1. user outcome;
-2. touched F/AC IDs and any open decisions;
-3. explicit non-goals;
-4. smallest end-to-end implementation;
-5. observable evidence and whether it is deterministic, provider integration, or
-   live Slack evidence.
+For a non-trivial change, state the user outcome, the F/AC IDs and open
+decisions it touches, the non-goals, the smallest end-to-end implementation, and
+the evidence and its kind (deterministic, provider integration, or live Slack)
+before writing code.
 
 ## Implementation rules
 
-- Write the minimum code required by the selected slice. Do not add speculative
+- Write the minimum code the change requires. Do not add speculative
   configuration, extension points, plugin systems, or abstractions for one use.
 - Make surgical changes and follow the existing style. Do not refactor adjacent
   code or remove pre-existing material unless the task requires it.
@@ -92,5 +88,5 @@ results. Stay single-agent for trivial or tightly sequential work.
 ## Communication
 
 Use plain language. Report what changed, why, the checks that ran, and any real
-limitation. Do not silently expand v1, change the harness, merge gateway and
-worker responsibilities, or add providers.
+limitation. Do not silently expand the scope, change the harness, merge gateway
+and worker responsibilities, or add providers.

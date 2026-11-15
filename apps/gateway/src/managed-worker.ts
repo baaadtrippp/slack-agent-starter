@@ -23,7 +23,7 @@ export const MANAGED_WORKER_LAUNCH = [
   `sysctl -qw net.ipv6.conf.default.disable_ipv6=1 net.ipv6.conf.all.disable_ipv6=1 || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}`,
   `for setting in /proc/sys/net/ipv6/conf/*/disable_ipv6; do read -r disabled < "$setting" || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}; test "$disabled" = 1 || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}; done`,
   `${MANAGED_DRIVE_WRITE_SETUP} || exit ${MANAGED_WORKER_PRELAUNCH_EXIT}`,
-  `exec ${MANAGED_WORKER_PRIVILEGE_DROP} -- sh -c 'node "$1"; code=$?; if [ "$code" -eq ${MANAGED_WORKER_PRELAUNCH_EXIT} ]; then exit 79; fi; exit "$code"' hydra-worker "$1"`,
+  `exec ${MANAGED_WORKER_PRIVILEGE_DROP} -- sh -c 'node "$1"; code=$?; if [ "$code" -eq ${MANAGED_WORKER_PRELAUNCH_EXIT} ]; then exit 79; fi; exit "$code"' worker "$1"`,
 ].join('; ');
 
 type ManagedWorkerConfig = {
@@ -83,8 +83,8 @@ export function createManagedWorker(
       args: [
         '-c',
         `set -eu; ${MANAGED_DRIVE_WRITE_SETUP} || exit 1; exec ${MANAGED_WORKER_PRIVILEGE_DROP} -- bash -c "$1"`,
-        'hydra-readiness',
-        'set -eu; cd /tmp/hydra-worker; test -x node_modules/.bin/pi; test -x node_modules/.bin/pi-acp; command -v flock >/dev/null; command -v sysctl >/dev/null; node --check run.mjs; node --check shared-notes.mjs; node --check supervise.mjs; node --check control.mjs',
+        'worker-readiness',
+        'set -eu; cd /tmp/worker; test -x node_modules/.bin/pi; test -x node_modules/.bin/pi-acp; command -v flock >/dev/null; command -v sysctl >/dev/null; node --check run.mjs; node --check shared-notes.mjs; node --check supervise.mjs; node --check control.mjs',
       ],
       sudo: true,
       timeoutMs: 3_000,

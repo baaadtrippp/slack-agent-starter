@@ -674,7 +674,7 @@ export class RedisRunStore implements RunStore {
   private readonly client: RedisClientType;
   private readonly namespace: string;
 
-  constructor(client: RedisClientType, namespace = 'slack-agent:m1') {
+  constructor(client: RedisClientType, namespace = 'slack-agent') {
     this.client = client;
     this.namespace = namespace;
   }
