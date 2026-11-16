@@ -89,10 +89,12 @@ GATEWAY_ORIGIN=https://your-assigned-production-domain
 ### Upstash Redis
 
 In the [Upstash console](https://console.upstash.com), create a Redis database
-for this app only, in a region near the Sandbox region (`iad1`, US East, by
-default). Copy its connection URL that starts with `rediss://` and contains the
-password. The REST URL and token are not accepted by the gateway or bootstrap.
-Keep automatic paid upgrades disabled if your plan offers that control.
+for this app only, in `us-east-1`, near the default Sandbox region `iad1`. The
+free plan allows one database per account, so if you already have one, delete
+it, pay for another, or use another account. Copy its connection URL that starts
+with `rediss://` and contains the password. The REST URL and token are not
+accepted by the gateway or bootstrap. Keep automatic paid upgrades disabled if
+your plan offers that control.
 
 ### OpenRouter
 
