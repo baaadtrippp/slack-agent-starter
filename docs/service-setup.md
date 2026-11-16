@@ -14,8 +14,8 @@ again. Keep all private files outside the clone.
 
 ## 1. Prepare a clean checkout
 
-On GitHub, create your own repository from this one with **Use this template**,
-or fork it, and clone your copy.
+Fork the repository on GitHub, or clone it and push it to your own repository.
+Then clone your copy.
 
 ```sh
 git clone https://github.com/YOUR-ACCOUNT/YOUR-REPOSITORY.git
@@ -97,13 +97,16 @@ Keep automatic paid upgrades disabled if your plan offers that control.
 ### OpenRouter
 
 Create an API key with an explicit spending limit; setup accepts only a key of
-the form `sk-or-v1-…`. Choose a model that supports tool calls, and image input
-if you will turn on PNG or JPEG input. Set an account budget that covers the
-Slack test in section 6.
+the form `sk-or-v1-…`. Choose a model that supports tool calls.
+`google/gemini-3.1-flash-lite` was the model used for the live Slack checks in
+November 2026 (text answers, tool calls, a generated file). If you will turn on
+PNG or JPEG input, check separately that your model reads images. Set an account
+budget that covers the Slack test in section 6.
 
 Setup writes the key into the worker Sandbox's firewall rule, which adds it to
 the worker's requests to OpenRouter. The gateway, the worker's environment, the
-Drive, and the startup snapshot never hold it, but revoking it stops the worker.
+Drive, and the startup snapshot never hold it, but revoking it stops the
+worker's model calls.
 
 ### Slack app shell
 
@@ -147,8 +150,9 @@ test -e "$SETUP_ENV" || (umask 077 &&
 ```
 
 The last line creates `SETUP_ENV` from `.env.example` with the pulled token. In
-an editor, fill in the other values: the project `id` from section 2 and your
-own provider values.
+an editor, fill in the other values: the project `id` and `GATEWAY_ORIGIN` from
+section 2, and your own provider values. Setup accepts the example origin, but a
+worker built with it cannot reach your gateway.
 
 ```dotenv
 VERCEL_PROJECT_ID=prj_REPLACE_ME
@@ -197,9 +201,10 @@ delete the record, and retry with the same command and record.
   clean up.
 - If the seed Sandbox stopped without a snapshot, clean up.
 
-To clean up, run cleanup with this record as in
-[section 8](#8-rollback-and-teardown). Then set a new `WORKER_RECORD` path, such
-as `"$PRIVATE_SETUP_DIR/worker-record-2.json"`, and run setup again.
+To clean up, run the last block of [section 8](#8-rollback-and-teardown) with
+this record. Then set a new `WORKER_RECORD` path, such as
+`"$PRIVATE_SETUP_DIR/worker-record-2.json"` (`-3` on a later retry), and run
+setup again.
 
 ## 4. Configure and deploy the gateway
 
@@ -231,7 +236,10 @@ Add the variables with these loops; each `add` prompts for its value. The first
 loop stores the credentials as Secrets. The second stores the rest as Config
 values, which stay readable in the project's Environment Variables settings, so
 you can see which worker a deployment uses. Add an optional variable the same
-way. If a loop stops, run it again with only the names still missing.
+way. If a loop stops, run it again with only the names still missing. `add`
+fails on a name that exists; to change one later, run
+`pnpm exec vercel env update NAME --environment production --scope "$SCOPE"` and
+deploy again.
 
 ```sh
 for NAME in SLACK_BOT_TOKEN SLACK_SIGNING_SECRET REDIS_URL; do
@@ -289,7 +297,7 @@ verify the deployed event endpoint; if it fails, see
 [Troubleshooting](#7-troubleshooting). Confirm Slack saves the interaction
 request URL. Install or reinstall the app so its bot token receives all manifest
 scopes. If Slack shows a different bot token after reinstall, update
-`SLACK_BOT_TOKEN` in the Vercel Production environment and redeploy.
+`SLACK_BOT_TOKEN` with `vercel env update` as in section 4 and deploy again.
 
 Then post `/invite @YourAgent` in the channel. Invite the bot to no other
 channel.
@@ -322,10 +330,12 @@ Sandbox has a new session ID and that the earlier session is stopped.
 ## 7. Troubleshooting
 
 The gateway logs JSON lines with a `phase` and, for a run, its `runId`. Read
-them in the project's **Logs** tab in the Vercel dashboard, or with:
+them in the project's **Logs** tab in the Vercel dashboard, or with the first
+command. The second lists each request's status code and path.
 
 ```sh
 pnpm exec vercel logs --environment production --since 30m --scope "$SCOPE"
+pnpm exec vercel logs requests --environment production --since 30m --scope "$SCOPE"
 ```
 
 **The bot does not react at all.** The gateway answers with status 200 and logs
@@ -334,10 +344,11 @@ users, from DMs, private, or Slack Connect channels, and for messages over
 12,000 characters. Check that the bot is in the channel, that
 `SLACK_WORKSPACE_ID` and `SLACK_ENABLED_CHANNEL_IDS` hold the `T…` and `C…` IDs
 from the channel's address, and that Slack shows the Event Subscriptions request
-URL as verified. After you change a variable, deploy again.
+URL as verified. Change a variable with `vercel env update` as in section 4,
+then deploy again.
 
 **Slack cannot verify the request URL.** Find the request to `/api/slack/events`
-in the logs.
+in the request list.
 
 - Status 503 with `{"phase":"events","category":"gateway_unavailable"}`: a
   variable from section 4 is missing or invalid, such as a `GATEWAY_ORIGIN` with
@@ -367,8 +378,9 @@ previous worker until the new deployment has been checked, because the previous
 deployment still uses it. Once that worker has been cleaned up, a rollback needs
 a new worker with a new, empty Drive: check out the previous commit, run setup
 from [section 3](#3-bootstrap-the-worker) with a new `WORKER_RECORD` path,
-replace the three settings, and deploy as in
-[section 4](#4-configure-and-deploy-the-gateway).
+replace the three settings, and deploy. To restore or replace the three
+settings, follow step 3 of
+[Apply worker changes](make-it-your-agent.md#apply-worker-changes).
 
 For complete teardown, first disable Slack Event Subscriptions so no new run
 starts. Keep Interactivity enabled and the app installed until every status
@@ -381,12 +393,8 @@ Cleanup permanently removes all native sessions, work, results, retained inputs,
 and shared notes on the Drive. Export anything that must be kept before you
 continue.
 
-Then disable Interactivity and run cleanup at the repository root in a new
-shell. Set `WORKER_RECORD` to the record of the worker the gateway uses now:
-`worker-record.json` after the quickstart, otherwise the path its setup used.
-The `prefix` in that JSON file begins the `SANDBOX_WORKER_NAME` value in the
-project's Environment Variables settings. A record that was already cleaned up
-finds nothing and still reports removal.
+Then disable Interactivity. In a new shell at the repository root, restore the
+paths and refresh the token:
 
 ```sh
 source scripts/use-toolchain.sh
@@ -394,10 +402,26 @@ PROJECT=your-new-gateway-project
 PRIVATE_SETUP_DIR="$HOME/.slack-agent-starter/$PROJECT"
 OIDC_ENV="$PRIVATE_SETUP_DIR/vercel-oidc.env"
 SETUP_ENV="$PRIVATE_SETUP_DIR/setup.env"
-WORKER_RECORD="$PRIVATE_SETUP_DIR/worker-record.json"
 pnpm exec vercel env pull "$OIDC_ENV" --environment=development --yes
 (umask 077 && { grep -v '^VERCEL_OIDC_TOKEN=' "$SETUP_ENV"; grep '^VERCEL_OIDC_TOKEN=' "$OIDC_ENV"; } >"$SETUP_ENV.new") &&
   mv "$SETUP_ENV.new" "$SETUP_ENV"
+```
+
+Run the next two blocks once for each record whose cleanup has not finished: the
+last one setup used (`worker-record.json`, or `-2` after a retry), and any
+earlier worker kept for a rollback. Check the `prefix` first, because a record
+already cleaned up still reports removal. The worker in use has the record whose
+`prefix` begins the `SANDBOX_WORKER_NAME` value in the Environment Variables
+settings.
+
+```sh
+WORKER_RECORD="$PRIVATE_SETUP_DIR/worker-record.json"
+grep -o '"prefix":"[^"]*"' "$WORKER_RECORD"
+```
+
+Then run cleanup:
+
+```sh
 (
   unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$SETUP_ENV")
   node --env-file="$SETUP_ENV" \
@@ -411,4 +435,4 @@ any later setup must use a new worker record path.
 
 Remove the gateway project, revoke the OpenRouter key, uninstall the Slack app,
 and delete the dedicated Redis database, which removes the gateway's stored
-records. Finally delete the private setup directory.
+records. Once every record is cleaned up, delete the private setup directory.
