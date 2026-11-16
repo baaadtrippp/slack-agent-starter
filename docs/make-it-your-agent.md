@@ -67,15 +67,18 @@ Add your extension the same way. A tool runs in the worker Sandbox within the
   egress check just below it, which expects exactly two hosts.
 - **API keys.** Never put a key in the job, the worker's environment, or a file
   it can read. Copy the `openrouter.ai` entry with your API's header: the
-  Sandbox firewall adds it to requests to that host. Add the key to `SETUP_ENV`
-  and read it with `required(...)` next to `OPENROUTER_API_KEY`.
+  Sandbox firewall adds it to requests to that host. Add the key to `SETUP_ENV`,
+  read it with `required(...)` next to `OPENROUTER_API_KEY`, and pass it into
+  `setup()` as that key is.
 - **npm packages.** A tool cannot import an npm package yet
-  ([#49](https://github.com/baaadtrippp/slack-agent-starter/issues/49)). Use
-  Node built-ins such as `fetch`.
+  ([#49](https://github.com/baaadtrippp/slack-agent-starter/issues/49)), except
+  those Pi provides to extensions, such as `typebox`. Use Node built-ins such as
+  `fetch`.
 - **Worker check.** The stand-in model in
   [`check-worker-fixture.mjs`](../apps/gateway/scripts/check-worker-fixture.mjs)
-  compares the tool names with two fixed lists (`assert.deepEqual`); add yours
-  to each list whose run offers it. It never calls your tool: test it in Slack.
+  compares the tool names with two fixed lists (`assert.deepEqual`, in order;
+  they follow the `tools` order in `prompt()`). Add yours at the same position
+  in each list whose run offers it. It never calls your tool: test it in Slack.
 
 Then [apply the change](#apply-worker-changes).
 
@@ -96,8 +99,9 @@ bodies, and `sourcesPerThread` must fit the worker's 16 KiB source catalog.
 
 `RUN_DURATION_MS` in the same file sets the 60-second run time, which also needs
 only a gateway deploy. The gateway's Vercel Function waits for each run in the
-background (`waitUntil`), so check your plan's maximum function duration before
-you raise it.
+background (`waitUntil`), and the repository sets no `maxDuration`, so Vercel's
+default function duration for your plan applies. Check it before you raise the
+run time.
 
 Adding, renaming, or removing a limit changes the job shape. Then the worker and
 the gateway must come from the same commit:
@@ -127,9 +131,10 @@ Bootstrap copies the worker files from the committed revision into the startup
 snapshot, and the worker record is bound to that commit. Before the first setup,
 committing the change is enough. On a running installation, a changed worker
 needs a new worker, and the gateway must be deployed from the same commit. So
-does a new OpenRouter key, which setup writes into the worker's firewall rule.
+does a new OpenRouter or tool API key, which setup writes into the worker's
+firewall rule.
 
-1. Commit the change and run the checks from
+1. Commit any code change and run the checks from
    [quickstart section 1](service-setup.md#1-prepare-a-clean-checkout). If the
    Vercel project is connected to Git, push the commit to the production branch
    only after step 3: a build from an earlier push goes live with the old worker
@@ -148,12 +153,14 @@ does a new OpenRouter key, which setup writes into the worker's firewall rule.
    SETUP_ENV="$PRIVATE_SETUP_DIR/setup.env"
    pnpm exec vercel env pull "$OIDC_ENV" --environment=development --yes
    chmod 600 "$OIDC_ENV"
-   (umask 077 && { grep -v '^VERCEL_OIDC_TOKEN=' "$SETUP_ENV"; grep '^VERCEL_OIDC_TOKEN=' "$OIDC_ENV"; } >"$SETUP_ENV.new")
-   mv "$SETUP_ENV.new" "$SETUP_ENV"
+   (umask 077 && { grep -v '^VERCEL_OIDC_TOKEN=' "$SETUP_ENV"; grep '^VERCEL_OIDC_TOKEN=' "$OIDC_ENV"; } >"$SETUP_ENV.new") &&
+     mv "$SETUP_ENV.new" "$SETUP_ENV"
    ```
 
    Optionally run the [worker check](../apps/worker/README.md#check-the-worker)
-   now. Then run setup; retry a failure with the same commands.
+   now. Then run setup; retry a failure with the same commands. The record path
+   must be one no earlier setup used: for a key-only change on the same commit,
+   or a retry that asks for a new record, add a suffix such as `-2`.
 
    ```sh
    WORKER_RECORD="$PRIVATE_SETUP_DIR/worker-record-$(git rev-parse --short HEAD).json"
@@ -186,8 +193,13 @@ does a new OpenRouter key, which setup writes into the worker's firewall rule.
    ```
 
    The new deployment must report `readyState` `READY`. If the origin then
-   reports an older `id`, run
-   `pnpm exec vercel promote "$DEPLOYMENT_URL" --scope "$SCOPE"`.
+   reports an older `id`, promote the new deployment. The origin must then
+   report the new `id`.
+
+   ```sh
+   pnpm exec vercel promote "$DEPLOYMENT_URL" --scope "$SCOPE"
+   pnpm exec vercel inspect "$GATEWAY_ORIGIN" --scope "$SCOPE" --json
+   ```
 
 4. Wait until every status message posted before the switch shows a final state;
    press Status on any that stay unfinished. A run accepted before the switch
@@ -195,14 +207,17 @@ does a new OpenRouter key, which setup writes into the worker's firewall rule.
    running session for the old worker Sandbox, which can keep running until its
    25-minute session timeout. Keep the old worker until the new deployment has
    answered in a new thread, because a rollback needs it. Then run cleanup with
-   a fresh token (step 2) and the old record, `worker-record.json` after the
-   quickstart. It deletes the old Drive. Then revoke a replaced OpenRouter key.
+   a fresh token (step 2). Set `OLD_RECORD` to the record of the worker you
+   replaced: `worker-record.json` after the quickstart, otherwise the path its
+   setup used. A retired record finds nothing and still reports removal. Cleanup
+   deletes the old Drive. Then revoke a replaced key.
 
    ```sh
+   OLD_RECORD="$PRIVATE_SETUP_DIR/worker-record.json"
    (
      unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$SETUP_ENV")
      node --env-file="$SETUP_ENV" apps/gateway/scripts/bootstrap-worker.mjs \
-       cleanup "$PRIVATE_SETUP_DIR/worker-record.json"
+       cleanup "$OLD_RECORD"
    )
    ```
 
