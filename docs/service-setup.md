@@ -1,30 +1,41 @@
 # Quickstart
 
-This is the authoritative installation path.
-
 The completed installation uses one new Vercel gateway project, one dedicated
 Upstash Redis database, one capped OpenRouter key and model, one Slack app in
 one workspace and public channel, one named nonpersistent Sandbox, and one 1 GiB
 Drive. Start with new isolated resources so setup, validation, and teardown
 cannot affect another application.
 
-The quickstart assumes Bash on x86_64 Linux or WSL, with Docker for the test
-Redis. On macOS, replace the two toolchain script lines below with the
-[macOS steps](toolchain.md#macos). Keep all private files outside the clone.
-Commands that use `$SETUP_ENV` and `$WORKER_RECORD` expect absolute paths.
+The quickstart assumes Bash on x86_64 Linux or WSL. On macOS, replace the two
+toolchain script lines below with the [macOS steps](toolchain.md#macos). Run
+every command from the repository root in one shell. In a new shell, run
+`source scripts/use-toolchain.sh` and set the variables from earlier sections
+again. Keep all private files outside the clone.
 
 ## 1. Prepare a clean checkout
 
-Clone the repository and select the reviewed commit or release you intend to
-deploy. Record it before provisioning resources.
+On GitHub, create your own repository from this one with **Use this template**,
+or fork it, and clone your copy.
 
 ```sh
-git clone https://github.com/baaadtrippp/slack-agent-starter.git
-cd slack-agent-starter
-git rev-parse HEAD
+git clone https://github.com/YOUR-ACCOUNT/YOUR-REPOSITORY.git
+cd YOUR-REPOSITORY
 ./scripts/bootstrap-toolchain.sh
 source scripts/use-toolchain.sh
 pnpm install --frozen-lockfile
+test -z "$(git status --porcelain)" && echo clean
+```
+
+If you already know what the agent is for, edit its instructions now, as
+[Make it your agent](make-it-your-agent.md) describes, and commit the change.
+Setup copies the committed worker files into the worker and refuses uncommitted
+changes to tracked files. Changing those files later needs a new worker with a
+new, empty Drive.
+
+Run the checks before you deploy a commit that changes code. They need Docker
+for a disposable local Redis, described in [toolchain.md](toolchain.md#checks).
+
+```sh
 docker run --rm --detach \
   --name slack-agent-starter-test-redis \
   --publish 127.0.0.1:16379:6379 \
@@ -33,39 +44,23 @@ docker run --rm --detach \
 TEST_REDIS_URL=redis://127.0.0.1:16379 pnpm check
 docker stop slack-agent-starter-test-redis
 pnpm scan:secrets
-test -z "$(git status --porcelain)" && echo clean
 ```
 
-`pnpm check` uses the disposable loopback Redis described in
-[toolchain.md](toolchain.md). If it exits early, run the same `docker stop`
-command. A clean status matters because the bootstrap binds its startup snapshot
-to the committed revision and refuses tracked local changes.
+If `pnpm check` exits early, run the same `docker stop` command.
 
 ## 2. Create the service resources
 
-Use separate accounts or projects when your organization requires that boundary.
-Do not reuse a Vercel project, Redis database, OpenRouter key, or Slack app that
-serves another workload.
-
 ### Vercel gateway project
 
-Create a new Vercel project with these exact settings.
-
-| Setting          | Value          |
-| ---------------- | -------------- |
-| Framework preset | Other          |
-| Root Directory   | `apps/gateway` |
-| Node.js Version  | `26.x`         |
-| Install Command  | default        |
-| Build Command    | default        |
-| Output Directory | default        |
-
-The pinned CLI can create and configure it directly. Choose your own project
-name and account scope.
+The pinned CLI creates the project with Root Directory `apps/gateway`, Node.js
+`26.x`, and the framework preset Other. Choose your own project name. For the
+scope, use the `id` column that `vercel teams ls` prints.
 
 ```sh
+pnpm exec vercel login
+pnpm exec vercel teams ls
 PROJECT=your-new-gateway-project
-SCOPE=your-vercel-account-or-team
+SCOPE=your-team-id
 pnpm exec vercel project create "$PROJECT" --scope "$SCOPE"
 pnpm exec vercel project update "$PROJECT" --scope "$SCOPE" \
   --framework other \
@@ -73,14 +68,19 @@ pnpm exec vercel project update "$PROJECT" --scope "$SCOPE" \
   --node-version 26.x \
   --yes
 pnpm exec vercel link --project "$PROJECT" --scope "$SCOPE" --yes
+rm -f .env.local
 pnpm exec vercel project inspect "$PROJECT" --scope "$SCOPE" --json
 ```
 
-Verify the readback before continuing. Copy the expected Project ID from the
-Vercel project settings. Then copy the production domain that Vercel assigned
-under the project's Domains settings. It is often `$PROJECT.vercel.app`, but
-Vercel adds a suffix when that name is taken. Set the bare HTTPS origin, which
-must keep pointing to this gateway:
+`vercel link` also saves a short-lived Vercel OIDC token to `.env.local` in the
+clone. Git ignores that file and nothing here uses it, so the block deletes it.
+In the `inspect` output, `framework: null` means Other. Copy its `id`, the
+project ID for section 3.
+
+Vercel assigns the production domain when it creates the project. It is often
+`$PROJECT.vercel.app`, but Vercel adds a suffix when that name is taken; the
+project's Domains settings show it. Set the bare HTTPS origin, which must keep
+pointing to this gateway:
 
 ```sh
 GATEWAY_ORIGIN=https://your-assigned-production-domain
@@ -88,39 +88,43 @@ GATEWAY_ORIGIN=https://your-assigned-production-domain
 
 ### Upstash Redis
 
-Create a dedicated Redis database. Copy its password-bearing TLS connection URL
-in `rediss://` form. The REST URL and token are not accepted by the gateway or
-bootstrap. Keep automatic paid upgrades disabled if your plan offers that
-control.
-
-The application uses `slack-agent:chat-sdk` for Chat SDK state and the rest of
-the `slack-agent:` namespace for its own records. Application run, session,
-message, feedback, and managed-runtime records have no automatic retention
-policy. Deleting a Slack message does not remove them.
+In the [Upstash console](https://console.upstash.com), create a Redis database
+for this app only, in a region near the Sandbox region (`iad1`, US East, by
+default). Copy its connection URL that starts with `rediss://` and contains the
+password. The REST URL and token are not accepted by the gateway or bootstrap.
+Keep automatic paid upgrades disabled if your plan offers that control.
 
 ### OpenRouter
 
-Select one exact model slug that supports the Pi tool path. If you enable PNG
-and JPEG input, verify vision with that same model. Create a new API key with an
-explicit spending limit and set an account budget that can cover the smoke test.
-There is no automatic provider or model fallback.
+Create an API key with an explicit spending limit; setup accepts only a key of
+the form `sk-or-v1-…`. Choose a model that supports tool calls, and image input
+if you will turn on PNG or JPEG input. Set an account budget that covers the
+Slack test in section 6.
 
-The model key is used only while the bootstrap creates the Sandbox network
-policy. It is not a gateway environment variable, worker environment secret,
-Drive file, or startup-snapshot file.
+Setup writes the key into the worker Sandbox's firewall rule, which adds it to
+the worker's requests to OpenRouter. The gateway, the worker's environment, the
+Drive, and the startup snapshot never hold it, but revoking it stops the worker.
 
 ### Slack app shell
 
-Create an app from scratch in the intended workspace. Use the final app and bot
-display name. Add the `chat:write` bot scope and install the shell so Slack
-issues a bot token. Copy the `xoxb-` bot token and the app's signing secret. The
-complete manifest is applied after the gateway exists.
+At <https://api.slack.com/apps>, create an app **From scratch** with **Pick
+features**: enter the final app name and your workspace, add only the
+`chat:write` bot scope, skip events, and choose **Create and Install**. The
+complete manifest is applied after the gateway exists. Section 4 needs two
+values, which you can copy again later: the **Bot User OAuth Token** (`xoxb-…`)
+under **OAuth & Permissions**, and the **Signing Secret** under **Basic
+Information**.
 
-Record the workspace ID and the ID of one ordinary public channel. The gateway
-admits internal workspace members in that configured public channel and rejects
-DMs, private channels, Slack Connect channels, external users, and bot messages.
+Create a new public channel for the agent. Open it in Slack in a browser: the
+address ends in `/client/T…/C…`, where `T…` is the workspace ID and `C…` the
+channel ID. The gateway admits internal workspace members in that channel and
+ignores DMs, private channels, Slack Connect channels, external users, and bot
+messages.
 
 ## 3. Bootstrap the worker
+
+Setup builds the worker from your commit. The
+[worker README](../apps/worker/README.md) lists what it installs and checks.
 
 Create private paths in durable storage outside the clone, and keep them until
 cleanup has finished, because cleanup needs the same record. The setup
@@ -138,12 +142,13 @@ SETUP_ENV="$PRIVATE_SETUP_DIR/setup.env"
 WORKER_RECORD="$PRIVATE_SETUP_DIR/worker-record.json"
 pnpm exec vercel env pull "$OIDC_ENV" --environment=development --yes
 chmod 600 "$OIDC_ENV"
+test -e "$SETUP_ENV" || (umask 077 &&
+  { grep -v '^VERCEL_OIDC_TOKEN=' .env.example; grep '^VERCEL_OIDC_TOKEN=' "$OIDC_ENV"; } >"$SETUP_ENV")
 ```
 
-Confirm that the pull came from the new linked gateway project. It supplies a
-short-lived `VERCEL_OIDC_TOKEN`. With an editor, create `SETUP_ENV`, copy that
-one token into it, and add the values below. Use the project ID copied from
-Vercel and your own provider values. Set the finished file to mode 600.
+The last line creates `SETUP_ENV` from `.env.example` with the pulled token. In
+an editor, fill in the other values: the project `id` from section 2 and your
+own provider values.
 
 ```dotenv
 VERCEL_PROJECT_ID=prj_REPLACE_ME
@@ -153,13 +158,6 @@ OPENROUTER_API_KEY=replace-with-scoped-openrouter-key
 OPENROUTER_MODEL=provider/model-slug
 SANDBOX_REGION=iad1
 ```
-
-```sh
-chmod 600 "$SETUP_ENV"
-```
-
-`SANDBOX_REGION` is optional and defaults to `iad1`. The Drive and both
-Sandboxes use the same region with no failover regions.
 
 Run setup from the repository root. Node lets variables already exported in the
 shell override `--env-file`, so each command that reads an env file runs in a
@@ -172,10 +170,10 @@ another project. Your shell keeps its own values.
   node --env-file="$SETUP_ENV" \
     apps/gateway/scripts/bootstrap-worker.mjs setup "$WORKER_RECORD"
 )
-chmod 600 "$WORKER_RECORD"
 ```
 
-Setup prints three nonsecret production settings.
+Setup prints three nonsecret production settings. `SANDBOX_MANAGED_SEED` is the
+startup snapshot ID.
 
 ```text
 SANDBOX_WORKER_NAME=...
@@ -183,38 +181,30 @@ SANDBOX_MANAGED_DRIVE=...
 SANDBOX_MANAGED_SEED=...
 ```
 
-Keep the exact record and run only one setup or cleanup process at a time. A
-failed or interrupted setup is retried with the same command, environment, and
-record. Do not delete or edit the record to work around a mismatch. If the OIDC
-token expires, pull into `OIDC_ENV` again and replace only `VERCEL_OIDC_TOKEN`
-in `SETUP_ENV`. If a seed Sandbox stopped before producing a snapshot, run
-cleanup with this record, then set a new `WORKER_RECORD` path, such as
-`"$PRIVATE_SETUP_DIR/worker-record-2.json"`, and run setup again.
+If setup fails, it says why. Run one setup or cleanup at a time, never edit or
+delete the record, and retry with the same command and record.
 
-The bootstrap performs the following checks before printing settings.
+- If it asks for a current OIDC token, refresh the token in `SETUP_ENV`:
 
-- It installs exact-pinned Pi and ACP packages and the checked-in worker files
-  into a credential-free startup snapshot.
-- It verifies worker hashes and required PDF, privilege, process-control, and
-  file-locking programs inside the Sandbox.
-- It creates one 1 GiB Drive and confirms it has one writable mount at
-  `/workspace`.
-- It restricts egress to the gateway hostname and OpenRouter, denies the
-  loopback, private, link-local, shared (`100.64.0.0/10`), and `0.0.0.0/8` IPv4
-  ranges, and configures OpenRouter credential injection at the provider
-  boundary. The paid model smoke verifies that configured path.
-- It enrolls the exact initial worker session in the dedicated Redis database.
+  ```sh
+  pnpm exec vercel env pull "$OIDC_ENV" --environment=development --yes
+  (umask 077 && { grep -v '^VERCEL_OIDC_TOKEN=' "$SETUP_ENV"; grep '^VERCEL_OIDC_TOKEN=' "$OIDC_ENV"; } >"$SETUP_ENV.new") &&
+    mv "$SETUP_ENV.new" "$SETUP_ENV"
+  ```
 
-The worker uses one vCPU, a 25-minute Sandbox session timeout, and a startup
-snapshot with no automatic expiry. The initially enrolled worker may remain
-running until its first completed run, after which the application performs a
-verified idle stop, or until the 25-minute provider timeout. The next admitted
-turn resumes automatically in a fresh session from the same snapshot and Drive.
+- If it says the record belongs to a different checkout, project, or
+  configuration, the commit or a value in `SETUP_ENV` changed. Restore it, or
+  clean up.
+- If the seed Sandbox stopped without a snapshot, clean up.
+
+To clean up, run cleanup with this record as in
+[section 8](#8-rollback-and-teardown). Then set a new `WORKER_RECORD` path, such
+as `"$PRIVATE_SETUP_DIR/worker-record-2.json"`, and run setup again.
 
 ## 4. Configure and deploy the gateway
 
-Add these Production environment variables to the new Vercel project. Values
-printed by setup must be copied exactly.
+Add these Production environment variables to the new Vercel project.
+`apps/gateway/.env.example` lists the same names with comments.
 
 | Name                        | Value or source                                                              |
 | --------------------------- | ---------------------------------------------------------------------------- |
@@ -227,38 +217,38 @@ printed by setup must be copied exactly.
 | `SANDBOX_WORKER_NAME`       | setup output, added with the loop below                                      |
 | `SANDBOX_MANAGED_DRIVE`     | setup output, added with the loop below                                      |
 | `SANDBOX_MANAGED_SEED`      | setup output, added with the loop below                                      |
-| `OPENROUTER_MODEL`          | exact model slug used by setup                                               |
+| `OPENROUTER_MODEL`          | the model slug in `SETUP_ENV`                                                |
 | `SLACK_FILE_EXCHANGE`       | `1`                                                                          |
-| `SLACK_JPEG_INPUT`          | `1` after an exact-model vision check                                        |
-| `SLACK_PNG_INPUT`           | `1` after an exact-model vision check                                        |
+| `SLACK_JPEG_INPUT`          | optional, `1` once you know the model reads images                           |
+| `SLACK_PNG_INPUT`           | optional, `1` once you know the model reads images                           |
 | `SLACK_PUBLIC_URL_INPUT`    | `1`                                                                          |
 | `SLACK_STOP_OPERATOR_IDS`   | optional comma-separated internal user IDs allowed to stop other users' runs |
 
 Do not set `OPENROUTER_API_KEY`, `VERCEL_OIDC_TOKEN`, or `VERCEL_PROJECT_ID` in
 the gateway. Vercel supplies runtime project authentication to the Sandbox SDK.
 
-Store the three `SANDBOX_*` settings as Config variables, not Secrets. They are
-names and an ID, not credentials, and only a Config value stays readable in the
-project's Environment Variables settings, to confirm which worker the next
-deployment uses. The CLI stores Production variables as Secrets unless told
-otherwise, and a Secret cannot be changed to Config in place, so the loop below
-removes each one before adding it again. On a first installation, the remove
-step reports that the variable was not found. Paste each value from the setup
-output when prompted. The same loop replaces them for a
-[worker change](make-it-your-agent.md#apply-worker-changes); skip it when the
-worker has not changed, as for a model or limits change.
+Add the variables with these loops; each `add` prompts for its value. The first
+loop stores the credentials as Secrets. The second stores the rest as Config
+values, which stay readable in the project's Environment Variables settings, so
+you can see which worker a deployment uses. Add an optional variable the same
+way. If a loop stops, run it again with only the names still missing.
 
 ```sh
-for NAME in SANDBOX_WORKER_NAME SANDBOX_MANAGED_DRIVE SANDBOX_MANAGED_SEED; do
-  pnpm exec vercel env remove "$NAME" --environment production --yes --scope "$SCOPE"
+for NAME in SLACK_BOT_TOKEN SLACK_SIGNING_SECRET REDIS_URL; do
+  pnpm exec vercel env add "$NAME" --environment production --sensitive --scope "$SCOPE" || break
+done
+for NAME in SLACK_WORKSPACE_ID SLACK_ENABLED_CHANNEL_IDS GATEWAY_ORIGIN OPENROUTER_MODEL \
+  SANDBOX_WORKER_NAME SANDBOX_MANAGED_DRIVE SANDBOX_MANAGED_SEED \
+  SLACK_FILE_EXCHANGE SLACK_PUBLIC_URL_INPUT; do
   pnpm exec vercel env add "$NAME" --environment production --no-sensitive --scope "$SCOPE" || break
 done
 pnpm exec vercel env list --environment production --scope "$SCOPE"
 ```
 
-The loop stops if an `add` fails or is cancelled; run it again before deploying.
-The list must show all three names with type `Config`, because without one the
-gateway fails every request with `Missing configuration`.
+The list must show every name you added. Only the four switches set to `1` and
+`SLACK_STOP_OPERATOR_IDS` are optional. If another one is missing or invalid,
+the gateway answers every request with status 503 and logs only
+`"category":"gateway_unavailable"`, without the name.
 
 Deploy the gateway from the clean clone after the variables are set. A
 deployment keeps the environment variables it was built with, so never promote a
@@ -283,9 +273,7 @@ pnpm exec vercel inspect "$GATEWAY_ORIGIN" --scope "$SCOPE" --json
 
 Slack and the worker must reach this origin without signing in to Vercel. If the
 project's Deployment Protection covers production, limit it to preview
-deployments. For rollback, keep the URL of the deployment the origin served
-before this one until the Slack smoke has passed; on a later rollout, record it
-from the origin's `inspect` output before you deploy.
+deployments.
 
 ## 5. Apply the complete Slack manifest
 
@@ -295,30 +283,21 @@ display name and replace `https://example.invalid` with `GATEWAY_ORIGIN`. Keep
 the event route `/api/slack/events` and interaction route
 `/api/slack/interactions` unchanged.
 
-In Slack app management, open **App Manifest**, validate the completed copy, and
-save it to the existing app. Slack's signed URL challenge must verify the
-deployed event endpoint. Confirm Slack saves the interaction request URL.
-Install or reinstall the app so its bot token receives all manifest scopes. If
-Slack shows a different bot token after reinstall, update `SLACK_BOT_TOKEN` in
-the Vercel Production environment and redeploy.
+In Slack app management, open **App Manifest**, paste the completed copy into
+the YAML tab, and save it to the existing app. Slack's signed URL challenge must
+verify the deployed event endpoint; if it fails, see
+[Troubleshooting](#7-troubleshooting). Confirm Slack saves the interaction
+request URL. Install or reinstall the app so its bot token receives all manifest
+scopes. If Slack shows a different bot token after reinstall, update
+`SLACK_BOT_TOKEN` in the Vercel Production environment and redeploy.
 
-The manifest requests these bot scopes.
+Then post `/invite @YourAgent` in the channel. Invite the bot to no other
+channel.
 
-- `app_mentions:read`, `channels:history`, and `chat:write`
-- `channels:read` and `users:read` for admission checks
-- `files:read` and `files:write` for file exchange
-- `reactions:read` and `reactions:write` for acknowledgement and feedback
+## 6. Test it in Slack
 
-It subscribes to `app_mention`, `message.channels`, `reaction_added`, and
-`reaction_removed`, enables signed interactivity, disables Socket Mode and org
-deployment, and keeps token rotation disabled. Invite the bot only to the
-configured public channel.
-
-## 6. Run the paid installation smoke
-
-Use synthetic text in the isolated channel. The first request must reach the
-real selected OpenRouter model through Pi. Choose a marker you have never used
-before.
+This end-to-end test spends model credit. Use synthetic text and a marker you
+have never used before.
 
 ```text
 @YourAgent Remember the synthetic marker cobalt-7391 for this Slack thread. Reply with the marker and the words first turn.
@@ -340,64 +319,36 @@ Verify that the answer recalls the marker and that Slack receives one attached
 text file with the same marker. In Vercel's Sandbox view, confirm the same named
 Sandbox has a new session ID and that the earlier session is stopped.
 
-From the gateway log lines with `"phase":"published"`, record the first and
-second run IDs for this thread in shell variables named `FIRST_RUN_ID` and
-`SECOND_RUN_ID`. Use the existing Redis store to check the two exact runs.
+## 7. Troubleshooting
+
+The gateway logs JSON lines with a `phase` and, for a run, its `runId`. Read
+them in the project's **Logs** tab in the Vercel dashboard, or with:
 
 ```sh
-(
-unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$SETUP_ENV")
-node --env-file="$SETUP_ENV" --input-type=module - \
-  "$FIRST_RUN_ID" "$SECOND_RUN_ID" <<'JS'
-import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
-import { RedisRunStore } from './apps/gateway/src/store.ts';
-
-const require = createRequire(import.meta.resolve('./apps/gateway/package.json'));
-const { createClient } = require('redis');
-const client = createClient({
-  url: process.env.REDIS_URL,
-  socket: { connectTimeout: 5000, reconnectStrategy: false },
-  disableOfflineQueue: true,
-});
-client.on('error', () => {});
-try {
-  const store = new RedisRunStore(client);
-  const [first, second] = await Promise.all(process.argv.slice(2).map((id) => store.getRun(id)));
-  const a = first?.result?.session;
-  const b = second?.result?.session;
-  assert.ok(a && b && first.execution?.sessionId && second.execution?.sessionId);
-  assert.ok(first.conversationId === second.conversationId, 'Conversation changed');
-  assert.ok(first.execution.sessionId !== second.execution.sessionId, 'Sandbox session did not change');
-  assert.ok(a.seedRunId === b.seedRunId && a.nativeId === b.nativeId && a.adapterId === b.adapterId,
-    'Native session reference changed');
-  assert.ok(b.revision > a.revision, 'Native session revision did not advance');
-  console.log('A new Sandbox session continued the same native Pi session.');
-} finally {
-  if (client.isOpen) client.destroy();
-}
-JS
-)
+pnpm exec vercel logs --environment production --since 30m --scope "$SCOPE"
 ```
 
-The earlier Sandbox session must remain stopped. The new session uses the same
-configured Drive. Later turns do not replay the earlier Slack transcript.
+**The bot does not react at all.** The gateway answers with status 200 and logs
+nothing for events from another workspace or channel, from bots or external
+users, from DMs, private, or Slack Connect channels, and for messages over
+12,000 characters. Check that the bot is in the channel, that
+`SLACK_WORKSPACE_ID` and `SLACK_ENABLED_CHANNEL_IDS` hold the `T…` and `C…` IDs
+from the channel's address, and that Slack shows the Event Subscriptions request
+URL as verified. After you change a variable, deploy again.
 
-This smoke spends model credit and is live Slack evidence. Local tests, manifest
-validation, a Vercel build, and the bootstrap's asset checks do not replace it.
+**Slack cannot verify the request URL.** Find the request to `/api/slack/events`
+in the logs.
 
-## 7. Implemented limits and retention
+- Status 503 with `{"phase":"events","category":"gateway_unavailable"}`: a
+  variable from section 4 is missing or invalid, such as a `GATEWAY_ORIGIN` with
+  a path or a channel ID that does not start with `C`.
+- Status 401: `SLACK_SIGNING_SECRET` is not the app's signing secret.
+- No request: check the manifest's URL and the Deployment Protection setting.
 
-The README lists the [current limits](../README.md#current-limits) that the code
-enforces.
-
-Native Pi sessions, per-run work and result manifests, retained inputs, and
-shared notes persist on the Drive. Redis run, message, conversation, feedback,
-and managed-runtime records persist without an application TTL. The named
-Sandbox is nonpersistent, so its local filesystem does not carry between
-sessions. The credential-free startup snapshot has no automatic expiry and is
-retained until cleanup. Slack message deletion does not delete Drive or Redis
-data. The Drive is durable working storage rather than a backup.
+**The bot replies “The worker is unavailable…”.** The gateway could not get a
+running session of the worker Sandbox. Check that the three `SANDBOX_*` values
+match the setup output of the worker you use, then mention the bot again. The
+[gateway README](../apps/gateway/README.md) explains how it restarts the worker.
 
 ## 8. Rollback and teardown
 
@@ -430,31 +381,26 @@ Cleanup permanently removes all native sessions, work, results, retained inputs,
 and shared notes on the Drive. Export anything that must be kept before you
 continue.
 
-Then disable Interactivity and run the destructive cleanup with the same private
-record and a fresh OIDC token for the same Vercel project. From the clone, in a
-new shell, restore the paths from section 3. Use the newer record path if setup
-was retried.
+Then disable Interactivity and run cleanup at the repository root in a new
+shell. Set `WORKER_RECORD` to the record of the worker the gateway uses now:
+`worker-record.json` after the quickstart, otherwise the path its setup used.
+The `prefix` in that JSON file begins the `SANDBOX_WORKER_NAME` value in the
+project's Environment Variables settings. A record that was already cleaned up
+finds nothing and still reports removal.
 
 ```sh
 source scripts/use-toolchain.sh
 PROJECT=your-new-gateway-project
 PRIVATE_SETUP_DIR="$HOME/.slack-agent-starter/$PROJECT"
+OIDC_ENV="$PRIVATE_SETUP_DIR/vercel-oidc.env"
+SETUP_ENV="$PRIVATE_SETUP_DIR/setup.env"
 WORKER_RECORD="$PRIVATE_SETUP_DIR/worker-record.json"
-CLEANUP_OIDC_ENV="$PRIVATE_SETUP_DIR/cleanup-oidc.env"
-CLEANUP_ENV="$PRIVATE_SETUP_DIR/cleanup.env"
-pnpm exec vercel env pull "$CLEANUP_OIDC_ENV" \
-  --environment=development --yes
-chmod 600 "$CLEANUP_OIDC_ENV"
-```
-
-With an editor, create `CLEANUP_ENV`, copy `VERCEL_OIDC_TOKEN` into it, and add
-only the same `VERCEL_PROJECT_ID` used for setup. Then run cleanup:
-
-```sh
-chmod 600 "$CLEANUP_ENV"
+pnpm exec vercel env pull "$OIDC_ENV" --environment=development --yes
+(umask 077 && { grep -v '^VERCEL_OIDC_TOKEN=' "$SETUP_ENV"; grep '^VERCEL_OIDC_TOKEN=' "$OIDC_ENV"; } >"$SETUP_ENV.new") &&
+  mv "$SETUP_ENV.new" "$SETUP_ENV"
 (
-  unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$CLEANUP_ENV")
-  node --env-file="$CLEANUP_ENV" \
+  unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$SETUP_ENV")
+  node --env-file="$SETUP_ENV" \
     apps/gateway/scripts/bootstrap-worker.mjs cleanup "$WORKER_RECORD"
 )
 ```
@@ -463,8 +409,6 @@ Cleanup verifies removal of the recorded worker Sandbox, seed Sandbox, startup
 snapshot, and Drive. Cleanup marks the worker record retired before deletion, so
 any later setup must use a new worker record path.
 
-Remove the gateway deployment or project, revoke the OpenRouter key, uninstall
-the Slack app, and delete the dedicated Redis database. Deleting the Redis
-database is what removes retained gateway metadata. Finally delete the private
-setup environment and worker record. Keep only sanitized results that identify
-the deployed Git revision and state which checks actually ran.
+Remove the gateway project, revoke the OpenRouter key, uninstall the Slack app,
+and delete the dedicated Redis database, which removes the gateway's stored
+records. Finally delete the private setup directory.

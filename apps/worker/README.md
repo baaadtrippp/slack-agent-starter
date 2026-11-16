@@ -3,20 +3,13 @@
 The supported worker is the pinned Pi and ACP runtime in `sandbox/`. It runs in
 one named, nonpersistent Vercel Sandbox with one Vercel Drive mounted read/write
 at `/workspace`. The public bootstrap creates the clean startup snapshot, Drive,
-initial exact session, network policy, and Redis enrollment.
+first session, network policy, and Redis enrollment.
 
-Follow the [quickstart](../../docs/service-setup.md). From the repository root,
-its worker entry points are:
+Follow the [quickstart](../../docs/service-setup.md): its
+[section 3](../../docs/service-setup.md#3-bootstrap-the-worker) runs setup and
+[section 8](../../docs/service-setup.md#8-rollback-and-teardown) runs cleanup.
 
-```text
-node --env-file="$SETUP_ENV" apps/gateway/scripts/bootstrap-worker.mjs setup "$WORKER_RECORD"
-node --env-file="$SETUP_ENV" apps/gateway/scripts/bootstrap-worker.mjs cleanup "$WORKER_RECORD"
-```
-
-Before a later cleanup, refresh the short-lived `VERCEL_OIDC_TOKEN` in
-`SETUP_ENV` as the quickstart describes.
-
-The setup command installs these exact packages into the startup snapshot:
+The setup command installs these pinned packages into the startup snapshot:
 
 - `acpx@0.21.1`
 - `pi-acp@0.0.34`
@@ -35,8 +28,9 @@ has no Drive, model key, Slack credential, Redis credential, session, or user
 data. The live worker is forked from that snapshot with the Drive mounted at
 `/workspace`. Its egress allowlist contains only the configured gateway host and
 OpenRouter. The provider firewall is configured to inject the OpenRouter key
-into requests, while the process receives a placeholder value. The paid model
-smoke in the quickstart verifies that path end to end.
+into requests, while the process receives a placeholder value. The quickstart's
+[Slack test](../../docs/service-setup.md#6-test-it-in-slack) checks that path
+end to end.
 
 The gateway starts `supervise.mjs` for work and invokes `control.mjs` for Stop
 or Status. A completed run saves its result and native session on the Drive
@@ -66,21 +60,11 @@ CHECK_RECORD="$(mktemp -d)/check-record.json"
 ```
 
 It bootstraps a separate worker from the commit, with loopback stand-ins for
-OpenRouter and the gateway callback. A first run stages a CSV; after the
-gateway's idle stop, a new session resumes on the same Drive, and a reply
-continues the exact native session, reads the retained CSV, and saves a 20 KiB
-file with `write_artifact`. The gateway's collector then reads that file and a
-file of exactly the generated-file limit from the Sandbox. While the reply runs,
-a new run in another thread gets the gateway's Stop request; it ends stopped
-without an answer, and the reply still completes. A last run in a new thread,
-with a 1 KiB file limit in its job, gets a tool description that states it,
-sends two `write_artifact` calls over it, one with fewer characters than the
-limit but more bytes, and its result must report the refused file. The stand-in
-model also checks that the system prompt of the new and the resumed session
-contains `instructions.md`. It prints the tested commit, then runs bootstrap
-cleanup and removes the check worker's Redis records, also after a failure. This
-is provider integration evidence with a stand-in model, not proof of the paid
-model path or live Slack.
+OpenRouter and the gateway callback. It runs a new thread, a reply in a new
+Sandbox session on the same Drive, a Stop, and generated files at and over the
+size limit, and checks that the system prompt contains `instructions.md`. It
+prints the tested commit, then runs cleanup and removes the check worker's Redis
+records, also after a failure. It does not prove the paid model or live Slack.
 
 With `--paid` (for example `check-worker.mjs --paid "$CHECK_RECORD"`), the check
 then removes the stand-in's `openrouter.ai` override and runs one real turn with
