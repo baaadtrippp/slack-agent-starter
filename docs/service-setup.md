@@ -251,14 +251,14 @@ worker has not changed, as for a model or limits change.
 ```sh
 for NAME in SANDBOX_WORKER_NAME SANDBOX_MANAGED_DRIVE SANDBOX_MANAGED_SEED; do
   pnpm exec vercel env remove "$NAME" --environment production --yes --scope "$SCOPE"
-  pnpm exec vercel env add "$NAME" --environment production --no-sensitive --scope "$SCOPE"
+  pnpm exec vercel env add "$NAME" --environment production --no-sensitive --scope "$SCOPE" || break
 done
 pnpm exec vercel env list --environment production --scope "$SCOPE"
 ```
 
-The list must show all three names with type `Config`. If one is missing, for
-example because its prompt was cancelled, run the loop again before deploying;
-without it the gateway fails every request with `Missing configuration`.
+The loop stops if an `add` fails or is cancelled; run it again before deploying.
+The list must show all three names with type `Config`, because without one the
+gateway fails every request with `Missing configuration`.
 
 Deploy the gateway from the clean clone after the variables are set. A
 deployment keeps the environment variables it was built with, so never promote a

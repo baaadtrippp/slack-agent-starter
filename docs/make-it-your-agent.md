@@ -116,7 +116,9 @@ needs a new worker, and the gateway must be deployed from the same commit.
    [quickstart section 3](service-setup.md#3-bootstrap-the-worker) with a new
    `WORKER_RECORD` path, such as `"$PRIVATE_SETUP_DIR/worker-record-2.json"`.
    Setup refuses the old record because it names a different commit.
-3. In the gateway's Production environment, replace `SANDBOX_WORKER_NAME`,
+3. In a new shell, first set `SCOPE` and `GATEWAY_ORIGIN` again as in
+   [section 2](service-setup.md#vercel-gateway-project). In the gateway's
+   Production environment, replace `SANDBOX_WORKER_NAME`,
    `SANDBOX_MANAGED_DRIVE`, and `SANDBOX_MANAGED_SEED` with the new setup
    output, using the loop in
    [section 4](service-setup.md#4-configure-and-deploy-the-gateway). Then deploy
