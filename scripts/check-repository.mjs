@@ -44,7 +44,7 @@ const forbiddenSegments = new Set([
   'private-notes',
 ]);
 
-const forbiddenNames = [/^\.mcp\.json$/, /\.jsonl$/];
+const forbiddenNames = [/(?:^|\/)\.mcp\.json$/, /\.jsonl$/];
 
 const privatePathPatterns = [
   /[A-Za-z]:\\(?:Users|private-z)\\/i,
