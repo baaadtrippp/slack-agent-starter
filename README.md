@@ -53,20 +53,25 @@ The gateway never runs the model; the worker never calls Slack. See the
 
 ## Quickstart
 
-The supported installation is the [quickstart](docs/service-setup.md). You need
-Bash on x86_64 Linux or WSL (or macOS with the
-[macOS toolchain steps](docs/toolchain.md#macos)), Docker for the local test
-Redis, a Vercel account, a dedicated Upstash Redis database, an OpenRouter key
-with a spending limit and a model that supports tool calls, and a Slack
-workspace where you can create an app, with one public channel. The guide also
-covers [rollback and teardown](docs/service-setup.md#8-rollback-and-teardown).
+Follow the [quickstart](docs/service-setup.md). You need:
+
+- Bash on x86_64 Linux or WSL, or macOS with the
+  [macOS toolchain steps](docs/toolchain.md#macos)
+- a Vercel account and an Upstash Redis database used only for this app
+- an OpenRouter key with a spending limit, and a model that supports tool calls
+- a Slack workspace where you can create an app, and one public channel
+- Docker, only to run the tests
 
 1. [Prepare a clean checkout](docs/service-setup.md#1-prepare-a-clean-checkout).
 2. [Create the service resources](docs/service-setup.md#2-create-the-service-resources).
 3. [Bootstrap the worker](docs/service-setup.md#3-bootstrap-the-worker).
 4. [Configure and deploy the gateway](docs/service-setup.md#4-configure-and-deploy-the-gateway).
 5. [Apply the Slack manifest](docs/service-setup.md#5-apply-the-complete-slack-manifest).
-6. [Run the paid installation smoke](docs/service-setup.md#6-run-the-paid-installation-smoke).
+6. [Test it in Slack](docs/service-setup.md#6-test-it-in-slack).
+7. [Troubleshooting](docs/service-setup.md#7-troubleshooting).
+
+The guide also covers
+[rollback and teardown](docs/service-setup.md#8-rollback-and-teardown).
 
 ## Make it your agent
 
@@ -141,9 +146,7 @@ gateway environment variables, off unless `1`; the quickstart sets
 These are the default limits, not load-tested
 ([specification](docs/spec/specification.md#7-limits-access-security-and-failure-behavior));
 [Change the limits](docs/make-it-your-agent.md#change-the-limits) says where
-they live, and
-[quickstart section 7](docs/service-setup.md#7-implemented-limits-and-retention)
-adds retention details.
+they live.
 
 | Area                | Limit                                                                                                                                                                                                                                                                                |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -160,7 +163,7 @@ adds retention details.
 | Generated file      | one per answer, UTF-8, up to 256 KiB: CSV, Markdown, text, diff, JSON, YAML, HTML, CSS, SQL, shell, or code                                                                                                                                                                          |
 | Shared notes        | 16 per channel, 512 UTF-8 bytes each; a full channel is reported and nothing is evicted                                                                                                                                                                                              |
 | Worker Sandbox      | stops after the last active run, otherwise at its 25-minute session timeout                                                                                                                                                                                                          |
-| Retention           | Drive data, the startup snapshot, and Redis run, session, message, feedback, and managed-runtime records stay until teardown; only short-lived coordination keys expire                                                                                                              |
+| Retention           | Drive data, the startup snapshot, and Redis run, session, message, feedback, and managed-runtime records stay until teardown; only short-lived coordination keys expire; deleting a Slack message deletes none of it, and the Drive is not a backup                                  |
 
 ## Costs
 
@@ -172,7 +175,7 @@ deployment stays within them depends on its use and each provider's terms.
 - **OpenRouter**: tokens for every Pi turn, which can make several model calls
   when the agent uses tools. They depend on the model and on what each turn
   sends: the message, its files, and the thread's saved history, including file
-  contents read earlier. The installation smoke and the `--paid`
+  contents read earlier. The quickstart's Slack test and the `--paid`
   [worker check](apps/worker/README.md#check-the-worker) spend credit.
 - **Vercel Sandbox**: the worker Sandbox runs while there is work. After setup
   it stays up until the first completed run or its 25-minute timeout, and it can

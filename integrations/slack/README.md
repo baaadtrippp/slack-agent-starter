@@ -13,6 +13,5 @@ To install it, follow the [quickstart](../../docs/service-setup.md):
    [Apply the complete Slack manifest](../../docs/service-setup.md#5-apply-the-complete-slack-manifest).
 
 Manifest validation and Slack URL verification do not prove a complete event
-round trip. The
-[installation smoke](../../docs/service-setup.md#6-run-the-paid-installation-smoke)
-is the live check.
+round trip. The [Slack test](../../docs/service-setup.md#6-test-it-in-slack) is
+the live check.
