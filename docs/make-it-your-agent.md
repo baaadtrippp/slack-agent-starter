@@ -108,22 +108,30 @@ needs a new worker, and the gateway must be deployed from the same commit.
 
 1. Commit the change and run the checks from
    [quickstart section 1](service-setup.md#1-prepare-a-clean-checkout). Run the
-   [worker check](../apps/worker/README.md#check-the-worker) on that commit.
+   [worker check](../apps/worker/README.md#check-the-worker) on that commit. If
+   the Vercel project is connected to Git, push the commit to the production
+   branch only after step 3: a build from an earlier push goes live with the old
+   worker settings.
 2. Run setup from
    [quickstart section 3](service-setup.md#3-bootstrap-the-worker) with a new
    `WORKER_RECORD` path, such as `"$PRIVATE_SETUP_DIR/worker-record-2.json"`.
    Setup refuses the old record because it names a different commit.
-3. In the gateway's Production environment, replace `SANDBOX_WORKER_NAME`,
+3. In a new shell, first set `SCOPE` and `GATEWAY_ORIGIN` again as in
+   [section 2](service-setup.md#vercel-gateway-project). In the gateway's
+   Production environment, replace `SANDBOX_WORKER_NAME`,
    `SANDBOX_MANAGED_DRIVE`, and `SANDBOX_MANAGED_SEED` with the new setup
-   output. Deploy the gateway from the same commit, as in
-   [section 4](service-setup.md#4-configure-and-deploy-the-gateway).
+   output, using the loop in
+   [section 4](service-setup.md#4-configure-and-deploy-the-gateway). Then deploy
+   the gateway from the same commit and check that the stable origin serves that
+   deployment, as in section 4.
 4. Wait until every status message posted before the switch shows a final state;
    press Status on any that stay unfinished. A run accepted before the switch
    still uses the old Drive. Also wait until Vercel's Sandbox view shows no
    running session for the old worker Sandbox, which can keep running until its
-   25-minute session timeout. Then run only the cleanup command from
-   [section 8](service-setup.md#8-rollback-and-teardown), with a fresh OIDC
-   token and the old record. It deletes the old Drive.
+   25-minute session timeout. Keep the old worker until the new deployment has
+   answered in a new thread, because a rollback needs it. Then run only the
+   cleanup command from [section 8](service-setup.md#8-rollback-and-teardown),
+   with a fresh OIDC token and the old record. It deletes the old Drive.
 
 The new worker has a new, empty Drive. Replies in threads started before the
 switch fail, because their Pi sessions stayed on the old Drive; start a new
