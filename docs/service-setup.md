@@ -92,10 +92,11 @@ In the [Upstash console](https://console.upstash.com), create a Redis database
 for this app only, in `us-east-1`, near the default Sandbox region `iad1`. The
 free plan allows one database per account, so if you already have one, use
 another account or pay for a second; delete the existing one only if nothing
-needs its data. Copy its connection URL that starts with `rediss://` and
-contains the password. The REST URL and token are not accepted by the gateway or
-bootstrap. Keep automatic paid upgrades disabled if your plan offers that
-control.
+needs its data. Under **Connect**, choose **TCP** and click the eye icon. Copy
+only the URL that starts with `rediss://` and contains the password, without the
+`REDIS_URL="…"` around it. The REST URL and token are not accepted by the
+gateway or bootstrap. Keep automatic paid upgrades disabled if your plan offers
+that control.
 
 ### OpenRouter
 
@@ -103,7 +104,9 @@ Create an API key with an explicit spending limit; setup accepts only a key of
 the form `sk-or-v1-…`. Choose a model that supports tool calls.
 `google/gemini-3.1-flash-lite` was the model used for the live Slack checks in
 November 2026 (text answers, tool calls, a generated file). If you will turn on
-PNG or JPEG input, check separately that your model reads images. Set an account
+PNG or JPEG input, check separately that your model reads images. Slack files,
+images included, may be at most 16 KiB each by default
+([Change the limits](make-it-your-agent.md#change-the-limits)). Set an account
 budget that covers the Slack test in section 6.
 
 Setup writes the key into the worker Sandbox's firewall rule, which adds it to
@@ -114,12 +117,12 @@ worker's model calls.
 ### Slack app shell
 
 At <https://api.slack.com/apps>, create an app **From scratch** with **Pick
-features**: enter the final app name and your workspace, add only the
-`chat:write` bot scope, skip events, and choose **Create and Install**. The
-complete manifest is applied after the gateway exists. Section 4 needs two
-values, which you can copy again later: the **Bot User OAuth Token** (`xoxb-…`)
-under **OAuth & Permissions**, and the **Signing Secret** under **Basic
-Information**.
+features**: enter a final app name that no other app in the workspace uses, and
+your workspace, add only the `chat:write` bot scope, skip events, and choose
+**Create and Install**. The complete manifest is applied after the gateway
+exists. Section 4 needs two values, which you can copy again later: the **Bot
+User OAuth Token** (`xoxb-…`) under **OAuth & Permissions**, and the **Signing
+Secret** under **Basic Information**.
 
 Create a new public channel for the agent. Open it in Slack in a browser: the
 address ends in `/client/T…/C…`, where `T…` is the workspace ID and `C…` the
@@ -237,10 +240,11 @@ the gateway. Vercel supplies runtime project authentication to the Sandbox SDK.
 
 Add the variables with these loops; each `add` prompts for its value. The first
 loop stores the credentials as Secrets. The second stores the rest as Config
-values, which stay readable in the project's Environment Variables settings, so
-you can see which worker a deployment uses. Add an optional variable the same
-way. If a loop stops, run it again with only the names still missing. `add`
-fails on a name that exists; to change one later, run
+values. `vercel env list` shows their values encrypted; to see which worker the
+next deployment will use, open the project's Environment Variables settings in
+the dashboard. Add an optional variable the same way. If a loop stops, run it
+again with only the names still missing. `add` fails on a name that exists; to
+change one later, run
 `pnpm exec vercel env update NAME --environment production --scope "$SCOPE"` and
 deploy again.
 
@@ -271,11 +275,15 @@ pnpm exec vercel inspect "$DEPLOYMENT_URL" --scope "$SCOPE" --json
 pnpm exec vercel inspect "$GATEWAY_ORIGIN" --scope "$SCOPE" --json
 ```
 
+In a coding agent's shell, `vercel deploy` may print JSON instead of the bare
+URL; then set `DEPLOYMENT_URL` to its `deployment.url`.
+
 The new deployment must report `readyState` `READY` and `target` `production`;
-if it does not, fix the build and deploy again. The origin must then report the
-same `id` and your project as `name`. If the origin still reports an older `id`,
-the project does not assign production domains automatically, as happens after
-an Instant Rollback. Promote the new deployment and inspect the origin again.
+if it does not, fix the build ([Troubleshooting](#7-troubleshooting)) and deploy
+again. The origin must then report the same `id` and your project as `name`. If
+the origin still reports an older `id`, the project does not assign production
+domains automatically, as happens after an Instant Rollback. Promote the new
+deployment and inspect the origin again.
 
 ```sh
 pnpm exec vercel promote "$DEPLOYMENT_URL" --scope "$SCOPE"
@@ -284,7 +292,16 @@ pnpm exec vercel inspect "$GATEWAY_ORIGIN" --scope "$SCOPE" --json
 
 Slack and the worker must reach this origin without signing in to Vercel. If the
 project's Deployment Protection covers production, limit it to preview
-deployments.
+deployments. To check, send an unsigned request:
+
+```sh
+curl -sS -w '%{http_code}\n' -X POST "$GATEWAY_ORIGIN/api/slack/events"
+```
+
+A bare `401` is the gateway's own answer: the origin is public and every setting
+loaded. Text before the `401`, such as `Protected deployment`, comes from
+Vercel's protection, which then covers production. `503` means a variable is
+missing or invalid.
 
 ## 5. Apply the complete Slack manifest
 
@@ -295,12 +312,14 @@ the event route `/api/slack/events` and interaction route
 `/api/slack/interactions` unchanged.
 
 In Slack app management, open **App Manifest**, paste the completed copy into
-the YAML tab, and save it to the existing app. Slack's signed URL challenge must
-verify the deployed event endpoint; if it fails, see
+the YAML tab, and save it to the existing app. If Slack then shows the request
+URL as not verified, click **Click here to verify**. Slack's signed URL
+challenge must verify the deployed event endpoint; if it fails, see
 [Troubleshooting](#7-troubleshooting). Confirm Slack saves the interaction
-request URL. Install or reinstall the app so its bot token receives all manifest
-scopes. If Slack shows a different bot token after reinstall, update
-`SLACK_BOT_TOKEN` with `vercel env update` as in section 4 and deploy again.
+request URL. Install or reinstall the app (**Install App** → **Reinstall to**
+your workspace) so its bot token receives all manifest scopes. If Slack shows a
+different bot token after reinstall, update `SLACK_BOT_TOKEN` with
+`vercel env update` as in section 4 and deploy again.
 
 Then post `/invite @YourAgent` in the channel. Invite the bot to no other
 channel.
@@ -315,9 +334,13 @@ have never used before.
 ```
 
 Verify one eyes acknowledgement, one status message that reaches Completed, and
-one separate answer containing the marker. In Vercel's Sandbox view, confirm the
-named Sandbox from the setup output ran a session for this request. Wait for the
-managed worker to stop after the verified result.
+one separate answer containing the marker. In Vercel's Sandbox view, or with
+this command, confirm the named Sandbox from the setup output ran a session for
+this request. Wait for the managed worker to stop after the verified result.
+
+```sh
+pnpm exec vercel sandbox sessions list your-sandbox-worker-name --all --project "$PROJECT" --scope "$SCOPE"
+```
 
 Reply in the same Slack thread without mentioning the bot and without repeating
 the marker.
@@ -327,8 +350,9 @@ What marker did I ask you to remember? Return a UTF-8 text file containing that 
 ```
 
 Verify that the answer recalls the marker and that Slack receives one attached
-text file with the same marker. In Vercel's Sandbox view, confirm the same named
-Sandbox has a new session ID and that the earlier session is stopped.
+text file with the same marker. In Vercel's Sandbox view, or with the same
+command, confirm the same named Sandbox has a new session ID and that the
+earlier session is stopped.
 
 ## 7. Troubleshooting
 
@@ -364,6 +388,12 @@ running session of the worker Sandbox. Check that the three `SANDBOX_*` values
 match the setup output of the worker you use, then mention the bot again. The
 [gateway README](../apps/gateway/README.md) explains how it restarts the worker.
 
+**The deployment fails.** Read its build log, fix the error, and deploy again.
+
+```sh
+pnpm exec vercel inspect "$DEPLOYMENT_URL" --logs --scope "$SCOPE"
+```
+
 ## 8. Rollback and teardown
 
 To roll back a bad gateway deployment, point the stable Vercel origin to the
@@ -389,8 +419,9 @@ For complete teardown, first disable Slack Event Subscriptions so no new run
 starts. Keep Interactivity enabled and the app installed until every status
 message in the channel shows a final state; press Status on any that stay
 unfinished to recover them. A run whose status post failed has no message, so
-also wait until Vercel's Sandbox view shows no running session for the named
-worker Sandbox.
+also wait until Vercel's Sandbox view, or the command in
+[section 6](#6-test-it-in-slack), shows no running session for the named worker
+Sandbox.
 
 Cleanup permanently removes all native sessions, work, results, retained inputs,
 and shared notes on the Drive. Export anything that must be kept before you
