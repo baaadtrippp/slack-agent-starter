@@ -28,21 +28,22 @@ OpenRouter model that supports tool calls, and image input if you set
 `SLACK_PNG_INPUT` or `SLACK_JPEG_INPUT`. Set the new slug in the gateway's
 Production environment and deploy the gateway again, as in
 [quickstart section 4](service-setup.md#4-configure-and-deploy-the-gateway). The
-worker does not need a rebuild for this.
+worker does not need a rebuild for this. The command prompts for the slug:
 
-Bootstrap does not give the model to the worker, but the worker record stores
-the slug from `SETUP_ENV`, and setup refuses that record once `SETUP_ENV` names
-another model. Keep the old slug in `SETUP_ENV` while you might still retry
-setup with the current record. Switch it when you next use a new record path:
-for the [worker check](../apps/worker/README.md#check-the-worker), or for the
-next [worker change](#apply-worker-changes). Cleanup accepts the record whatever
-the slug.
+```sh
+source scripts/use-toolchain.sh
+pnpm exec vercel env update OPENROUTER_MODEL --environment production
+```
+
+Also set the slug in `SETUP_ENV`: the worker check's paid run reads it there,
+and setup refuses a worker record made with another slug, so finish any setup
+retry first.
 
 ## Add a tool
 
 Tools are Pi extensions that the worker writes for each run. `write_artifact` in
 [`apps/worker/sandbox/run.mjs`](../apps/worker/sandbox/run.mjs) is the example
-to copy:
+to copy; `read_input` (`readStagedInputExtension`) is a shorter one:
 
 1. `writeArtifactExtension(byteLimit)` returns the extension source, with the
    job's generated-file limit written in. Its default export calls
@@ -55,11 +56,31 @@ to copy:
 3. Values the tool needs at run time go into `agentProcessEnv`, as
    `WORKER_RESULTS` does for `write_artifact`.
 
-Add your extension the same way. The stand-in model in
-[`check-worker-fixture.mjs`](../apps/gateway/scripts/check-worker-fixture.mjs)
-expects the exact tool list, so add the new name there too. A tool runs inside
-the worker Sandbox within the 60-second run deadline, and it can reach only the
-gateway origin and OpenRouter. Treat everything a tool reads as untrusted data.
+Add your extension the same way. A tool runs in the worker Sandbox within the
+60-second run deadline; treat everything it reads as untrusted data. Then:
+
+- **Tell the model.** Describe the tool in `instructions.md`, and drop any line
+  there that says the agent cannot do what the tool does.
+- **Network access.** The worker can reach only the gateway origin and
+  `openrouter.ai`. For an API, add its host to `networkPolicy.allow` in the
+  `Sandbox.fork` call in `apps/gateway/scripts/bootstrap-worker.mjs`, and to the
+  egress check just below it, which expects exactly two hosts.
+- **API keys.** Never put a key in the job, the worker's environment, or a file
+  it can read. Copy the `openrouter.ai` entry with your API's header: the
+  Sandbox firewall adds it to requests to that host. Add the key to `SETUP_ENV`,
+  read it with `required(...)` next to `OPENROUTER_API_KEY`, and pass it into
+  `setup()` as that key is. A changed key needs a
+  [new worker](#apply-worker-changes).
+- **npm packages.** A tool cannot import an npm package yet
+  ([#49](https://github.com/baaadtrippp/slack-agent-starter/issues/49)), except
+  those Pi provides to extensions, such as `typebox`. Use Node built-ins such as
+  `fetch`.
+- **Worker check.** The stand-in model in
+  [`check-worker-fixture.mjs`](../apps/gateway/scripts/check-worker-fixture.mjs)
+  compares the tool names with two fixed lists (`assert.deepEqual`, in order;
+  they follow the `tools` order in `prompt()`). Add yours at the same position
+  in each list whose run offers it. It never calls your tool: test it in Slack.
+
 Then [apply the change](#apply-worker-changes).
 
 ## Change the limits
@@ -76,6 +97,12 @@ receives, so a changed value needs no new worker. Replies and the
 text expect the defaults; update them with your values. Two limits have fixed
 bounds, noted beside them in the file: `answerChars` must fit 32 KiB message
 bodies, and `sourcesPerThread` must fit the worker's 16 KiB source catalog.
+
+`RUN_DURATION_MS` in the same file sets the 60-second run time, which also needs
+only a gateway deploy. The gateway's Vercel Function waits for each run in the
+background (`waitUntil`), and the repository sets no `maxDuration`, so Vercel's
+default function duration for your plan applies. Check it before you raise the
+run time.
 
 Adding, renaming, or removing a limit changes the job shape. Then the worker and
 the gateway must come from the same commit:
@@ -104,34 +131,97 @@ deferred until it has its own design (see
 Bootstrap copies the worker files from the committed revision into the startup
 snapshot, and the worker record is bound to that commit. Before the first setup,
 committing the change is enough. On a running installation, a changed worker
-needs a new worker, and the gateway must be deployed from the same commit.
+needs a new worker, and the gateway must be deployed from the same commit. So
+does a new OpenRouter or tool API key, which setup writes into the worker's
+firewall rule.
 
-1. Commit the change and run the checks from
-   [quickstart section 1](service-setup.md#1-prepare-a-clean-checkout). Run the
-   [worker check](../apps/worker/README.md#check-the-worker) on that commit. If
-   the Vercel project is connected to Git, push the commit to the production
-   branch only after step 3: a build from an earlier push goes live with the old
-   worker settings.
-2. Run setup from
-   [quickstart section 3](service-setup.md#3-bootstrap-the-worker) with a new
-   `WORKER_RECORD` path, such as `"$PRIVATE_SETUP_DIR/worker-record-2.json"`.
-   Setup refuses the old record because it names a different commit.
-3. In a new shell, first set `SCOPE` and `GATEWAY_ORIGIN` again as in
-   [section 2](service-setup.md#vercel-gateway-project). In the gateway's
-   Production environment, replace `SANDBOX_WORKER_NAME`,
-   `SANDBOX_MANAGED_DRIVE`, and `SANDBOX_MANAGED_SEED` with the new setup
-   output, using the loop in
-   [section 4](service-setup.md#4-configure-and-deploy-the-gateway). Then deploy
-   the gateway from the same commit and check that the stable origin serves that
-   deployment, as in section 4.
+1. Commit any code change and run the checks from
+   [quickstart section 1](service-setup.md#1-prepare-a-clean-checkout). If the
+   Vercel project is connected to Git, push the commit to the production branch
+   only after step 3: a build from an earlier push goes live with the old worker
+   settings.
+2. In a new shell at the repository root, set your values from the quickstart
+   and refresh the short-lived OIDC token in `SETUP_ENV`; setup and cleanup
+   reject an expired one. Run this first block again in a new shell.
+
+   ```sh
+   source scripts/use-toolchain.sh
+   PROJECT=your-gateway-project
+   SCOPE=your-vercel-account-or-team
+   GATEWAY_ORIGIN=https://your-assigned-production-domain
+   PRIVATE_SETUP_DIR="$HOME/.slack-agent-starter/$PROJECT"
+   OIDC_ENV="$PRIVATE_SETUP_DIR/vercel-oidc.env"
+   SETUP_ENV="$PRIVATE_SETUP_DIR/setup.env"
+   pnpm exec vercel env pull "$OIDC_ENV" --environment=development --yes
+   chmod 600 "$OIDC_ENV"
+   (umask 077 && { grep -v '^VERCEL_OIDC_TOKEN=' "$SETUP_ENV"; grep '^VERCEL_OIDC_TOKEN=' "$OIDC_ENV"; } >"$SETUP_ENV.new") &&
+     mv "$SETUP_ENV.new" "$SETUP_ENV"
+   ```
+
+   Optionally run the [worker check](../apps/worker/README.md#check-the-worker)
+   now. Then run setup; retry a failure with the same commands. The record path
+   must be one no earlier setup used: for a key-only change on the same commit,
+   or a retry that asks for a new record, add a suffix such as `-2`.
+
+   ```sh
+   WORKER_RECORD="$PRIVATE_SETUP_DIR/worker-record-$(git rev-parse --short HEAD).json"
+   (
+     unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$SETUP_ENV")
+     node --env-file="$SETUP_ENV" \
+       apps/gateway/scripts/bootstrap-worker.mjs setup "$WORKER_RECORD"
+   )
+   chmod 600 "$WORKER_RECORD"
+   ```
+
+3. Replace the three `SANDBOX_*` settings, pasting each value from the setup
+   output when prompted. The loop must end without an error, and the list must
+   show all three with type `Config`, each created moments ago.
+
+   ```sh
+   for NAME in SANDBOX_WORKER_NAME SANDBOX_MANAGED_DRIVE SANDBOX_MANAGED_SEED; do
+     pnpm exec vercel env remove "$NAME" --environment production --yes --scope "$SCOPE" &&
+       pnpm exec vercel env add "$NAME" --environment production --no-sensitive --scope "$SCOPE" || break
+   done
+   pnpm exec vercel env list --environment production --scope "$SCOPE"
+   ```
+
+   Then deploy. Keep the URL the first `inspect` shows for a rollback.
+
+   ```sh
+   pnpm exec vercel inspect "$GATEWAY_ORIGIN" --scope "$SCOPE" --json
+   DEPLOYMENT_URL=$(pnpm exec vercel deploy --prod --yes --scope "$SCOPE")
+   pnpm exec vercel inspect "$DEPLOYMENT_URL" --scope "$SCOPE" --json
+   pnpm exec vercel inspect "$GATEWAY_ORIGIN" --scope "$SCOPE" --json
+   ```
+
+   The new deployment must report `readyState` `READY`. If the origin then
+   reports an older `id`, promote the new deployment. The origin must then
+   report the new `id`.
+
+   ```sh
+   pnpm exec vercel promote "$DEPLOYMENT_URL" --scope "$SCOPE"
+   pnpm exec vercel inspect "$GATEWAY_ORIGIN" --scope "$SCOPE" --json
+   ```
+
 4. Wait until every status message posted before the switch shows a final state;
    press Status on any that stay unfinished. A run accepted before the switch
    still uses the old Drive. Also wait until Vercel's Sandbox view shows no
    running session for the old worker Sandbox, which can keep running until its
    25-minute session timeout. Keep the old worker until the new deployment has
-   answered in a new thread, because a rollback needs it. Then run only the
-   cleanup command from [section 8](service-setup.md#8-rollback-and-teardown),
-   with a fresh OIDC token and the old record. It deletes the old Drive.
+   answered in a new thread, because a rollback needs it. Then run cleanup with
+   a fresh token (step 2). Set `OLD_RECORD` to the record of the worker you
+   replaced: `worker-record.json` after the quickstart, otherwise the path its
+   setup used. A retired record finds nothing and still reports removal. Cleanup
+   deletes the old Drive. Then revoke a replaced key.
+
+   ```sh
+   OLD_RECORD="$PRIVATE_SETUP_DIR/record-of-the-replaced-worker.json"
+   (
+     unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$SETUP_ENV")
+     node --env-file="$SETUP_ENV" apps/gateway/scripts/bootstrap-worker.mjs \
+       cleanup "$OLD_RECORD"
+   )
+   ```
 
 The new worker has a new, empty Drive. Replies in threads started before the
 switch fail, because their Pi sessions stayed on the old Drive; start a new
