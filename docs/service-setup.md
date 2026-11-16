@@ -104,8 +104,8 @@ Create an API key with an explicit spending limit; setup accepts only a key of
 the form `sk-or-v1-…`. Choose a model that supports tool calls.
 `google/gemini-3.1-flash-lite` was the model used for the live Slack checks in
 November 2026 (text answers, tool calls, a generated file). If you will turn on
-PNG or JPEG input, check separately that your model reads images. Slack files,
-images included, may be at most 16 KiB each by default
+PNG or JPEG input, check separately that your model reads images. Slack files
+may be at most 16 KiB each by default, and PNG or JPEG images 2 MiB
 ([Change the limits](make-it-your-agent.md#change-the-limits)). Set an account
 budget that covers the Slack test in section 6.
 

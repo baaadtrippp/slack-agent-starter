@@ -34,6 +34,7 @@ const catalogByteLimit = 16 * 1024;
 // The job carries these limits; see packages/contracts/src/limits.ts.
 const limitNames = [
   'inputFileBytes',
+  'imageInputBytes',
   'publicLinkBytes',
   'generatedFileBytes',
   'pdfTextBytes',
@@ -1057,6 +1058,7 @@ export async function prepareSources(
   for (const [position, source] of sources.entries()) {
     const id = 'input-' + (position + 1);
     const current = source.runId === job.runId;
+    const mimeType = imageMimeTypes[source.kind];
     let bytes;
     try {
       bytes = await readBoundedFile(
@@ -1065,14 +1067,15 @@ export async function prepareSources(
         'input-' + source.index,
         source.kind === 'publicUrl'
           ? job.limits.publicLinkBytes
-          : job.limits.inputFileBytes,
+          : mimeType
+            ? job.limits.imageInputBytes
+            : job.limits.inputFileBytes,
       );
       if (createHash('sha256').update(bytes).digest('hex') !== source.sha256)
         throw new Error('Staged input checksum mismatch');
     } catch (error) {
       throw current ? error : retainedSourcesUnavailable;
     }
-    const mimeType = imageMimeTypes[source.kind];
     if (mimeType) {
       const data = bytes.toString('base64');
       inputs[id] = { type: 'image', mimeType, data };

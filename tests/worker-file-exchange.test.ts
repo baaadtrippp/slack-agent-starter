@@ -176,6 +176,7 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
   it.each([
     ['csv', 'inputFileBytes', 'publicLinkBytes'],
     ['publicUrl', 'publicLinkBytes', 'inputFileBytes'],
+    ['jpeg', 'imageInputBytes', 'inputFileBytes'],
   ] as const)('bounds a staged %s by %s only', async (kind, own, other) => {
     const { source } = await stage(csv, kind, 'revenue.csv', 0);
     const job = (name: string) => ({
@@ -192,10 +193,15 @@ describe.skipIf(process.platform !== 'linux')('scoped worker inputs', () => {
       workspace,
       workspace,
     );
-    expect(accepted.inputs['input-1']).toEqual({
-      type: 'text',
-      text: csv.toString(),
-    });
+    expect(accepted.inputs['input-1']).toEqual(
+      kind === 'jpeg'
+        ? {
+            type: 'image',
+            mimeType: 'image/jpeg',
+            data: csv.toString('base64'),
+          }
+        : { type: 'text', text: csv.toString() },
+    );
   });
 
   it('rejects tampered bytes and symbolic links', async () => {
