@@ -240,11 +240,11 @@ the gateway. Vercel supplies runtime project authentication to the Sandbox SDK.
 
 Add the variables with these loops; each `add` prompts for its value. The first
 loop stores the credentials as Secrets. The second stores the rest as Config
-values. `vercel env list` shows their values encrypted; to see which worker a
-deployment uses, open the project's Environment Variables settings in the
-dashboard. Add an optional variable the same way. If a loop stops, run it again
-with only the names still missing. `add` fails on a name that exists; to change
-one later, run
+values. `vercel env list` shows their values encrypted; to see which worker the
+next deployment will use, open the project's Environment Variables settings in
+the dashboard. Add an optional variable the same way. If a loop stops, run it
+again with only the names still missing. `add` fails on a name that exists; to
+change one later, run
 `pnpm exec vercel env update NAME --environment production --scope "$SCOPE"` and
 deploy again.
 
