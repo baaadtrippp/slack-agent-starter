@@ -20,15 +20,13 @@ node_modules/
 
 # Private operator notes and progress records
 private-notes/
-docs/phase-0.md
-docs/wsl-development.md
 
 # Runtime state must remain outside source control
-sessions/
-memory/
-outputs/
-artifacts/
-workspaces/
+/sessions/
+/memory/
+/outputs/
+/artifacts/
+/workspaces/
 *.jsonl
 
 # Build, coverage, logs, and editor state
