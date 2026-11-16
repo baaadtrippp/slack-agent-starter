@@ -146,8 +146,8 @@ firewall rule.
 
    ```sh
    source scripts/use-toolchain.sh
-   PROJECT=your-gateway-project
-   SCOPE=your-vercel-account-or-team
+   PROJECT=your-new-gateway-project
+   SCOPE=your-team-id
    GATEWAY_ORIGIN=https://your-assigned-production-domain
    PRIVATE_SETUP_DIR="$HOME/.slack-agent-starter/$PROJECT"
    OIDC_ENV="$PRIVATE_SETUP_DIR/vercel-oidc.env"
@@ -205,14 +205,15 @@ firewall rule.
 
 4. Wait until every status message posted before the switch shows a final state;
    press Status on any that stay unfinished. A run accepted before the switch
-   still uses the old Drive. Also wait until Vercel's Sandbox view shows no
-   running session for the old worker Sandbox, which can keep running until its
-   25-minute session timeout. Keep the old worker until the new deployment has
-   answered in a new thread, because a rollback needs it. Then run cleanup with
-   a fresh token (step 2). Set `OLD_RECORD` to the record of the worker you
-   replaced: `worker-record.json` after the quickstart, otherwise the path its
-   setup used. A retired record finds nothing and still reports removal. Cleanup
-   deletes the old Drive. Then revoke a replaced key.
+   still uses the old Drive. Also wait until Vercel's Sandbox view, or the
+   [quickstart section 6](service-setup.md#6-test-it-in-slack) command with the
+   old name, shows no running session for the old worker Sandbox, which can keep
+   running until its 25-minute session timeout. Keep the old worker until the
+   new deployment has answered in a new thread, because a rollback needs it.
+   Then run cleanup with a fresh token (step 2). Set `OLD_RECORD` to the record
+   of the worker you replaced: `worker-record.json` after the quickstart,
+   otherwise the path its setup used. A retired record finds nothing and still
+   reports removal. Cleanup deletes the old Drive. Then revoke a replaced key.
 
    ```sh
    OLD_RECORD="$PRIVATE_SETUP_DIR/record-of-the-replaced-worker.json"
