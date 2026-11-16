@@ -1,7 +1,9 @@
 # Development toolchain
 
 The repository pins Node.js 26.13.0 and pnpm 12.16.1. Use these exact versions
-locally and in CI so frozen dependency installs are reproducible.
+locally and in CI so frozen dependency installs are reproducible. `engines.node`
+in `package.json` accepts any later 26.x patch, because Vercel builds with its
+current 26.x patch and cannot be pinned to one.
 
 ## Windows
 
