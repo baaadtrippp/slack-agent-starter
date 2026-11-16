@@ -69,11 +69,9 @@ Add your extension the same way. A tool runs in the worker Sandbox within the
   it can read. Copy the `openrouter.ai` entry with your API's header: the
   Sandbox firewall adds it to requests to that host. Add the key to `SETUP_ENV`
   and read it with `required(...)` next to `OPENROUTER_API_KEY`.
-- **npm packages.** Setup installs `packages` from that file into `/tmp/worker`
-  without install scripts. Pi looks for an extension's packages in
-  `node_modules` beside or above it, and the run writes extensions under
-  `/tmp/worker-state`, so a package needs an untested change in `prompt()`. Node
-  built-ins such as `fetch` need none.
+- **npm packages.** A tool cannot import an npm package yet
+  ([#49](https://github.com/baaadtrippp/slack-agent-starter/issues/49)). Use
+  Node built-ins such as `fetch`.
 - **Worker check.** The stand-in model in
   [`check-worker-fixture.mjs`](../apps/gateway/scripts/check-worker-fixture.mjs)
   compares the tool names with two fixed lists (`assert.deepEqual`); add yours
