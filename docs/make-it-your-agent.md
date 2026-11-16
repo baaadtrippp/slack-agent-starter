@@ -69,7 +69,8 @@ Add your extension the same way. A tool runs in the worker Sandbox within the
   it can read. Copy the `openrouter.ai` entry with your API's header: the
   Sandbox firewall adds it to requests to that host. Add the key to `SETUP_ENV`,
   read it with `required(...)` next to `OPENROUTER_API_KEY`, and pass it into
-  `setup()` as that key is.
+  `setup()` as that key is. A changed key needs a
+  [new worker](#apply-worker-changes).
 - **npm packages.** A tool cannot import an npm package yet
   ([#49](https://github.com/baaadtrippp/slack-agent-starter/issues/49)), except
   those Pi provides to extensions, such as `typebox`. Use Node built-ins such as
@@ -173,12 +174,13 @@ firewall rule.
    ```
 
 3. Replace the three `SANDBOX_*` settings, pasting each value from the setup
-   output when prompted. The list must show all three with type `Config`.
+   output when prompted. The loop must end without an error, and the list must
+   show all three with type `Config`, each created moments ago.
 
    ```sh
    for NAME in SANDBOX_WORKER_NAME SANDBOX_MANAGED_DRIVE SANDBOX_MANAGED_SEED; do
-     pnpm exec vercel env remove "$NAME" --environment production --yes --scope "$SCOPE"
-     pnpm exec vercel env add "$NAME" --environment production --no-sensitive --scope "$SCOPE" || break
+     pnpm exec vercel env remove "$NAME" --environment production --yes --scope "$SCOPE" &&
+       pnpm exec vercel env add "$NAME" --environment production --no-sensitive --scope "$SCOPE" || break
    done
    pnpm exec vercel env list --environment production --scope "$SCOPE"
    ```
@@ -213,7 +215,7 @@ firewall rule.
    deletes the old Drive. Then revoke a replaced key.
 
    ```sh
-   OLD_RECORD="$PRIVATE_SETUP_DIR/worker-record.json"
+   OLD_RECORD="$PRIVATE_SETUP_DIR/record-of-the-replaced-worker.json"
    (
      unset $(grep -oE '^[A-Z_][A-Z0-9_]*' "$SETUP_ENV")
      node --env-file="$SETUP_ENV" apps/gateway/scripts/bootstrap-worker.mjs \
