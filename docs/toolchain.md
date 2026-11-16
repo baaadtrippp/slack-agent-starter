@@ -54,8 +54,8 @@ Do not share `node_modules` between operating systems or CPU architectures.
   and tests.
 - `pnpm lint:ts` checks TypeScript with ESLint and typescript-eslint.
 - `pnpm test` runs the deterministic Vitest suite with Node.js.
-- `pnpm check:repository` rejects required-path omissions, private reference
-  material, local absolute paths, credentials, and runtime state visible to Git.
+- `pnpm check:repository` rejects required-path omissions, local absolute paths,
+  credentials, and runtime state visible to Git.
 - `pnpm scan:secrets` scans all current Git-visible regular files and Git
   history with redacted output. Ignored local credentials remain outside the
   current-file scan; force-tracked files remain included.
