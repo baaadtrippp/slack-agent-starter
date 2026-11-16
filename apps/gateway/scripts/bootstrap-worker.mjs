@@ -565,7 +565,16 @@ try {
     );
     const state = await loadRecord(
       file,
-      { projectId, teamId, ...binding, modelKeyDigest: sha256(key) },
+      {
+        projectId,
+        teamId,
+        ...binding,
+        modelKeyDigest: sha256(key),
+        // Absent with no tool APIs, so such a record is unchanged.
+        ...(toolApis.length && {
+          toolKeyDigest: sha256(JSON.stringify(allow)),
+        }),
+      },
       true,
     );
     await setup(file, state, identity, allow);

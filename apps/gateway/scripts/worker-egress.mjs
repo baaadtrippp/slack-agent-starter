@@ -12,11 +12,12 @@ export function workerAllow(gatewayHost, modelKey, toolApis, read) {
       { transform: [{ headers: { Authorization: 'Bearer ' + modelKey } }] },
     ],
   };
-  for (const entry of toolApis) {
+  for (const [index, entry] of toolApis.entries()) {
     const { host, header, key, ...extra } = entry;
     if (
       URL.parse('https://' + host)?.hostname !== host ||
       !host.includes('.') ||
+      host.endsWith('.') ||
       host.includes('*') ||
       isIP(host) ||
       Object.hasOwn(allow, host) ||
@@ -26,7 +27,8 @@ export function workerAllow(gatewayHost, modelKey, toolApis, read) {
         : !/^[\w!#$%&'*+.^`|~-]+$/.test(header ?? '') ||
           !/^[A-Z_][A-Z0-9_]*$/.test(key))
     )
-      throw new SetupError('Invalid toolApis entry: ' + JSON.stringify(entry));
+      // Only the position: a field may hold a key pasted by mistake.
+      throw new SetupError('Invalid toolApis entry at index ' + index + '.');
     allow[host] =
       key === undefined
         ? []

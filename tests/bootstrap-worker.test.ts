@@ -84,12 +84,12 @@ describe('worker egress', () => {
       ],
       'data.example.org': [],
     });
-    expect(Object.keys(result)).toHaveLength(4);
     expect(read.mock.calls).toEqual([['EXAMPLE_API_KEY']]);
   });
 
   it.each([
     { host: 'openrouter.ai' },
+    { host: 'openrouter.ai.', header: 'Authorization', key: 'OTHER_KEY' },
     { host: gateway },
     { host: 'API.example.com' },
     { host: 'https://api.example.com' },
@@ -101,14 +101,21 @@ describe('worker egress', () => {
     { host: 'api.example.com', header: 'X-Api-Key' },
     { host: 'api.example.com', key: 'EXAMPLE_API_KEY' },
     { host: 'api.example.com', header: 'X Api Key', key: 'EXAMPLE_API_KEY' },
-    { host: 'api.example.com', header: 'X-Api-Key', key: 'example-key' },
+    { host: 'api.example.com', header: 'X-Api-Key', key: 'pasted-key-value' },
     { host: 'api.example.com', headers: { 'X-Api-Key': 'EXAMPLE_API_KEY' } },
-  ])('refuses %j', (entry) => {
-    expect(() => allow([entry])).toThrow(SetupError);
+  ])('refuses %j without reading or echoing it', (entry) => {
+    const read = vi.fn();
+    expect(() => allow([entry], read)).toThrow(SetupError);
+    expect(() => allow([entry], read)).toThrow(
+      /^Invalid toolApis entry at index 0\.$/,
+    );
+    expect(read).not.toHaveBeenCalled();
   });
 
   it('refuses a repeated host', () => {
     const entry = { host: 'api.example.com' };
-    expect(() => allow([entry, entry])).toThrow('Invalid toolApis entry');
+    expect(() => allow([entry, entry])).toThrow(
+      /^Invalid toolApis entry at index 1\.$/,
+    );
   });
 });

@@ -62,7 +62,8 @@ Add your extension the same way. A tool runs in the worker Sandbox within the
 - **Tell the model.** Describe the tool in `instructions.md`, and drop any line
   there that says the agent cannot do what the tool does.
 - **Network access.** The worker can reach only the gateway origin and
-  `openrouter.ai`. For an API, add its host to `toolApis` at the top of
+  `openrouter.ai`. For an API, add an entry such as
+  `{ host: 'api.example.com' }` to `toolApis` at the top of
   [`bootstrap-worker.mjs`](../apps/gateway/scripts/bootstrap-worker.mjs), and
   call it over HTTPS.
 - **API keys.** Never put a key in the job, the worker's environment, or a file
