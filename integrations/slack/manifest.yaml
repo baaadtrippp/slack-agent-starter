@@ -35,6 +35,6 @@ settings:
   interactivity:
     is_enabled: true
     request_url: https://example.invalid/api/slack/interactions
-  org_deploy_enabled: false
+  org_deploy_enabled: true
   socket_mode_enabled: false
   token_rotation_enabled: false
