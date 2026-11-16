@@ -8,6 +8,7 @@ import { Drive, Sandbox, Snapshot } from '@vercel/sandbox';
 import { createClient } from 'redis';
 import { createManagedWorker } from '../src/managed-worker.ts';
 import { RedisRunStore } from '../src/store.ts';
+import { SetupError, workerAllow } from './worker-egress.mjs';
 
 const root = resolve(import.meta.dirname, '../../..');
 const workerDir = '/tmp/worker';
@@ -33,11 +34,16 @@ const deny = [
   '172.16.0.0/12',
   '192.168.0.0/16',
 ];
+// API hosts that tools may call besides the gateway and openrouter.ai, over
+// HTTPS. For a key, name a header and a SETUP_ENV variable that holds its whole
+// value (for Authorization, "Bearer " and the key). The Sandbox firewall adds
+// the header to requests to that host, so the worker never sees the key.
+const toolApis = [
+  // { host: 'api.example.com', header: 'X-Api-Key', key: 'EXAMPLE_API_KEY' },
+];
 const signal = (ms = 15_000) => AbortSignal.timeout(ms);
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 let phase = 'checking inputs';
-
-class SetupError extends Error {}
 
 function check(condition, message) {
   if (!condition) throw new SetupError(message);
@@ -267,7 +273,7 @@ async function verifyAssets(session, source) {
   );
 }
 
-async function setup(file, state, identity, key) {
+async function setup(file, state, identity, allow) {
   const provider = resources(state, identity);
   const { seedName, sandboxName, driveName } = provider;
   const options = {
@@ -370,7 +376,6 @@ async function setup(file, state, identity, key) {
   state.driveId = drive.driveId;
   await saveRecord(file, state);
 
-  const hostname = new URL(state.origin).hostname;
   let worker = await provider.sandbox(sandboxName);
   if (!worker) {
     check(
@@ -382,15 +387,7 @@ async function setup(file, state, identity, key) {
       name: sandboxName,
       sourceSandbox: seedName,
       mounts: { '/workspace': drive },
-      networkPolicy: {
-        allow: {
-          [hostname]: [],
-          'openrouter.ai': [
-            { transform: [{ headers: { Authorization: 'Bearer ' + key } }] },
-          ],
-        },
-        subnets: { deny },
-      },
+      networkPolicy: { allow, subnets: { deny } },
       signal: signal(45_000),
     });
   }
@@ -399,11 +396,11 @@ async function setup(file, state, identity, key) {
   const allowedHosts = Array.isArray(policy?.allow)
     ? policy.allow
     : Object.keys(policy?.allow ?? {});
+  const hosts = Object.keys(allow);
   // Provider readback can omit credential rules altogether.
   check(
-    allowedHosts.length === 2 &&
-      allowedHosts.includes(hostname) &&
-      allowedHosts.includes('openrouter.ai') &&
+    allowedHosts.length === hosts.length &&
+      hosts.every((host) => allowedHosts.includes(host)) &&
       !policy.subnets?.allow?.length &&
       deny.every((range) => policy.subnets?.deny?.includes(range)),
     'The worker egress allowlist does not match.',
@@ -558,12 +555,20 @@ try {
       /^sk-or-v1-[a-f0-9]+$/.test(key),
       'Provide a scoped OpenRouter API key.',
     );
+    const binding = settings();
+    // Before the record exists: fixing an entry is a commit it would refuse.
+    const allow = workerAllow(
+      new URL(binding.origin).hostname,
+      key,
+      toolApis,
+      required,
+    );
     const state = await loadRecord(
       file,
-      { projectId, teamId, ...settings(), modelKeyDigest: sha256(key) },
+      { projectId, teamId, ...binding, modelKeyDigest: sha256(key) },
       true,
     );
-    await setup(file, state, identity, key);
+    await setup(file, state, identity, allow);
   } else {
     await cleanup(
       file,

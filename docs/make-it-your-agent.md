@@ -62,14 +62,13 @@ Add your extension the same way. A tool runs in the worker Sandbox within the
 - **Tell the model.** Describe the tool in `instructions.md`, and drop any line
   there that says the agent cannot do what the tool does.
 - **Network access.** The worker can reach only the gateway origin and
-  `openrouter.ai`. For an API, add its host to `networkPolicy.allow` in the
-  `Sandbox.fork` call in `apps/gateway/scripts/bootstrap-worker.mjs`, and to the
-  egress check just below it, which expects exactly two hosts.
+  `openrouter.ai`. For an API, add its host to `toolApis` at the top of
+  [`bootstrap-worker.mjs`](../apps/gateway/scripts/bootstrap-worker.mjs), and
+  call it over HTTPS.
 - **API keys.** Never put a key in the job, the worker's environment, or a file
-  it can read. Copy the `openrouter.ai` entry with your API's header: the
-  Sandbox firewall adds it to requests to that host. Add the key to `SETUP_ENV`,
-  read it with `required(...)` next to `OPENROUTER_API_KEY`, and pass it into
-  `setup()` as that key is. A changed key needs a
+  it can read. In the host's `toolApis` entry, name the header and a `SETUP_ENV`
+  variable that holds its whole value: the Sandbox firewall adds the header to
+  requests to that host. A changed key needs a
   [new worker](#apply-worker-changes).
 - **npm packages.** A tool cannot import an npm package yet
   ([#49](https://github.com/baaadtrippp/slack-agent-starter/issues/49)), except
