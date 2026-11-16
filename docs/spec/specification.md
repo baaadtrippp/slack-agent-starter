@@ -1,6 +1,6 @@
 # Slack agent starter specification
 
-Status: reviewed baseline (derived from draft 0.3, 2 November 2026)
+Status: reviewed baseline
 
 This file is the canonical product and architecture specification. Other
 documents may summarize it, but changes to scope, behavior, or architecture must
@@ -165,15 +165,11 @@ transcript. Any internal member of the enabled channel can explicitly save a
 note or ask Pi to use those notes. The audience is the same enabled workspace
 and channel, including other threads there. Automatic extraction is deferred.
 
-**Proposed access default:** enable selected public and private channels where
-the bot is invited. Any member of an enabled channel may contribute to its agent
-threads. DMs and group DMs are deferred.
-
 **Accepted access (O01):** enable the selected public channel only. Any internal
 member of that channel may invoke the app. Reject externally shared channels and
-external users. DMs and private channels remain disabled; the broader
-private-channel proposal remains open. O07 app identity and channel are selected
-in private deployment configuration.
+external users. DMs and private channels remain disabled; enabling private
+channels where the bot is invited remains open. O07 app identity and channel are
+selected in private deployment configuration.
 
 ## 3. Architecture
 
@@ -400,10 +396,9 @@ generated files have separate limits. The defaults are one active run per
 thread, 60 seconds per run, 16 KiB per input file or link, 256 KiB per generated
 file, and no workspace-wide cap on concurrent Pi processes. The
 [README](../../README.md#current-limits) lists all of them. They are documented
-defaults, not tested targets; the live checklist includes one realistic task to
-check whether they hold. Reject excess visibly; when the file tool refuses every
-write in a run, the answer says that no file is attached. These are application
-limits, not provider limits.
+defaults, not tested targets. Reject excess visibly; when the file tool refuses
+every write in a run, the answer says that no file is attached. These are
+application limits, not provider limits.
 
 **Open model budget:** Select one model that passes tool, file, and image cases
 and set an explicit OpenRouter spending cap before deployment. Never upgrade

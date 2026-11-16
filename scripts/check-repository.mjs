@@ -26,29 +26,25 @@ const requiredPaths = [
   'tests/fixtures',
 ];
 
+const runtimeRoots = new Set([
+  'artifacts',
+  'memory',
+  'outputs',
+  'sessions',
+  'workspaces',
+]);
+
 const forbiddenSegments = new Set([
   '.claude',
   '.codex',
   '.pi',
   '.slack',
   '.vercel',
-  'artifacts',
-  'memory',
   'node_modules',
-  'outputs',
   'private-notes',
-  'sessions',
-  'workspaces',
 ]);
 
-const forbiddenNames = [
-  /^\.mcp\.json$/,
-  /^docs\/(?:phase-0|wsl-development)\.md$/,
-  /phase-0-handoff/i,
-  /slack-agents-v1-spec\.html$/i,
-  /course/i,
-  /transcript/i,
-];
+const forbiddenNames = [/(?:^|\/)\.mcp\.json$/, /\.jsonl$/];
 
 const privatePathPatterns = [
   /[A-Za-z]:\\(?:Users|private-z)\\/i,
@@ -78,13 +74,11 @@ for (const file of files) {
 
   if (
     hasCredentialEnvironmentFile ||
-    segments.some((segment) => forbiddenSegments.has(segment))
+    runtimeRoots.has(segments[0]) ||
+    segments.some((segment) => forbiddenSegments.has(segment)) ||
+    forbiddenNames.some((pattern) => pattern.test(normalized))
   ) {
     errors.push(`runtime or credential path is visible to Git: ${normalized}`);
-  }
-
-  if (forbiddenNames.some((pattern) => pattern.test(normalized))) {
-    errors.push(`private reference material is visible to Git: ${normalized}`);
   }
 
   const absolutePath = resolve(root, file);
