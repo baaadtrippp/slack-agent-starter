@@ -62,8 +62,8 @@ flowchart LR
 Switches are gateway environment variables, on when set to `1`. The quickstart
 turns on `SLACK_FILE_EXCHANGE` and `SLACK_PUBLIC_URL_INPUT`.
 
-- **Mentions** start work, at the top level or in an existing thread. In a
-  thread, the agent first reads the earlier messages.
+- **Mentions** start work, at the top level or in an existing thread. The first
+  mention in a thread reads its earlier messages.
 - **Replies** in the thread continue the same Pi session without a mention, also
   after the agent asked a question.
 - **Busy threads**: a reply sent while a run is active is not submitted, and the
