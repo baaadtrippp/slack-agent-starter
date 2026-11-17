@@ -110,7 +110,8 @@ the gateway must come from the same commit:
 [apply the change](#apply-worker-changes) as for any worker change.
 
 Two related values live elsewhere. The image edge limit of 1,024 pixels is in
-[`apps/gateway/src/slack-file.ts`](../apps/gateway/src/slack-file.ts). The
+[`apps/gateway/src/slack-file.ts`](../apps/gateway/src/slack-file.ts); a larger
+image is sent as Slack's 1,024-pixel thumbnail when Slack has one. The
 instructions file tells the model that answers are cut after 4,000 characters;
 change that line with `answerChars`, which needs a new worker. The model writes
 a generated file as tool-call output within the 60-second run, so the run time

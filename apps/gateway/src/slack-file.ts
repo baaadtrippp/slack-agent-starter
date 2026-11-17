@@ -89,6 +89,12 @@ const metadata = z.looseObject({
   size: z.number().int().positive(),
   url_private: z.url(),
 });
+// Slack's thumbnail of an image larger than 1,024 pixels on an edge.
+const largeImage = z.object({
+  original_w: z.number(),
+  original_h: z.number(),
+  thumb_1024: z.url(),
+});
 
 export type SlackFileKind = 'csv' | 'pdf' | 'png' | 'jpeg' | 'text';
 
@@ -170,13 +176,21 @@ export async function downloadSlackFile(
   if (!parsed.success) return unsupported;
   const file = parsed.data;
   if (selectSlackFileKind(file) !== kind) return unsupported;
-  if (file.size > byteLimit) return oversized;
-  const url = new URL(file.url_private);
+  // A larger image is replaced by its thumbnail, checked like the original.
+  const large = largeImage.safeParse(file);
+  const thumbnail =
+    (kind === 'png' || kind === 'jpeg') &&
+    large.success &&
+    Math.max(large.data.original_w, large.data.original_h) > maxImageEdge
+      ? large.data.thumb_1024
+      : undefined;
+  if (!thumbnail && file.size > byteLimit) return oversized;
+  const url = new URL(thumbnail ?? file.url_private);
   if (
     url.origin !== 'https://files.slack.com' ||
     url.username ||
     url.password ||
-    !url.pathname.startsWith('/files-pri/')
+    !url.pathname.startsWith(thumbnail ? '/files-tmb/' : '/files-pri/')
   )
     return unsupported;
 
@@ -205,7 +219,8 @@ export async function downloadSlackFile(
       ? oversized
       : inaccessible;
   }
-  if (bytes.length !== file.size) return inaccessible;
+  // Slack does not state a thumbnail's byte size.
+  if (!thumbnail && bytes.length !== file.size) return inaccessible;
   const valid =
     kind === 'pdf'
       ? bytes.subarray(0, 5).equals(Buffer.from('%PDF-'))

@@ -254,6 +254,62 @@ describe('Slack PNG validation and download', () => {
       ).toMatch(/one Slack-hosted PNG/);
     }
   });
+
+  // Synthetic shape of a Slack file larger than 1,024 pixels on an edge.
+  const large = {
+    ...file,
+    size: 3 * 1024 * 1024,
+    original_w: 4_032,
+    original_h: 3_024,
+    thumb_1024:
+      'https://files.slack.com/files-tmb/TTEST1-FTEST1-0abc/fixture_1024.png',
+  };
+
+  it('downloads the 1,024-pixel thumbnail of a larger PNG', async () => {
+    fileServer.mockResolvedValue(new Response(png));
+    expect(await downloadSlackFile(large, 'synthetic-token', 'png')).toEqual(
+      png,
+    );
+    expect(fileServer).toHaveBeenCalledExactlyOnceWith(
+      new URL(large.thumb_1024),
+      expect.objectContaining({ authorization: 'Bearer synthetic-token' }),
+    );
+  });
+
+  it('refuses a larger PNG without a usable thumbnail', async () => {
+    const wide = Buffer.from(png);
+    wide.writeUInt32BE(1_025, 16);
+    // No thumbnail: the original is downloaded and refused as before.
+    const bare = { ...large, size: wide.length, thumb_1024: undefined };
+    fileServer.mockResolvedValueOnce(new Response(wide));
+    expect(await downloadSlackFile(bare, 'synthetic-token', 'png')).toMatch(
+      /one Slack-hosted PNG/,
+    );
+    expect(fileServer).toHaveBeenCalledExactlyOnceWith(
+      new URL(file.url_private),
+      expect.anything(),
+    );
+    // A thumbnail off the Slack thumbnail path is not downloaded.
+    for (const thumb_1024 of [
+      'https://files.slack.com.example/files-tmb/fixture_1024.png',
+      'https://files.slack.com/files-pub/fixture_1024.png',
+    ])
+      expect(
+        await downloadSlackFile(
+          { ...large, thumb_1024 },
+          'synthetic-token',
+          'png',
+        ),
+      ).toMatch(/one Slack-hosted PNG/);
+    expect(fileServer).toHaveBeenCalledOnce();
+    // A thumbnail in another format or still over 1,024 pixels is refused.
+    for (const bytes of [Buffer.from('ffd8ffd9', 'hex'), wide]) {
+      fileServer.mockResolvedValueOnce(new Response(bytes));
+      expect(await downloadSlackFile(large, 'synthetic-token', 'png')).toMatch(
+        /one Slack-hosted PNG/,
+      );
+    }
+  });
 });
 
 describe('Slack text and source validation', () => {
@@ -407,6 +463,25 @@ describe('Slack JPEG validation and download', () => {
         'jpeg',
       ),
     ).toBe('The JPEG exceeds the 2,048 KiB limit. Attach a smaller file.');
+  });
+
+  it('downloads the 1,024-pixel thumbnail of a larger JPEG', async () => {
+    const large = {
+      ...file,
+      size: 3 * 1024 * 1024,
+      original_w: 3_024,
+      original_h: 4_032,
+      thumb_1024:
+        'https://files.slack.com/files-tmb/TTEST1-FTEST1-0abc/fixture_1024.jpg',
+    };
+    fileServer.mockResolvedValue(new Response(jpeg));
+    expect(await downloadSlackFile(large, 'synthetic-token', 'jpeg')).toEqual(
+      jpeg,
+    );
+    expect(fileServer).toHaveBeenCalledExactlyOnceWith(
+      new URL(large.thumb_1024),
+      expect.objectContaining({ authorization: 'Bearer synthetic-token' }),
+    );
   });
 
   it('rejects truncated, malformed, oversized-dimension, and mislabelled JPEGs', async () => {
