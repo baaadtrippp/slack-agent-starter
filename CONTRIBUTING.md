@@ -1,23 +1,17 @@
 # Contributing
 
-Read [AGENTS.md](AGENTS.md) and the canonical
-[specification](docs/spec/specification.md) before making a change.
+- For anything beyond a small fix, open an issue first so we can agree on the
+  approach.
+- Run the checks with the [test Redis](docs/toolchain.md#checks) running:
 
-Keep each change small and focused. Before writing code, state its user outcome,
-affected F/AC IDs and open decisions, non-goals, smallest end-to-end
-implementation, and the evidence and its kind (deterministic, provider
-integration, or live Slack). Update [traceability](docs/spec/traceability.md)
-only with evidence that actually ran.
+  ```sh
+  TEST_REDIS_URL=redis://127.0.0.1:16379 pnpm check
+  pnpm scan:secrets
+  ```
 
-Before opening a pull request:
-
-1. run the repository checks documented in the README;
-2. review the diff and tracked files for secrets, private material, local paths,
-   session data, and generated outputs;
-3. state which checks ran and which provider or live boundaries remain
-   unverified;
-4. confirm that no proposed default was silently promoted to an accepted
-   decision.
-
-Never commit credentials. Use the credential-free environment example and
-configure real values through local or provider secret storage.
+- In the pull request, say what you tested against real Slack and Vercel, and
+  what you did not.
+- Keep a pull request under 400 added lines, not counting `pnpm-lock.yaml`.
+  Split bigger work into consecutive pull requests.
+- Never commit credentials or real data. [AGENTS.md](AGENTS.md) has the coding
+  rules.

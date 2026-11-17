@@ -1,92 +1,60 @@
 # Developer instructions
 
-## Source of truth
-
-For Chat SDK work, read the installed `chat-sdk` skill first. Prioritize the
-installed package's `docs/` and `resources/`, then `chat-sdk.dev`. Use Context7
-only when those sources leave a gap; this overrides generic Context7-first
-guidance for this SDK.
-
-Read [docs/spec/specification.md](docs/spec/specification.md) before changing
-application behavior. It is the canonical specification. Use its stable feature
-IDs (F01–F13), acceptance IDs (AC01–AC13), and open-decision IDs (O01–O07). Keep
-[docs/spec/traceability.md](docs/spec/traceability.md) current when a change
-adds evidence.
-
-Do not treat proposed defaults as accepted decisions. Do not implement behavior
-gated by an open decision until that decision is settled.
+The [specification](docs/spec/specification.md) defines how the product behaves.
+Read the relevant section before changing behavior, and update it in the same
+PR. Do not build anything it lists as deferred or still open without the owner's
+agreement.
 
 ## Architecture boundaries
 
-- Keep the Slack gateway and agent worker in separate packages and processes.
-- The gateway owns Slack calls, access checks, presentation, Upstash state, and
-  coordination. It must not run an agent/model loop.
-- Use one active Vercel Sandbox and one persistent writable Vercel Drive for the
-  initial worker. Independent Pi processes share the sandbox and Drive; each
-  Slack thread maps to its exact native session and workspace.
-- Prefer acpx + pi-acp. Verify that path before proposing a new adapter.
-- OpenRouter is the initial model provider. NVIDIA is only an optional
-  alternative. Do not add an OpenAI API dependency, subscription-based runtime
-  authentication, or automatic provider fallback.
-- Runtime input is limited to Slack messages/attachments and explicitly supplied
-  public URLs. Account connectors, browser automation, schedules, a runtime MCP
-  catalog, additional databases/queues, and alternative compute vendors are
-  deferred.
-- Never treat a work directory or prompt as a security boundary. One writer owns
-  each native session; shared-memory writes are serialized.
-
-## Before implementation
-
-State assumptions and success criteria. Surface an ambiguity when it changes
-product behavior or architecture. Prefer the simplest approach that proves the
-required behavior.
-
-For a non-trivial change, state the user outcome, the F/AC IDs and open
-decisions it touches, the non-goals, the smallest end-to-end implementation, and
-the evidence and its kind (deterministic, provider integration, or live Slack)
-before writing code.
+- The gateway (`apps/gateway`) and the worker (`apps/worker`) are separate
+  packages and processes.
+- The gateway owns Slack calls, access checks, presentation, Redis state, and
+  coordination. It never runs the model loop.
+- The worker never calls Slack and never holds Slack, Redis, or model keys. The
+  Sandbox firewall injects the model key and tool API keys.
+- One active Vercel Sandbox and one persistent Vercel Drive. Pi processes for
+  different threads share them; each Slack thread maps to its exact Pi session
+  and workspace.
+- Pi runs through acpx and pi-acp. Verify that path before proposing another
+  adapter.
+- OpenRouter is the only model provider. No OpenAI API dependency,
+  subscription-based runtime authentication, or automatic provider fallback.
+- Inputs are Slack messages, Slack files, and explicitly supplied public URLs.
+  Do not add account connectors, browser automation, schedules, a runtime MCP
+  catalog, more databases or queues, or other compute vendors.
+- A work directory or prompt is not a security boundary. All threads share one
+  Drive, so the agent gets no shell or open file access.
+- One writer owns each Pi session. Serialize shared-note writes.
 
 ## Implementation rules
 
-- Write the minimum code the change requires. Do not add speculative
-  configuration, extension points, plugin systems, or abstractions for one use.
-- Make surgical changes and follow the existing style. Do not refactor adjacent
-  code or remove pre-existing material unless the task requires it.
-- Remove imports, variables, and files made obsolete by your own change.
-- When a change replaces a switch or mode, delete the old one in the same PR.
+- Write the minimum code the change needs. No speculative configuration,
+  extension points, or abstractions for one use.
+- Make surgical changes in the existing style. Do not refactor adjacent code.
+- Remove what your change makes obsolete. When a change replaces a switch or
+  mode, delete the old one in the same PR.
 - A PR adds at most 400 lines, not counting `pnpm-lock.yaml`; deletions do not
   count. Measure with `git diff --numstat origin/main...HEAD`. Split larger work
   into consecutive PRs.
-- Exact-pin compatibility-sensitive runtime and agent packages. Keep the
-  repository toolchain pinned.
-- Keep secrets, `.env` files, authentication state, `.vercel`, native sessions,
-  transcripts, memory, workspaces, and outputs out of Git. Examples must contain
+- Exact-pin runtime and agent packages. Keep the toolchain pinned.
+- Keep secrets, `.env` files, authentication state, `.vercel`, Pi sessions,
+  transcripts, notes, workspaces, and outputs out of Git. Examples hold
   placeholders only.
-- Use only synthetic, public-safe fixtures in the repository.
-- Public documentation describes the product and reusable development steps.
-  Keep personal workstation setup, account inventories, progress journals,
-  private handoffs, and operator-specific connection configuration outside Git.
+- Fixtures are synthetic and safe to publish. Keep personal setup, account
+  details, and progress notes out of the repository.
+- Run `pnpm format` before the checks; they fail on any formatting difference.
 
 ## Verification
 
-Select acceptance checks before implementation, make them fail for the missing
-behavior when practical, then implement until they pass. Run the smallest
-meaningful checks first and stop repeating them once evidence is sufficient.
-
-Never claim a boundary was verified when it was mocked. A fake worker is valid
-for deterministic gateway tests but cannot prove Pi, Sandbox, Drive, OpenRouter,
-or live Slack behavior. Record real provider and live Slack checks separately.
-Do not mark an unperformed check as passing.
-
-## Parallel work
-
-For non-trivial tasks with two or more independent workstreams, use up to five
-subagents. Give agents disjoint file ownership, keep the primary agent
-responsible for coordination and final verification, and wait for required
-results. Stay single-agent for trivial or tightly sequential work.
-
-## Communication
-
-Use plain language. Report what changed, why, the checks that ran, and any real
-limitation. Do not silently expand the scope, change the harness, merge gateway
-and worker responsibilities, or add providers.
+- Run `TEST_REDIS_URL=redis://127.0.0.1:16379 pnpm check` and
+  `pnpm scan:secrets` ([test Redis](docs/toolchain.md#checks)).
+- When practical, write a test that fails for the missing behavior first.
+- Never claim a boundary was verified when it was mocked. A fake worker or
+  stand-in model proves gateway and worker logic, not Pi, Sandbox, Drive,
+  OpenRouter, or live Slack behavior. Report real provider and live Slack checks
+  separately, and never mark an unperformed check as passing.
+- Record new real provider or live Slack evidence in
+  [How it's tested](docs/spec/traceability.md).
+- A worker change reaches a running installation only through a new worker: see
+  [Apply worker changes](docs/make-it-your-agent.md#apply-worker-changes).
