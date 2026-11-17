@@ -15,6 +15,11 @@ out, Status and Stop buttons, thumbs feedback, and shared channel notes
 keys and runs no shell commands
 ([why](docs/make-it-your-agent.md#why-the-agent-has-no-shell)).
 
+![A Slack thread: the bot describes an attached image, then writes a Markdown
+file and a CSV file on request](docs/assets/demo.gif)
+
+A real thread on a test installation; typing and waiting are sped up.
+
 ## How it works
 
 ```mermaid
