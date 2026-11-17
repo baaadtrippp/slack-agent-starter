@@ -51,6 +51,9 @@ The full log, with dates and commits, is in this file's Git history.
   deterministic only.
 - F07: Live runs show only the final Completed status. Intermediate and failure
   states have no live or provider check.
+- F07: The model usage on the Completed status is deterministic only. No
+  provider or live run has shown it, so it is unverified that real session files
+  mark OpenRouter's billed cost (`totalFromProvider`) for the deployed model.
 - F08: No live run combines a file-bearing question, Sandbox replacement, a
   gateway restart, and an ordinary reply.
 - F09: No intermediate Status edit was captured live. Provider Stop checks used

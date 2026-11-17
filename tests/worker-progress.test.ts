@@ -12,6 +12,7 @@ const {
   durableProviderQuota,
   isProviderQuotaSignal,
   recoverDriveWriteFailure,
+  runUsage,
   workerFailureCategory,
 } = sandboxWorker;
 
@@ -102,6 +103,95 @@ describe('Sandbox worker progress', () => {
         artifact: { sha256: 'a'.repeat(64) },
       }).success,
     ).toBe(false);
+  });
+
+  it('accepts optional bounded usage on a worker result', () => {
+    const result = {
+      version: 1,
+      runId: '00000000-0000-4000-8000-000000000001',
+      generation: 1,
+      eventId: '00000000-0000-4000-8000-000000000002',
+      sequence: 2,
+      type: 'completed',
+      text: 'Answer',
+    } as const;
+    for (const usage of [undefined, { tokens: 150 }, { tokens: 1, cost: 0 }])
+      expect(workerResultSchema.safeParse({ ...result, usage }).success).toBe(
+        true,
+      );
+    for (const usage of [
+      { tokens: 0 },
+      { tokens: 1.5 },
+      { tokens: 150, cost: -0.01 },
+      // A NaN cost arrives as null after JSON serialization.
+      { tokens: 150, cost: null },
+      { tokens: 150, model: 'synthetic' },
+      { cost: 0.01 },
+    ])
+      expect(workerResultSchema.safeParse({ ...result, usage }).success).toBe(
+        false,
+      );
+  });
+
+  it('sums this turn’s model usage and keeps only a provider-billed cost', () => {
+    const usage = (total: number, totalFromProvider?: boolean) => ({
+      input: 100,
+      output: 20,
+      cacheRead: 30,
+      cacheWrite: 0,
+      totalTokens: 150,
+      cost: {
+        input: 0.0001,
+        output: 0.0002,
+        cacheRead: 0,
+        cacheWrite: 0,
+        total,
+        ...(totalFromProvider === undefined ? {} : { totalFromProvider }),
+      },
+    });
+    const message = (role: string, value?: object) => ({
+      type: 'message',
+      message: { role, ...(value ? { usage: value } : {}) },
+    });
+    // Pinned Pi records zeros without a provider flag when no usage arrives.
+    const unreported = message('assistant', {
+      ...usage(0),
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      totalTokens: 0,
+    });
+    const billed = [
+      message('user', usage(1, true)),
+      message('assistant', usage(0.001, true)),
+      message('toolResult'),
+      message('toolResult', usage(0.0002, true)),
+      { type: 'usage', usage: usage(0.0003, true) },
+      { type: 'compaction', usage: usage(0.0004, true) },
+      { type: 'compaction' },
+      { type: 'branch_summary', usage: usage(0.0005, true) },
+      unreported,
+    ];
+
+    expect(runUsage(billed)).toEqual({
+      tokens: 750,
+      cost: expect.closeTo(0.0024, 10),
+    });
+    expect(runUsage([...billed, message('assistant', usage(0.001))])).toEqual({
+      tokens: 900,
+    });
+    expect(
+      runUsage([...billed, message('assistant', usage(0.001, false))]),
+    ).toEqual({ tokens: 900 });
+    expect(runUsage([message('assistant', usage(Number.NaN, true))])).toEqual({
+      tokens: 150,
+    });
+    expect(runUsage([unreported])).toBeUndefined();
+    expect(runUsage([])).toBeUndefined();
+    for (const bad of [{ input: Number.NaN }, { output: -1 }, { input: '5' }])
+      expect(
+        runUsage([message('assistant', { ...usage(0.001, true), ...bad })]),
+      ).toBeUndefined();
   });
 
   it('reports a refused file only when no write_artifact call succeeded', () => {
@@ -271,13 +361,18 @@ describe('Sandbox worker progress', () => {
       failureCategory: 'drive_full',
     });
     expect(result.text).not.toContain('Saved');
-    expect(
-      recoverDriveWriteFailure(
-        {},
-        { type: 'completed', text: 'Answer', artifactRefused: true },
-        full,
-      ),
-    ).not.toHaveProperty('artifactRefused');
+    const recovered = recoverDriveWriteFailure(
+      {},
+      {
+        type: 'completed',
+        text: 'Answer',
+        artifactRefused: true,
+        usage: { tokens: 150 },
+      },
+      full,
+    );
+    expect(recovered).not.toHaveProperty('artifactRefused');
+    expect(recovered).not.toHaveProperty('usage');
     expect(() =>
       recoverDriveWriteFailure(
         { session: { seedRunId: 'retained' } },

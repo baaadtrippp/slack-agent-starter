@@ -103,7 +103,27 @@ export const BUSY_REPLY =
 
 export const STARTING_STATUS = 'Starting…';
 
-function statusText(run: RunRecord) {
+const tokenFormat = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+});
+// Two significant digits keep a small cost from showing as $0.00.
+const costFormat = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumSignificantDigits: 2,
+  maximumSignificantDigits: 2,
+  roundingPriority: 'morePrecision',
+});
+
+function usageText(usage: WorkerResult['usage']) {
+  if (!usage) return '';
+  const cost =
+    usage.cost === undefined ? '' : ' · ' + costFormat.format(usage.cost);
+  return ' ' + tokenFormat.format(usage.tokens) + ' tokens' + cost;
+}
+
+export function statusText(run: RunRecord) {
   switch (run.state) {
     case 'stopping':
       return 'Stopping…';
@@ -112,9 +132,12 @@ function statusText(run: RunRecord) {
     case 'publishing':
       return 'Finishing: publishing the result…';
     case 'completed':
-      if (run.result?.artifact && run.artifactPublication !== 'uploaded')
-        return 'Completed. The text result is in this thread. Attachment delivery is unconfirmed.';
-      return 'Completed. The result is in this thread.';
+      return (
+        (run.result?.artifact && run.artifactPublication !== 'uploaded'
+          ? 'Completed. The text result is in this thread. Attachment delivery is unconfirmed.'
+          : 'Completed. The result is in this thread.') +
+        usageText(run.result?.usage)
+      );
     case 'worker_failed':
       return 'Failed. See the reply in this thread for details.';
     case 'publication_uncertain':
@@ -485,7 +508,12 @@ export function createGateway({
       if (!(await store.completePublication(run, messageId)))
         throw new Error('Publication state was not recorded');
       console.info(
-        JSON.stringify({ runId: run.runId, phase: 'published', messageId }),
+        JSON.stringify({
+          runId: run.runId,
+          phase: 'published',
+          messageId,
+          usage: result.usage,
+        }),
       );
     } catch {
       const stateRecorded = await store

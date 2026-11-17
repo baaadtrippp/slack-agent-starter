@@ -214,6 +214,14 @@ export const workerResultSchema = z
       .optional(),
     // A write_artifact call failed and none succeeded.
     artifactRefused: z.literal(true).optional(),
+    // The run's model tokens; cost only when the provider billed every part.
+    usage: z
+      .object({
+        tokens: z.int().positive(),
+        cost: z.number().nonnegative().optional(),
+      })
+      .strict()
+      .optional(),
     session: workerSessionSchema.optional(),
     text: z.string().min(1).max(limits.answerChars),
   })

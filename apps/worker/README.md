@@ -70,9 +70,10 @@ With `--paid` (for example `check-worker.mjs --paid "$CHECK_RECORD"`), the check
 then removes the stand-in's `openrouter.ai` override and runs one real turn with
 `OPENROUTER_MODEL`. The Sandbox firewall adds the setup's `OPENROUTER_API_KEY`,
 as in production. The model is asked to repeat a random code, and the answer
-must contain it. This proves the paid model path from the worker, for the cost
-of one small model call. The callback is still a stand-in, so it does not prove
-live Slack.
+must contain it. The result must report tokens, and the check prints its usage;
+a `cost` there means OpenRouter reported the billed amount. This proves the paid
+model path from the worker, for the cost of one small model call. The callback
+is still a stand-in, so it does not prove live Slack.
 
 An interrupt such as Ctrl-C skips cleanup. Then, or if cleanup failed, run:
 
