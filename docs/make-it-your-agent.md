@@ -193,10 +193,10 @@ firewall rule.
 
 3. Replace the three `SANDBOX_*` settings, pasting each value from the setup
    output when prompted. Where `add` cannot prompt, such as in a coding agent's
-   shell, paste the three setup lines into the shell as variables and pipe each
-   value in: change the `add` line to start with `printf %s "${!NAME}" |`. The
-   loop must end without an error, and the list must show all three with type
-   `Config`, each created moments ago.
+   shell, export the three setup lines in that shell and pipe each value in:
+   change the `add` line to start with `printenv "$NAME" |`. The loop must end
+   without an error, and the list must show all three with type `Config`, each
+   created moments ago.
 
    ```sh
    for NAME in SANDBOX_WORKER_NAME SANDBOX_MANAGED_DRIVE SANDBOX_MANAGED_SEED; do

@@ -41,8 +41,8 @@ docker run --rm --detach \
   --publish 127.0.0.1:16379:6379 \
   redis@sha256:4eec4565e45aa0b3966554c866bc73211e281b0b3d89fe9a33c982e6faca809d \
   redis-server --save "" --appendonly no &&
-  { TEST_REDIS_URL=redis://127.0.0.1:16379 pnpm check
-    docker stop slack-agent-starter-test-redis; }
+  { TEST_REDIS_URL=redis://127.0.0.1:16379 pnpm check; CHECK_STATUS=$?
+    docker stop slack-agent-starter-test-redis; test "$CHECK_STATUS" = 0; }
 pnpm scan:secrets
 ```
 
