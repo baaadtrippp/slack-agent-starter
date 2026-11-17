@@ -87,16 +87,17 @@ Then [apply the change](#apply-worker-changes).
 
 The content limits are defaults in
 [`packages/contracts/src/limits.ts`](../packages/contracts/src/limits.ts), one
-name per purpose: Slack files, public links, generated files, PDF text, thread
-context, answers, and shared notes. Edit a value there, run the checks, and
-deploy the gateway from the new commit, as in
+name per purpose: Slack files, images, public links, generated files, PDF text,
+thread context, answers, and shared notes. Edit a value there, run the checks,
+and deploy the gateway from the new commit, as in
 [quickstart section 4](service-setup.md#4-configure-and-deploy-the-gateway). The
 gateway sends the limits with every job and the worker enforces the values it
 receives, so a changed value needs no new worker. Replies and the
 `write_artifact` tool description show the new values. Tests that check a reply
-text expect the defaults; update them with your values. Two limits have fixed
+text expect the defaults; update them with your values. Three limits have fixed
 bounds, noted beside them in the file: `answerChars` must fit 32 KiB message
-bodies, and `sourcesPerThread` must fit the worker's 16 KiB source catalog.
+bodies, `sourcesPerThread` must fit the worker's 16 KiB source catalog, and
+`imageInputBytes` must stay below the size at which Pi re-encodes an image.
 
 `RUN_DURATION_MS` in the same file sets the 60-second run time, which also needs
 only a gateway deploy. The gateway's Vercel Function waits for each run in the

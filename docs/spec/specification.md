@@ -393,12 +393,12 @@ live native Pi session to another harness.
 limits are defaults kept in one file, `packages/contracts/src/limits.ts`, with
 one name per purpose; the gateway sends them with every job. Inputs and
 generated files have separate limits. The defaults are one active run per
-thread, 60 seconds per run, 16 KiB per input file or link, 256 KiB per generated
-file, and no workspace-wide cap on concurrent Pi processes. The
-[README](../../README.md#current-limits) lists all of them. They are documented
-defaults, not tested targets. Reject excess visibly; when the file tool refuses
-every write in a run, the answer says that no file is attached. These are
-application limits, not provider limits.
+thread, 60 seconds per run, 16 KiB per input file or link, 2 MiB per PNG or JPEG
+image, 256 KiB per generated file, and no workspace-wide cap on concurrent Pi
+processes. The [README](../../README.md#current-limits) lists all of them. They
+are documented defaults, not tested targets. Reject excess visibly; when the
+file tool refuses every write in a run, the answer says that no file is
+attached. These are application limits, not provider limits.
 
 **Open model budget:** Select one model that passes tool, file, and image cases
 and set an explicit OpenRouter spending cap before deployment. Never upgrade

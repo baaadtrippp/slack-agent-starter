@@ -3,6 +3,9 @@
 // the worker enforces the values it receives.
 export const limits = {
   inputFileBytes: 16 * 1024,
+  // PNG and JPEG files. Keep it below 3,456 KiB: Pi re-encodes an image whose
+  // base64 is 4.5 MiB or more, and the worker then fails the run.
+  imageInputBytes: 2 * 1024 * 1024,
   publicLinkBytes: 16 * 1024,
   generatedFileBytes: 256 * 1024,
   pdfTextBytes: 16 * 1024,

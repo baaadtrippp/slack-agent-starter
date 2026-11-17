@@ -3341,12 +3341,12 @@ describe.skipIf(!redisUrl)(
         file: {
           name: 'oversized.png',
           mode: 'hosted',
-          size: 16 * 1024 + 1,
+          size: 2 * 1024 * 1024 + 1,
           mimetype: 'image/png',
           url_private:
             'https://files.slack.com/files-pri/TTEST1-FTEST1/oversized.png',
         },
-        notice: 'The PNG exceeds the 16 KiB limit. Attach a smaller file.',
+        notice: 'The PNG exceeds the 2,048 KiB limit. Attach a smaller file.',
         requests: 0,
       },
       {

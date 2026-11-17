@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { crc32 } from 'node:zlib';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   downloadSlackFile,
@@ -196,11 +197,11 @@ describe('Slack PNG validation and download', () => {
       ).toMatch(/one Slack-hosted PNG/);
     expect(
       await downloadSlackFile(
-        { ...file, size: 16 * 1024 + 1 },
+        { ...file, size: 2 * 1024 * 1024 + 1 },
         'synthetic-token',
         'png',
       ),
-    ).toMatch(/exceeds the 16 KiB limit/);
+    ).toBe('The PNG exceeds the 2,048 KiB limit. Attach a smaller file.');
     expect(fileServer).not.toHaveBeenCalled();
     expect(await downloadSlackFile(file, 'synthetic-token', 'png')).toEqual(
       png,
@@ -209,6 +210,27 @@ describe('Slack PNG validation and download', () => {
       new URL(file.url_private),
       expect.objectContaining({ authorization: 'Bearer synthetic-token' }),
     );
+  });
+
+  it('accepts a PNG over the 16 KiB file limit', async () => {
+    // A comment chunk after IHDR pads the image to 16 KiB + 1 byte.
+    const data = Buffer.from(
+      'Comment\0'.padEnd(16 * 1024 + 1 - png.length - 12),
+    );
+    const type = Buffer.from('tEXt');
+    const chunk = Buffer.alloc(12 + data.length);
+    chunk.writeUInt32BE(data.length);
+    Buffer.concat([type, data]).copy(chunk, 4);
+    chunk.writeUInt32BE(crc32(Buffer.concat([type, data])), 8 + data.length);
+    const bytes = Buffer.concat([png.subarray(0, 33), chunk, png.subarray(33)]);
+    fileServer.mockResolvedValue(new Response(bytes));
+    expect(
+      await downloadSlackFile(
+        { ...file, size: bytes.length },
+        'synthetic-token',
+        'png',
+      ),
+    ).toEqual(bytes);
   });
 
   it('rejects invalid, incomplete, and oversized image headers', async () => {
@@ -358,6 +380,34 @@ describe('Slack JPEG validation and download', () => {
       ).resolves.toEqual(bytes);
     },
   );
+
+  it('accepts a JPEG over the 16 KiB file limit and refuses one over 2 MiB', async () => {
+    // A comment segment after SOI pads the image to 16 KiB + 1 byte.
+    const data = Buffer.alloc(16 * 1024 + 1 - jpeg.length - 4, 0x20);
+    const comment = Buffer.from([0xff, 0xfe, 0, 0]);
+    comment.writeUInt16BE(data.length + 2, 2);
+    const bytes = Buffer.concat([
+      jpeg.subarray(0, 2),
+      comment,
+      data,
+      jpeg.subarray(2),
+    ]);
+    fileServer.mockResolvedValue(new Response(bytes));
+    expect(
+      await downloadSlackFile(
+        { ...file, size: bytes.length },
+        'synthetic-token',
+        'jpeg',
+      ),
+    ).toEqual(bytes);
+    expect(
+      await downloadSlackFile(
+        { ...file, size: 2 * 1024 * 1024 + 1 },
+        'synthetic-token',
+        'jpeg',
+      ),
+    ).toBe('The JPEG exceeds the 2,048 KiB limit. Attach a smaller file.');
+  });
 
   it('rejects truncated, malformed, oversized-dimension, and mislabelled JPEGs', async () => {
     const wide = Buffer.from(jpeg);
