@@ -1204,7 +1204,17 @@ export function createGateway({
           selectSlackFileKind(file),
         );
         if (selected.some((kind) => !kind || !enabledFiles[kind])) {
-          await publishNotice(run, 'failed', UNSUPPORTED_FILE_REPLY);
+          const image = selected.find(
+            (kind) =>
+              (kind === 'png' || kind === 'jpeg') && !enabledFiles[kind],
+          );
+          await publishNotice(
+            run,
+            'failed',
+            image
+              ? `${image.toUpperCase()} input is not enabled for this agent.`
+              : UNSUPPORTED_FILE_REPLY,
+          );
           return;
         }
         for (const [index, kind] of selected.entries()) {
