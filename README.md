@@ -8,8 +8,8 @@ even after the worker has shut down.
 It is a reference implementation to fork and read, not a hardened product. You
 run it on your own Vercel, Upstash, OpenRouter, and Slack accounts.
 
-![A Slack thread: the bot describes an attached image, then writes a Markdown
-file and a CSV file on request](docs/assets/demo.gif)
+![A Slack thread: the bot lists the problems in an attached CSV file, returns a
+cleaned CSV file, and sums it up in one line](docs/assets/demo.gif)
 
 A real thread on a test installation; typing and waiting are sped up.
 
