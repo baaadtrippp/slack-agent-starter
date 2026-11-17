@@ -363,7 +363,11 @@ try {
     assert.equal(restore.exitCode, 0, 'openrouter.ai is still overridden.');
     const paidResult = await run(resumed, paid);
     assert.ok(paidResult.text.includes(paidMarker), 'The paid answer differs.');
-    console.log('Paid OpenRouter turn passed.');
+    assert.ok(paidResult.usage?.tokens > 0, 'The paid run reported no usage.');
+    // A cost appears only when OpenRouter reported the billed amount.
+    console.log(
+      'Paid OpenRouter turn passed: ' + JSON.stringify(paidResult.usage),
+    );
   }
   console.log('Worker check passed.');
 } catch (error) {

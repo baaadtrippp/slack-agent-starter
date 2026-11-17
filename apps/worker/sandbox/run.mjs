@@ -178,6 +178,7 @@ export function recoverDriveWriteFailure(job, result, error) {
   delete result.session;
   delete result.artifact;
   delete result.artifactRefused;
+  delete result.usage;
   return result;
 }
 
@@ -198,6 +199,43 @@ export function artifactOutcome(records, toolName) {
   return calls.some((call) => call.isError === true)
     ? { artifactRefused: true }
     : {};
+}
+
+/**
+ * Sums a turn's model usage as Pi's session stats do. Keeps the cost only when
+ * the provider billed every part; Pi's own estimate may use another model's
+ * price. Returns nothing for zero or malformed usage.
+ */
+export function runUsage(records) {
+  let tokens = 0;
+  let cost = 0;
+  let billed = true;
+  for (const row of records) {
+    const usage =
+      row.type === 'message'
+        ? ['assistant', 'toolResult'].includes(row.message.role) &&
+          row.message.usage
+        : ['usage', 'compaction', 'branch_summary'].includes(row.type) &&
+          row.usage;
+    if (!usage) continue;
+    const parts = [
+      usage.input,
+      usage.output,
+      usage.cacheRead,
+      usage.cacheWrite,
+    ];
+    if (!parts.every((part) => Number.isSafeInteger(part) && part >= 0)) return;
+    const used = parts.reduce((sum, part) => sum + part);
+    // Pi records zeros when a response reports no usage.
+    if (!used && !usage.cost?.total) continue;
+    tokens += used;
+    cost += usage.cost?.total;
+    billed &&= usage.cost?.totalFromProvider === true;
+  }
+  if (!tokens || !Number.isSafeInteger(tokens)) return;
+  return billed && Number.isFinite(cost) && cost >= 0
+    ? { tokens, cost }
+    : { tokens };
 }
 
 export const readStagedInputExtension = `
@@ -477,6 +515,7 @@ async function run(job, model, key, stopSignal = new AbortController().signal) {
         result.session = completed.session;
         if (completed.artifact) result.artifact = completed.artifact;
         if (completed.artifactRefused) result.artifactRefused = true;
+        if (completed.usage) result.usage = completed.usage;
       }
       result.type = 'completed';
     } catch (error) {
@@ -820,6 +859,7 @@ async function prompt(job, model, key, root, reportWorking, stopSignal, notes) {
     return {
       text: text.slice(0, job.limits.answerChars).toWellFormed(),
       ...output,
+      usage: runUsage(newRecords),
       session: {
         seedRunId,
         nativeId: saved.nativeId,

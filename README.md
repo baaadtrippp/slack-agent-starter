@@ -78,6 +78,8 @@ turns on `SLACK_FILE_EXCHANGE` and `SLACK_PUBLIC_URL_INPUT`.
   if it returns plain text (a raw file, not a web page).
 - **Status and Stop** buttons on one status message per request. Stop works for
   the requester and the users in `SLACK_STOP_OPERATOR_IDS`.
+- **Usage**: a completed status shows the run's tokens, and its cost when
+  OpenRouter reports the billed amount.
 - **Channel notes**: `@bot remember for this channel: <one line>` saves a note,
   and `@bot use shared notes: <question>` asks with the notes, from any thread.
 - **Thumbs** up and down on answers are stored in Redis. Nothing in Slack uses

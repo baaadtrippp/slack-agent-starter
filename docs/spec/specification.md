@@ -79,9 +79,11 @@ input validation, the gateway adds an eyes acknowledgement to the input and
 posts `Starting` in its originating thread, outside the Slack HTTP
 acknowledgement. The worker emits one content-free `working` event only after
 live Pi text or tool activity. Terminal publication edits that same status; the
-answer and any artifact remain separate readable thread replies. An unconfirmed
-attachment is reported without discarding the text answer. Busy, ignored,
-duplicate, and refused inputs do not create an additional work status.
+answer and any artifact remain separate readable thread replies. A completed
+status ends with the run's model tokens, plus the cost when the provider
+reported the billed amount for the whole run; other statuses show no usage. An
+unconfirmed attachment is reported without discarding the text answer. Busy,
+ignored, duplicate, and refused inputs do not create an additional work status.
 
 An uncertain startup remains explicitly unconfirmed and may be superseded by a
 valid worker callback. An interrupted environment or uncertain publication is
@@ -315,7 +317,7 @@ events. Translate internal ACP events at the worker boundary.
 | Direction           | Contents and behavior                                                                                                                                                                                            |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Gateway to worker   | Run ID; conversation ID and generation; exact native session reference; user input and sender context; local attachment references; model/tool profile; deadline; callback destination; run-scoped authorization |
-| Worker to gateway   | Started; coarse progress; final answer or question; artifact manifest; failed; cancelled. Every event includes run ID, generation, unique event ID/sequence, and bounded text/event size                         |
+| Worker to gateway   | Started; coarse progress; final answer or question; optional model usage; artifact manifest; failed; cancelled. Every event includes run ID, generation, unique event ID/sequence, and bounded text/event size   |
 | Gateway control     | Ensure the single runtime and Drive mount, submit a turn, inspect status, and cancel one run. The execution host owns Vercel-specific lifecycle and replacement coordination                                     |
 | Harness integration | Prefer acpx + pi-acp. Pin compatible versions and verify resume, prompt/tools, files, images, provider configuration, and cancellation before considering direct Pi RPC                                          |
 

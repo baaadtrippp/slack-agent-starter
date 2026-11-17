@@ -21,7 +21,7 @@ Feature names follow the
 | F04 Receive attachments   | yes           | yes      | yes        |
 | F05 Read public URLs      | yes           | yes      | yes        |
 | F06 Return useful work    | yes           | yes      | yes        |
-| F07 Show progress         | yes           |          | yes        |
+| F07 Show progress         | yes           | yes      | yes        |
 | F08 Ask questions         | yes           | yes      | yes        |
 | F09 Stop and inspect      | yes           | yes      | yes        |
 | F10 Handle busy threads   | yes           | yes      | yes        |
@@ -51,6 +51,9 @@ The full log, with dates and commits, is in this file's Git history.
   deterministic only.
 - F07: Live runs show only the final Completed status. Intermediate and failure
   states have no live or provider check.
+- F07: The model usage on the Completed status was seen live with tokens and
+  cost, per run, with one OpenRouter model. The tokens-only case and a
+  comparison with OpenRouter's own activity page are not verified.
 - F08: No live run combines a file-bearing question, Sandbox replacement, a
   gateway restart, and an ordinary reply.
 - F09: No intermediate Status edit was captured live. Provider Stop checks used

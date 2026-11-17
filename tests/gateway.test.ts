@@ -18,6 +18,7 @@ import {
   BUSY_REPLY,
   RECOVERED_REPLY,
   STARTING_STATUS,
+  statusText,
   WORKER_UNAVAILABLE_REPLY,
 } from '../apps/gateway/src/gateway.js';
 import type { WorkerInspection } from '../apps/gateway/src/gateway.js';
@@ -3688,6 +3689,41 @@ describe.skipIf(!redisUrl)(
       expect(SlackAdapter.prototype.postMessage).not.toHaveBeenCalled();
     });
 
+    it('shows and logs a completed run’s model usage', async () => {
+      const gateway = harness({ progressUi: true });
+      const body = envelope();
+      await gateway.events(signed(body));
+      await gateway.flush();
+      const job = gateway.dispatch.mock.calls[0]![0];
+      const usage = { tokens: 12_400, cost: 0.0021 };
+
+      expect(
+        (
+          await gateway.callback(
+            callback({ ...result(job), usage }, job.callbackToken),
+          )
+        ).status,
+      ).toBe(202);
+      await gateway.flush();
+
+      expect(await gateway.store.getRun(job.runId)).toMatchObject({
+        state: 'completed',
+        result: { usage },
+      });
+      expect(SlackAdapter.prototype.editMessage).toHaveBeenLastCalledWith(
+        `slack:CTEST1:${body.event.ts}`,
+        statusTs,
+        statusCard(
+          'Completed. The result is in this thread. 12.4K tokens · $0.0021',
+        ),
+      );
+      expect(console.info).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /"phase":"published".*"usage":\{"tokens":12400,"cost":0\.0021\}/,
+        ),
+      );
+    });
+
     it('retains uncertain publication and never blindly reposts a duplicate callback', async () => {
       const gateway = harness();
       await gateway.events(signed(envelope()));
@@ -4122,3 +4158,34 @@ describe.skipIf(!redisUrl)(
     });
   },
 );
+
+describe('completed status usage', () => {
+  const plain = 'Completed. The result is in this thread.';
+  const unconfirmed =
+    'Completed. The text result is in this thread. Attachment delivery is unconfirmed.';
+  const completed = (usage?: WorkerResult['usage'], artifact = false) =>
+    statusText({
+      state: 'completed',
+      result: {
+        ...(usage ? { usage } : {}),
+        ...(artifact ? { artifact: { sha256: 'a'.repeat(64) } } : {}),
+      },
+    } as RunRecord);
+
+  it('keeps both completed texts unchanged without usage', () => {
+    expect(completed()).toBe(plain);
+    expect(completed(undefined, true)).toBe(unconfirmed);
+  });
+
+  it.each([
+    [{ tokens: 987 }, '987 tokens'],
+    [{ tokens: 12_400, cost: 0.0021 }, '12.4K tokens · $0.0021'],
+    [{ tokens: 1_300_000, cost: 0.000043 }, '1.3M tokens · $0.000043'],
+    [{ tokens: 150, cost: 1.25 }, '150 tokens · $1.25'],
+    [{ tokens: 150, cost: 0.000000004 }, '150 tokens · $0.0000000040'],
+    [{ tokens: 150, cost: 0 }, '150 tokens · $0.00'],
+  ])('appends %o as “%s”', (usage, text) => {
+    expect(completed(usage)).toBe(plain + ' ' + text);
+    expect(completed(usage, true)).toBe(unconfirmed + ' ' + text);
+  });
+});
