@@ -48,7 +48,10 @@ to copy; `read_input` (`readStagedInputExtension`) is a shorter one:
 1. `writeArtifactExtension(byteLimit)` returns the extension source, with the
    job's generated-file limit written in. Its default export calls
    `pi.registerTool` with a name, a description for the model, TypeBox
-   parameters, and an `execute` function that returns the tool result.
+   parameters, and an `execute` function that returns the tool result. The
+   source is a JavaScript template literal, so escape each backtick, `${`, and
+   backslash that belongs to the tool's own code (`\\n` for `\n`). A mistake
+   there can pass the checks and fail only when Pi loads the tool.
 2. In `prompt()`, the run writes that source to its scratch directory, adds an
    `--extension` option for the file to `extensions`, and adds the tool name to
    `tools`, which becomes Pi's `--tools` list. Pi offers the model only the
@@ -59,18 +62,24 @@ to copy; `read_input` (`readStagedInputExtension`) is a shorter one:
 Add your extension the same way. A tool runs in the worker Sandbox within the
 60-second run deadline; treat everything it reads as untrusted data. Then:
 
-- **Tell the model.** Describe the tool in `instructions.md`, and drop any line
-  there that says the agent cannot do what the tool does.
+- **Tell the model.** Describe the tool in `instructions.md`, and reword any
+  line there that would forbid what the tool does. For an API tool, for example,
+  keep "You cannot … fetch URLs yourself" and add that it can call the API only
+  through your tool.
 - **Network access.** The worker can reach only the gateway origin and
   `openrouter.ai`. For an API, add an entry such as
   `{ host: 'api.example.com' }` to `toolApis` at the top of
   [`bootstrap-worker.mjs`](../apps/gateway/scripts/bootstrap-worker.mjs), and
-  call it over HTTPS.
+  call it over HTTPS. A host missing there fails as a DNS error (`EAI_AGAIN`),
+  not as blocked.
 - **API keys.** Never put a key in the job, the worker's environment, or a file
   it can read. In the host's `toolApis` entry, name the header and a `SETUP_ENV`
-  variable that holds its whole value: the Sandbox firewall adds the header to
-  requests to that host. A changed key needs a
-  [new worker](#apply-worker-changes).
+  variable that holds its whole value. Add that variable to `SETUP_ENV` before
+  setup; without it, setup and the worker check stop with `Missing` and its
+  name. The Sandbox firewall adds the header to requests to that host. An API
+  that echoes request headers or puts the key in an error hands the key back to
+  your tool, so return only the fields the model needs, never a raw response. A
+  changed key needs a [new worker](#apply-worker-changes).
 - **npm packages.** A tool cannot import an npm package yet
   ([#49](https://github.com/baaadtrippp/slack-agent-starter/issues/49)), except
   those Pi provides to extensions, such as `typebox`. Use Node built-ins such as
@@ -80,8 +89,12 @@ Add your extension the same way. A tool runs in the worker Sandbox within the
   compares the tool names with two fixed lists (`assert.deepEqual`, in order;
   they follow the `tools` order in `prompt()`). Add yours at the same position
   in each list whose run offers it. It never calls your tool: test it in Slack.
+  Neither the gateway nor the worker logs tool calls, so ask for something only
+  the tool's result can answer; an answer without it means the model skipped the
+  tool or the tool failed.
 
-Then [apply the change](#apply-worker-changes).
+Run `pnpm format` before the checks, because they fail on any formatting
+difference. Then [apply the change](#apply-worker-changes).
 
 ## Change the limits
 
@@ -175,9 +188,15 @@ firewall rule.
    chmod 600 "$WORKER_RECORD"
    ```
 
+   Keep the three settings setup prints, as you kept the previous worker's: step
+   3 needs these, and step 4 needs the previous `SANDBOX_WORKER_NAME`.
+
 3. Replace the three `SANDBOX_*` settings, pasting each value from the setup
-   output when prompted. The loop must end without an error, and the list must
-   show all three with type `Config`, each created moments ago.
+   output when prompted. Where `add` cannot prompt, such as in a coding agent's
+   shell, paste the three setup lines into the shell as variables and pipe each
+   value in: change the `add` line to start with `printf %s "${!NAME}" |`. The
+   loop must end without an error, and the list must show all three with type
+   `Config`, each created moments ago.
 
    ```sh
    for NAME in SANDBOX_WORKER_NAME SANDBOX_MANAGED_DRIVE SANDBOX_MANAGED_SEED; do
@@ -196,6 +215,8 @@ firewall rule.
    pnpm exec vercel inspect "$GATEWAY_ORIGIN" --scope "$SCOPE" --json
    ```
 
+   In a coding agent's shell, `vercel deploy` prints JSON instead of the bare
+   URL, so set `DEPLOYMENT_URL` to its `deployment.url` and inspect it again.
    The new deployment must report `readyState` `READY`. If the origin then
    reports an older `id`, promote the new deployment. The origin must then
    report the new `id`.

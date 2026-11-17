@@ -40,13 +40,17 @@ docker run --rm --detach \
   --name slack-agent-starter-test-redis \
   --publish 127.0.0.1:16379:6379 \
   redis@sha256:4eec4565e45aa0b3966554c866bc73211e281b0b3d89fe9a33c982e6faca809d \
-  redis-server --save "" --appendonly no
-TEST_REDIS_URL=redis://127.0.0.1:16379 pnpm check
-docker stop slack-agent-starter-test-redis
+  redis-server --save "" --appendonly no &&
+  { TEST_REDIS_URL=redis://127.0.0.1:16379 pnpm check
+    docker stop slack-agent-starter-test-redis; }
 pnpm scan:secrets
 ```
 
-If `pnpm check` exits early, run the same `docker stop` command.
+If `docker run` fails because the name or port is in use, another checkout or an
+earlier run still has a test Redis up; the block then runs no checks and leaves
+that container alone. If nothing else uses it, stop it with the same
+`docker stop` command and run the block again. If you interrupt the checks, run
+that `docker stop` command too.
 
 ## 2. Create the service resources
 
@@ -79,8 +83,9 @@ project ID for section 3.
 
 Vercel assigns the production domain when it creates the project. It is often
 `$PROJECT.vercel.app`, but Vercel adds a suffix when that name is taken; the
-project's Domains settings show it. Set the bare HTTPS origin, which must keep
-pointing to this gateway:
+project's Domains settings show it, and so does
+`pnpm exec vercel api "/v9/projects/$PROJECT/domains" --scope "$SCOPE"`. Set the
+bare HTTPS origin, which must keep pointing to this gateway:
 
 ```sh
 GATEWAY_ORIGIN=https://your-assigned-production-domain
@@ -183,7 +188,8 @@ another project. Your shell keeps its own values.
 ```
 
 Setup prints three nonsecret production settings. `SANDBOX_MANAGED_SEED` is the
-startup snapshot ID.
+startup snapshot ID. Keep them with the record: section 4 needs all three, and a
+later worker change needs this worker's name.
 
 ```text
 SANDBOX_WORKER_NAME=...
@@ -323,6 +329,12 @@ different bot token after reinstall, update `SLACK_BOT_TOKEN` with
 
 Then post `/invite @YourAgent` in the channel. Invite the bot to no other
 channel.
+
+To rename the bot after installing it, edit the bot user in your workspace's app
+management page (**Manage apps** → the app → **Configuration** → **Bot User** →
+**Edit**). The manifest, App Home, and reinstalling do not rename an installed
+bot. After a rename, check that the bot is still in the channel and `/invite` it
+again if not.
 
 ## 6. Test it in Slack
 

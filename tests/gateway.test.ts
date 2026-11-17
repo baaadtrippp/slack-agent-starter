@@ -3303,7 +3303,8 @@ describe.skipIf(!redisUrl)(
       expect(gateway.dispatch).not.toHaveBeenCalled();
       expect(SlackAdapter.prototype.postMessage).toHaveBeenLastCalledWith(
         'slack:CTEST1:' + root.event.ts,
-        'Attach a supported Slack-hosted UTF-8 text, Markdown, source, JSON, CSV, text-based PDF, or enabled image file.',
+        (extension === 'png' ? 'PNG' : 'JPEG') +
+          ' input is not enabled for this agent.',
       );
     });
 
