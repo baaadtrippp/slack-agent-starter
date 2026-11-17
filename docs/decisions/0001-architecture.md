@@ -47,6 +47,5 @@ before designing another adapter.
 
 ## Follow-up decisions
 
-The specification's
-[decision table](../spec/specification.md#10-open-review-points) records the
-status of each follow-up decision.
+The specification lists the follow-up decisions that are
+[still open](../spec/specification.md#10-still-open).

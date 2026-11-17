@@ -1,33 +1,19 @@
 # Slack agent starter specification
 
-Status: reviewed baseline
-
-This file is the canonical product and architecture specification. Other
-documents may summarize it, but changes to scope, behavior, or architecture must
-be made here and reflected in [traceability.md](traceability.md).
-
 Slack agent starter is a single-workspace Slack app that lets a team give work
 to a real Pi agent, exchange files, answer its questions, and continue the same
 conversation later. The Slack gateway and agent worker are separate processes.
 The app proves the complete interaction with Pi for both code-related and
 general tasks using Slack attachments and explicitly supplied public URLs.
 
-Labels in this document have precise meanings:
-
-- **Accepted**: part of the baseline.
-- **Proposed**: a reviewable default that must not be silently treated as
-  settled.
-- **Open**: a decision required before the affected behavior is enabled.
-- **Deferred**: outside the current scope.
-
-## 1. Accepted decisions
+## 1. Decisions
 
 | Part               | Decision                                                                                                                                                                                                                            |
 | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Repository         | Public MIT-licensed TypeScript monorepo named `slack-agent-starter`. Gateway and worker remain separate packages and processes. Private source material and local deliverables are excluded.                                        |
 | Slack gateway      | Vercel Chat SDK with its official Slack adapter on Vercel Functions. The gateway owns Slack events, presentation, access checks, and run coordination. It never runs the model loop.                                                |
 | Agent worker       | One active Vercel Sandbox for the agent, running independent Pi processes as needed for different threads. The full agent uses a general-purpose system prompt and selected tools.                                                  |
-| Models             | OpenRouter is the model provider. NVIDIA remains an optional provider alternative. One operator-selected model is used; there is no Slack model picker or automatic provider fallback.                                              |
+| Models             | OpenRouter is the model provider. One operator-selected model is used; there is no Slack model picker or automatic provider fallback.                                                                                               |
 | Gateway state      | Upstash Redis through Chat SDK's official Redis adapter, with application records in a separate key namespace. No Neon or Postgres.                                                                                                 |
 | Agent persistence  | One persistent Vercel Drive mounted read/write by the worker sandbox. It stores native Pi/ACP sessions, per-thread work and shared memory. The Drive survives sandbox replacement. Upstash stores routing and coordination records. |
 | Inputs and outputs | Slack messages, Slack-hosted attachments, and explicitly supplied public HTTPS URLs. Results and supported artifacts return to the originating thread.                                                                              |
@@ -108,8 +94,7 @@ outage can leave the status stale until a later delivery.
 
 The pinned adapter has no reliable structured clarification signal, so F08's
 ordinary final-text fallback remains in use. A `waiting for an answer` state is
-deferred (accepted 10 November 2026). F09 adds `Stopping` and `Stopped` to the
-same status message.
+deferred. F09 adds `Stopping` and `Stopped` to the same status message.
 
 ### F08 — Ask questions
 
@@ -155,9 +140,9 @@ trains the agent, or authorizes an action.
 
 ### F12 — Use actual tools
 
-The tools read inputs and write files (accepted 10 November 2026): Pi reads
-staged Slack files and allowed URL inputs and writes result files. Answers come
-from the real model/tool loop. A fake worker is test scaffolding only.
+The tools read inputs and write files: Pi reads staged Slack files and allowed
+URL inputs and writes result files. Answers come from the real model/tool loop.
+A fake worker is test scaffolding only.
 
 ### F13 — Share agent knowledge
 
@@ -167,11 +152,10 @@ transcript. Any internal member of the enabled channel can explicitly save a
 note or ask Pi to use those notes. The audience is the same enabled workspace
 and channel, including other threads there. Automatic extraction is deferred.
 
-**Accepted access (O01):** enable the selected public channel only. Any internal
-member of that channel may invoke the app. Reject externally shared channels and
-external users. DMs and private channels remain disabled; enabling private
-channels where the bot is invited remains open. O07 app identity and channel are
-selected in private deployment configuration.
+**Access:** enable the selected public channel only. Any internal member of that
+channel may invoke the app. Reject externally shared channels and external
+users. DMs and private channels remain disabled. The app identity and channel
+are set in deployment configuration.
 
 ## 3. Architecture
 
@@ -287,10 +271,10 @@ involved.
 | Record                   | Owner and purpose                                                                                                                                           | Lifetime                                                                                     |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | Conversation mapping     | Upstash: workspace + channel + thread root to conversation ID, harness, exact Pi/ACP session, logical Drive, work path, generation, and last activity       | Retained until explicit cleanup; remains valid across sandbox replacement                    |
-| Run                      | Upstash: input/event references, requester, state, start/deadline, status message, callback sequence, output references, publication status, and safe error | Active through cleanup; completed metadata is kept until O04 sets retention                  |
+| Run                      | Upstash: input/event references, requester, state, start/deadline, status message, callback sequence, output references, publication status, and safe error | Active through cleanup; completed metadata is kept until a retention policy exists           |
 | Question and feedback    | Upstash: structured question data when available, reply status, and reaction feedback keyed to answer and user                                              | Question while awaiting reply; feedback follows run retention                                |
 | Runtime and coordination | Upstash: sandbox identity/generation, Drive ownership, active runs, session leases, deduplication, and Chat SDK state                                       | Temporary records expire; verify actual processes and mounts before clearing stale ownership |
-| Agent sessions and work  | Drive: Pi JSONL, ACP session records, per-thread inputs/work/results, and artifact manifests                                                                | Flush before completion; survives sandbox replacement; cleanup is deferred (O04)             |
+| Agent sessions and work  | Drive: Pi JSONL, ACP session records, per-thread inputs/work/results, and artifact manifests                                                                | Flush before completion; survives sandbox replacement; cleanup is deferred                   |
 | Shared agent memory      | Drive: Markdown notes intentionally available across sessions and separate from transcripts                                                                 | Retained independently of thread workspace cleanup; no assumed automatic expiry              |
 
 Every run opens the exact mapped session, never a global "latest" session. A
@@ -306,17 +290,16 @@ context. Sessions deliberately load relevant shared notes. Shared-memory updates
 must hold a write lock, re-read the latest content, and replace files
 atomically.
 
-**Accepted memory policy (O03):** The admitted human must explicitly request the
-write in their current message. Use `remember for this channel:` followed by one
-line of note text, or `use shared notes:` followed by a question. Put the
-command after the bot mention, or start an ordinary reply in an activated thread
-with it. Slack history, attached files, fetched URLs, and model output are task
-data. The gateway alone selects the operation from the current message. Notes
-are Markdown files scoped to the admitted workspace and channel. Saves use the
-existing run status with Status available when configured. A save commits
-independently of Pi and does not create or advance a native session. A note
-holds up to 512 UTF-8 bytes, and a channel up to 16 notes. Full storage is
-reported without eviction.
+**Memory policy:** The admitted human must explicitly request the write in their
+current message. Use `remember for this channel:` followed by one line of note
+text, or `use shared notes:` followed by a question. Put the command after the
+bot mention, or start an ordinary reply in an activated thread with it. Slack
+history, attached files, fetched URLs, and model output are task data. The
+gateway alone selects the operation from the current message. Notes are Markdown
+files scoped to the admitted workspace and channel. Saves use the existing run
+status with Status available when configured. A save commits independently of Pi
+and does not create or advance a native session. A note holds up to 512 UTF-8
+bytes, and a channel up to 16 notes. Full storage is reported without eviction.
 
 **Open cleanup policy:** Choose retention independently for sessions,
 work/results, run metadata, and shared knowledge. Do not assume a 30-day expiry
@@ -391,16 +374,15 @@ live native Pi session to another harness.
   when available. Use provider and deployment logs; do not add an observability
   vendor.
 
-**Limits (O05, accepted 10 November 2026, corrected 15 November 2026):** the
-limits are defaults kept in one file, `packages/contracts/src/limits.ts`, with
-one name per purpose; the gateway sends them with every job. Inputs and
-generated files have separate limits. The defaults are one active run per
-thread, 60 seconds per run, 16 KiB per input file or link, 2 MiB per PNG or JPEG
-image, 256 KiB per generated file, and no workspace-wide cap on concurrent Pi
-processes. The [README](../../README.md#current-limits) lists all of them. They
-are documented defaults, not tested targets. Reject excess visibly; when the
-file tool refuses every write in a run, the answer says that no file is
-attached. These are application limits, not provider limits.
+**Limits:** the limits are defaults kept in one file,
+`packages/contracts/src/limits.ts`, with one name per purpose; the gateway sends
+them with every job. Inputs and generated files have separate limits. The
+defaults are one active run per thread, 60 seconds per run, 16 KiB per input
+file or link, 2 MiB per PNG or JPEG image, 256 KiB per generated file, and no
+workspace-wide cap on concurrent Pi processes. [Limits](../limits.md) lists all
+of them. They are documented defaults, not tested targets. Reject excess
+visibly; when the file tool refuses every write in a run, the answer says that
+no file is attached. These are application limits, not provider limits.
 
 **Open model budget:** Select one model that passes tool, file, and image cases
 and set an explicit OpenRouter spending cap before deployment. Never upgrade
@@ -410,7 +392,7 @@ infrastructure silently when quota is exhausted.
 
 - Shell commands for Pi (F12). All threads share one Drive, so running commands
   needs its own design.
-- Automatic storage cleanup and retention (O04).
+- Automatic storage cleanup and retention.
 - A separate F07 "waiting for an answer" progress state.
 - GitHub, Google Drive, email, or other account connectors; PR creation, merges,
   and deployments.
@@ -428,18 +410,16 @@ infrastructure silently when quota is exhausted.
 - Pi Durable, Vercel Workflow, and an always-on worker.
 - Alternative compute implementations such as E2B, Cloudflare, VPS, or Raspberry
   Pi.
-- Codex or Claude workers, Codex Cloud development, and subscription-based
-  runtime model authentication.
+- Codex or Claude workers and subscription-based runtime model authentication.
 - Other messengers, public Slack app distribution, multi-workspace OAuth, and
   enterprise administration.
-- DMs and group DMs under the proposed channel-only scope; an admin dashboard.
-- Production SLA, indefinite conversation backups, and a private fork.
+- DMs and group DMs; an admin dashboard.
+- Production SLA and indefinite conversation backups.
 
 ## 9. Acceptance criteria
 
-These IDs are stable. Evidence must say whether it is deterministic, provider
-integration, or live Slack evidence. Mock-only evidence cannot satisfy a live
-boundary.
+Evidence must say whether it is deterministic, provider integration, or live
+Slack evidence. Mock-only evidence cannot satisfy a live boundary.
 
 ### AC01 — Conversation
 
@@ -513,9 +493,8 @@ truthfully.
 
 ### AC11 — Development access
 
-A local Codex or Claude Code session can run documented checks and inspect
-sanitized fixtures. Real model and live Slack checks remain separate explicit
-paths using local secrets.
+A local checkout can run the documented checks on synthetic fixtures. Real model
+and live Slack checks remain separate explicit paths using local secrets.
 
 ### AC12 — Useful output
 
@@ -533,19 +512,11 @@ checks, plus a real Pi integration test for native resume. The final round trip
 must run in an authorized Slack test channel. Automated tests do not replace a
 real Slack/model check.
 
-## 10. Open review points
+## 10. Still open
 
-| ID  | Point                 | Proposed position                                                                                          | Required before                    |
-| --- | --------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| O01 | Channel scope         | Accepted: the selected public channel, internal members; private channels remain open                      | Broader Slack access configuration |
-| O02 | Controls and feedback | Accepted on 7 November 2026: Stop, Status, and thumbs additions/removals on final answers                  | Settled for F09/F11                |
-| O03 | Memory policy         | Accepted on 7 November 2026. Any internal member can explicitly save and use notes in the enabled channel. | Settled for F13                    |
-| O04 | Storage cleanup       | Deferred on 10 November 2026; see the open cleanup policy in section 5                                     | Automatic cleanup                  |
-| O05 | Operating limits      | Accepted on 10 November 2026, corrected 15 November: defaults in one file, separate input and file limits  | Settled                            |
-| O06 | Model and budget      | Select one tool-capable model and an explicit spend cap; verify vision in the actual adapter path          | Real model execution               |
-| O07 | Slack identity        | Selected app identity and channel; values stay in deployment configuration                                 | Settled                            |
-
-Repository identity is settled: `slack-agent-starter`, public, MIT licensed.
+Not settled yet: support for private channels the bot is invited to, a storage
+cleanup and retention policy (section 5), and each deployment's model and
+spending cap.
 
 ## References
 

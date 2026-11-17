@@ -2,10 +2,6 @@
 
 <!-- Describe the concrete behavior or infrastructure result. -->
 
-## Spec traceability
-
-<!-- List feature and acceptance IDs, or explain why this is infrastructure-only. -->
-
 ## Verification
 
 <!-- State exactly what was run and what remains a live-provider check. -->
