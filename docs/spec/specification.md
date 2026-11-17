@@ -61,8 +61,10 @@ replaying the full transcript.
 Accept files on the initial request and follow-ups. Baseline types are plain
 text, Markdown, source files, JSON, CSV, text-based PDF, PNG, and JPEG. Validate
 type and size, stage accepted files inside the conversation workspace, and
-explain unsupported, inaccessible, or oversized inputs. Image interpretation is
-enabled only after the chosen model and adapter path pass a vision test.
+explain unsupported, inaccessible, or oversized inputs. An image over 1,024
+pixels on an edge is replaced by Slack's 1,024-pixel thumbnail when Slack
+provides one, and is refused otherwise. Image interpretation is enabled only
+after the chosen model and adapter path pass a vision test.
 
 ### F05 — Read public URLs
 

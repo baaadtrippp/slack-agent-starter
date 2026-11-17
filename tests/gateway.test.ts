@@ -3307,6 +3307,49 @@ describe.skipIf(!redisUrl)(
       );
     });
 
+    it("stages Slack's 1,024-pixel thumbnail of a larger PNG", async () => {
+      const png = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+        'base64',
+      );
+      fileServer.mockResolvedValue(new Response(png));
+      const gateway = harness({ pngInput: true });
+      const root = envelope();
+      const file = {
+        name: 'photo.png',
+        mode: 'hosted',
+        size: 3 * 1024 * 1024,
+        mimetype: 'image/png',
+        url_private:
+          'https://files.slack.com/files-pri/TTEST1-FTEST1/photo.png',
+        original_w: 4_032,
+        original_h: 3_024,
+        thumb_1024:
+          'https://files.slack.com/files-tmb/TTEST1-FTEST1-0abc/photo_1024.png',
+      };
+      await gateway.events(
+        signed({
+          ...root,
+          event: { ...root.event, subtype: 'file_share', files: [file] },
+        }),
+      );
+      await gateway.flush();
+
+      expect(fileServer).toHaveBeenCalledExactlyOnceWith(
+        new URL(file.thumb_1024),
+        expect.anything(),
+      );
+      const [job, staged] = gateway.dispatch.mock.calls[0]!;
+      expect(job.input.sources).toEqual([
+        {
+          kind: 'png',
+          name: file.name,
+          sha256: createHash('sha256').update(png).digest('hex'),
+        },
+      ]);
+      expect(staged).toEqual([png]);
+    });
+
     it('refuses a batch over the attachment limit before any download or dispatch', async () => {
       const gateway = harness({
         fileExchange: true,
