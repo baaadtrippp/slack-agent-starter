@@ -17,6 +17,7 @@ node_modules/
 .codex/
 .mcp.json
 .pi/
+.playwright-mcp/
 
 # Private operator notes and progress records
 private-notes/
