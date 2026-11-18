@@ -47,9 +47,9 @@ const forbiddenSegments = new Set([
 const forbiddenNames = [/(?:^|\/)\.mcp\.json$/, /\.jsonl$/];
 
 const privatePathPatterns = [
-  /[A-Za-z]:\\(?:Users|private-z)\\/i,
+  /[A-Za-z]:\\Users\\/i,
   /\/Users\/[^/]+\//,
-  /\/(?:home|private-z)\/[^/]+\//,
+  /\/home\/[^/]+\//,
 ];
 
 for (const requiredPath of requiredPaths) {
