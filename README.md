@@ -29,21 +29,7 @@ A real thread on a test installation; typing and waiting are sped up.
 
 ## How it works
 
-```mermaid
-flowchart LR
-  subgraph Sandbox[Vercel Sandbox]
-    Worker[Worker] --> Pi[Pi agent]
-  end
-  Slack[Slack channel] -->|events and clicks| Gateway[Gateway on Vercel Functions]
-  Gateway -->|status, answer, file| Slack
-  Gateway <-->|run state, session references, locks| Redis[Upstash Redis]
-  Gateway -.->|fetch one link| Web[Public URL]
-  Gateway -->|stage inputs, start run, read file| Worker
-  Worker -->|progress and answer| Gateway
-  Worker <--> Drive[Vercel Drive]
-  Pi <--> Drive
-  Pi -->|model calls| OpenRouter[OpenRouter]
-```
+<img src="docs/assets/architecture.svg" alt="Slack sends a mention to the gateway on Vercel Functions. The gateway keeps run state in Upstash Redis and starts a run on the worker in a Vercel Sandbox. The Pi agent there calls the model on OpenRouter through the Sandbox firewall, which adds the key. The worker returns the answer and the gateway posts it to Slack." width="100%">
 
 1. The gateway checks the Slack signature, workspace, channel, and sender,
    records the run in Redis, and answers Slack at once.
