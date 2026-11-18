@@ -7,6 +7,7 @@
     </marker>
     <style>
       .box { fill: #ffffff; stroke: #afb8c1; stroke-width: 1.5; }
+      .ours { fill: #ddf4ff; stroke: #54aeff; stroke-width: 1.5; }
       .in { fill: #f6f8fa; stroke: #afb8c1; stroke-width: 1.5; }
       .h { font-size: 15px; font-weight: 600; fill: #1f2328; text-anchor: middle; }
       .s { font-size: 12px; fill: #57606a; text-anchor: middle; }
@@ -23,13 +24,16 @@
   <text x="40" y="58" font-size="17" font-weight="600" fill="#1f2328">From a mention to an answer</text>
   <text x="40" y="80" font-size="12.5" fill="#57606a">The numbers match the steps below.</text>
 
+  <rect class="ours" x="40" y="412" width="16" height="16" rx="4"/>
+  <text x="64" y="425" font-size="12.5" fill="#57606a">code in this repo</text>
+
   <!-- Slack -->
   <rect class="box" x="40" y="200" width="150" height="90" rx="10"/>
   <text class="h" x="115" y="241">Slack</text>
   <text class="s" x="115" y="261">one channel</text>
 
   <!-- Gateway -->
-  <rect x="300" y="170" width="200" height="150" rx="10" fill="#ddf4ff" stroke="#54aeff" stroke-width="1.5"/>
+  <rect class="ours" x="300" y="170" width="200" height="150" rx="10"/>
   <text class="h" x="400" y="200">Gateway</text>
   <text class="s" x="400" y="219">Vercel Functions</text>
   <text class="s" x="400" y="254">checks who is asking</text>
@@ -47,11 +51,10 @@
   <path class="ar" d="M452 322V378" stroke-dasharray="4 4"/>
 
   <!-- Sandbox -->
-  <rect x="620" y="120" width="270" height="252" rx="12" fill="#ffffff" stroke="#8c959f" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <rect x="620" y="120" width="270" height="236" rx="12" fill="#ffffff" stroke="#8c959f" stroke-width="1.5" stroke-dasharray="6 4"/>
   <text x="636" y="146" font-size="13" font-weight="600" fill="#1f2328">Vercel Sandbox</text>
-  <text class="s" x="755" y="360">no keys · no shell</text>
 
-  <rect class="in" x="640" y="170" width="95" height="56" rx="10"/>
+  <rect class="ours" x="640" y="170" width="95" height="56" rx="10"/>
   <text class="h" x="687.5" y="203">Worker</text>
   <rect class="in" x="775" y="170" width="95" height="56" rx="10"/>
   <text class="h" x="822.5" y="203">Pi agent</text>
